@@ -1,0 +1,56 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Client data (NDA-protected)
+data/raw/
+data/processed/
+data/tagging/*.csv
+!data/tagging/tagging_template.csv
+
+# Runtime traces and logs
+traces/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node / Frontend
+node_modules/
+.next/
+.nuxt/
+.cache/
+dist/
+.wrangler/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Hermes runtime data (large, local)
+backend/hermes/hermes-data/
+backend/hermes/logs/
+
+# Generated proposals (also client-sensitive)
+generated/

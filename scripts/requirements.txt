@@ -1,0 +1,11 @@
+# Sprint 1 — Proposal ingestion
+python-docx>=1.1.0
+pypdf>=4.0.0
+pillow>=10.0.0
+tqdm>=4.66.0
+
+# Sprint 2 — Embedding & upload (uncomment when ready)
+# openai>=1.30.0
+# supabase>=2.4.0
+# python-dotenv>=1.0.0
+# tenacity>=8.2.0

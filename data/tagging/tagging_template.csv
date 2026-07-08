@@ -1,0 +1,6 @@
+proposal_id,source_filename,client_name,industry,country,iam_vendor,proposal_type,user_count,app_count,deal_size_bucket,outcome,year,notes
+example-al-qadsiah-2024,Al_Qadsiah_Proposal_2024.docx,Al Qadsiah,Sports/Entertainment,Saudi Arabia,SailPoint,implementation,500,5,small,won,2024,First KSA sports client
+example-stc-2023,STC_IAM_Proposal_v3.docx,STC,Telecom,Saudi Arabia,Ping Identity,implementation,50000,120,enterprise,won,2023,Referenceable
+example-abb-india-2024,ABB_India_CIAM_2024.docx,ABB India,Manufacturing,India,Ping Identity,implementation,10000,45,large,pending,2024,B2B + B2C mix
+example-dfcc-bank-2025,DFCC_Bank_Proposal.docx,DFCC Bank,Banking,Sri Lanka,SailPoint,implementation,3000,50,medium,pending,2025,15-month timeline
+example-mannai-2023,Mannai_MSS_Proposal.docx,Mannai,Distribution,Qatar,ForgeRock,mss,,,medium,lost,2023,Support-only engagement

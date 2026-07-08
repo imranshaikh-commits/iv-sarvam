@@ -1,0 +1,59 @@
+# =====================================================
+# SARVAM — Hermes Agent Stack
+# =====================================================
+# Sprint 4 deliverable. Do NOT run this until Sprint 3
+# (EC2 provisioned + Caddy configured) is complete.
+
+version: "3.9"
+
+services:
+  hermes-gateway:
+    image: hermesagent/hermes:latest  # confirm exact tag at deploy time
+    container_name: sarvam-gateway
+    restart: unless-stopped
+    # CRITICAL: bind to localhost only. External access is via Caddy -> dashboard.
+    ports:
+      - "127.0.0.1:${HERMES_GATEWAY_PORT:-8642}:8642"
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_DEFAULT_MODEL=${OPENROUTER_DEFAULT_MODEL}
+    volumes:
+      - hermes-data:/root/.hermes
+      - ./config.yaml:/root/.hermes/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8642/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  hermes-dashboard:
+    image: hermesagent/hermes-dashboard:latest
+    container_name: sarvam-dashboard
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${HERMES_DASHBOARD_PORT:-8643}:8643"
+    depends_on:
+      - hermes-gateway
+    volumes:
+      - hermes-data:/root/.hermes:ro
+    environment:
+      - GATEWAY_URL=http://hermes-gateway:8642
+
+  # Sprint 7 addition — Open WebUI backend
+  # open-webui:
+  #   image: ghcr.io/open-webui/open-webui:main
+  #   container_name: sarvam-webui
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:3000:8080"
+  #   environment:
+  #     - OPENAI_API_BASE_URL=http://hermes-gateway:8642/v1
+  #     - OPENAI_API_KEY=dummy  # Hermes ignores this
+  #   volumes:
+  #     - open-webui-data:/app/backend/data
+
+volumes:
+  hermes-data:
+    driver: local
+  # open-webui-data:
+  #   driver: local

@@ -1,0 +1,29 @@
+# =====================================================
+# SARVAM — Production stack (reflects reality as of Sprint 3)
+# =====================================================
+# Runs on EC2 sarvam-server (13.206.20.25).
+# Usage:
+#   cd ~/iv-sarvam/deploy && docker compose up -d
+#
+# The 'open-webui' volume is the PRE-EXISTING named volume created
+# on Day 1 (docker run). Declared external so Compose reuses it —
+# admin accounts, chats, and branding are preserved.
+#
+# Future services (Sprint 4+: agent backend) get added here.
+
+name: sarvam
+
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: sarvam-webui
+    restart: always
+    ports:
+      - "8080:8080"
+    volumes:
+      - open-webui:/app/backend/data
+
+volumes:
+  open-webui:
+    external: true
+    name: open-webui

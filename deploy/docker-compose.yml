@@ -1,15 +1,15 @@
 # =====================================================
-# SARVAM — Production stack (reflects reality as of Sprint 3)
+# SARVAM — Production stack
 # =====================================================
 # Runs on EC2 sarvam-server (13.206.20.25).
-# Usage:
-#   cd ~/iv-sarvam/deploy && docker compose up -d
+# Usage:  cd ~/iv-sarvam/deploy && docker compose up -d --build
 #
-# The 'open-webui' volume is the PRE-EXISTING named volume created
-# on Day 1 (docker run). Declared external so Compose reuses it —
-# admin accounts, chats, and branding are preserved.
+# open-webui volume is the PRE-EXISTING named volume from Day 1
+# (declared external) — admin accounts, chats, branding preserved.
 #
-# Future services (Sprint 4+: agent backend) get added here.
+# sarvam-brain (Sprint 4): OpenAI-compatible grounded drafting service.
+# NOT exposed publicly — Open WebUI reaches it at http://sarvam-brain:8000/v1
+# on the compose network; host port bound to 127.0.0.1 for local testing only.
 
 name: sarvam
 
@@ -22,6 +22,15 @@ services:
       - "8080:8080"
     volumes:
       - open-webui:/app/backend/data
+
+  sarvam-brain:
+    build: ../backend/brain
+    container_name: sarvam-brain
+    restart: always
+    env_file:
+      - ../scripts/sarvam.env
+    ports:
+      - "127.0.0.1:8000:8000"
 
 volumes:
   open-webui:

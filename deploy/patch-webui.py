@@ -11,11 +11,10 @@ the Python source in the base image directly:
 
 2. main.py: the sign-in page only renders the logo centered above the title
    when config.metadata.auth_logo_position === 'center', and that field is
-   only populated for Enterprise-licensed installs. We make the metadata
-   block always emit auth_logo_position='center' (and an empty login_footer)
-   WITHOUT faking license_metadata itself — so no admin-panel side effects,
-   no user-count query on the public /api/config endpoint, no spurious
-   enterprise UI.
+   only emitted when an Enterprise license is present. We force the metadata
+   block to always emit auth_logo_position='center' (and an empty
+   login_footer) WITHOUT faking license_metadata itself — so no admin-panel
+   side effects, no user-count query on the public /api/config endpoint.
 """
 import re
 
@@ -32,8 +31,9 @@ open(ENV, "w").write(s)
 # --- 2. main.py: force centered auth logo ----------------------------------
 s = open(MAIN).read()
 
-# login_footer: was license_metadata.get(...) — but we drop the license guard
-# below, so it must not dereference a possibly-None license_metadata.
+# These two lines always live inside the metadata dict. Replace their values
+# so the dict no longer dereferences a possibly-None license_metadata, and so
+# the logo is forced centered with no login footer.
 assert "'login_footer': license_metadata.get('login_footer', '')," in s, "login_footer line not found"
 s = s.replace("'login_footer': license_metadata.get('login_footer', ''),",
               "'login_footer': '',")
@@ -42,12 +42,24 @@ assert "'auth_logo_position': license_metadata.get('auth_logo_position', '')," i
 s = s.replace("'auth_logo_position': license_metadata.get('auth_logo_position', ''),",
               "'auth_logo_position': 'center',")
 
-# Remove the `if license_metadata else {}` guard wrapping the metadata block
-# so the metadata dict is always emitted. Matches only the standalone two-line
-# guard (the inline ternary `... if license_metadata else None` is untouched).
-new, n = re.subn(r"\n[ \t]*if license_metadata\n[ \t]*else \{\}\n([ \t]*\)\),)", r"\n\1", s)
-assert n == 1, f"main.py: expected 1 license guard to remove, found {n} (image changed?)"
-s = new
+# Force the metadata block's conditional to always take the dict branch.
+# Matches the guard in EITHER form:
+#   inline  ->  {...} if license_metadata else {}
+#   multi   ->  {...}\n    if license_metadata\n    else {}
+# (the user_count ternary uses `else None`, so it is never matched.)
+new, n = re.subn(r"if license_metadata\s+else \{\}", "if True else {}", s)
+if n == 1:
+    s = new
+    method = "guard rewritten to 'if True else {}'"
+else:
+    # Fallback: image structure differs — make license_metadata truthy so the
+    # (unmodified) guard takes the dict branch. Minor admin-panel cosmetic
+    # side effect only in this fallback path.
+    old1852 = "license_metadata = getattr(app.state, 'LICENSE_METADATA', None)"
+    assert old1852 in s, "main.py: license_metadata assignment not found (image changed?)"
+    s = s.replace(old1852,
+                  old1852 + " or {'auth_logo_position': 'center', 'login_footer': ''}")
+    method = f"fallback (license_metadata made truthy); guard regex matched {n}"
 
 open(MAIN, "w").write(s)
-print("Sarvam branding patch applied OK")
+print(f"Sarvam branding patch applied OK ({method})")

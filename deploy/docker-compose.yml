@@ -18,6 +18,10 @@ services:
     image: ghcr.io/open-webui/open-webui:main
     container_name: sarvam-webui
     restart: always
+    # Branding — persistent across rebuilds (was lost in the Sprint 3
+    # docker-run -> compose migration because it was only a runtime env var).
+    environment:
+      - WEBUI_NAME=Sarvam AI
     ports:
       - "8080:8080"
     volumes:

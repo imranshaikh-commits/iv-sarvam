@@ -18,7 +18,9 @@ Endpoints:
 import json
 import logging
 import os
+import re
 import time
+from difflib import SequenceMatcher
 
 import httpx
 from fastapi import FastAPI, Request
@@ -50,6 +52,15 @@ HARD RULES (non-negotiable):
 4. When drafting proposal sections, end with an "Assumptions & Open Questions" list if any exist.
 5. You are the chief of staff, not the final author: your output is a draft for human review, never client-ready.
 
+QUALITY RULES:
+- Prioritize SPECIFIC technical content from the evidence — architectures, product capabilities, connectors,
+  workflows, configurations, timelines, volumetrics, integration points — over generic methodology steps.
+- Do NOT pad answers with generic project-management phases (Analysis / Testing / Knowledge Transfer) unless
+  they are directly and specifically supported by cited evidence with real detail.
+- If the retrieved evidence is mostly generic methodology boilerplate rather than specific technical detail for
+  the question asked, SAY SO explicitly and note what specific content would be needed to answer properly.
+- Be concrete: quote specific requirements, table contents, milestones, or configuration details from the evidence.
+
 Write in clear, professional consulting English. Be concise; no filler.
 """
 
@@ -65,10 +76,25 @@ async def embed_query(client: httpx.AsyncClient, text: str) -> list[float]:
     return resp.json()["data"][0]["embedding"]
 
 
-async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], k: int = TOP_K) -> list[dict]:
-    # Over-fetch then dedupe: every proposal shares identical boilerplate sections
-    # (e.g., "Inspirit Vision operates through..."). Without dedup these crowd out
-    # specific content in the top-k. Fetch 3x, drop duplicate text, keep top k diverse.
+# Vendor keywords → normalized token used to match proposals.iam_vendor (case-insensitive).
+VENDOR_KEYWORDS = ["sailpoint", "ping", "forgerock", "ibm", "keycloak", "okta", "microsoft"]
+
+
+def detect_vendor(query: str) -> str | None:
+    q = query.lower()
+    for kw in VENDOR_KEYWORDS:
+        if kw in q:
+            return kw
+    return None
+
+
+async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], query: str, k: int = TOP_K) -> list[dict]:
+    # Over-fetch then improve signal:
+    #  - exclude "Inspirit Vision" company-overview boilerplate (identical marketing text in every proposal;
+    #    never the specific answer)
+    #  - fuzzy-dedup near-duplicates (e.g. "specialisation" vs "specialization" variants across proposals)
+    #  - vendor-aware preference: if the query names a vendor, surface that vendor's chunks first so specific
+    #    functional content (tables, requirements, milestones) ranks above cross-proposal methodology.
     resp = await client.post(
         f"{SUPABASE_URL}/rest/v1/rpc/match_proposal_chunks",
         headers={
@@ -76,21 +102,38 @@ async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], k: 
             "Authorization": f"Bearer {SUPABASE_KEY}",
             "Content-Type": "application/json",
         },
-        json={"query_embedding": json.dumps(embedding, separators=(",", ":")), "match_count": k * 3},
+        json={"query_embedding": json.dumps(embedding, separators=(",", ":")), "match_count": k * 4},
         timeout=30,
     )
     resp.raise_for_status()
     rows = resp.json() or []
-    seen: set[str] = set()
+
+    # 1. Exclude pure company-overview boilerplate
+    rows = [r for r in rows if not (r.get("heading") or "").lower().startswith("inspirit vision")]
+
+    # 2. Fuzzy near-duplicate dedup on normalized text
+    def _norm(t: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", t.lower())).strip()
+    seen: list[str] = []
     deduped: list[dict] = []
     for r in rows:
-        key = (r.get("chunk_text") or "").strip()
-        if key and key not in seen:
-            seen.add(key)
+        norm = _norm((r.get("chunk_text") or "")[:400])
+        if not norm:
+            continue
+        dup = False
+        for s in seen:
+            if SequenceMatcher(None, norm, s).quick_ratio() > 0.9 and SequenceMatcher(None, norm, s).ratio() > 0.85:
+                dup = True
+                break
+        if not dup:
+            seen.append(norm)
             deduped.append(r)
-        if len(deduped) >= k:
-            break
-    return deduped
+
+    # 3. Vendor-aware preference (keeps similarity order within each group)
+    vendor = detect_vendor(query)
+    if vendor:
+        deduped.sort(key=lambda r: (0 if vendor in (r.get("iam_vendor") or "").lower() else 1, -float(r.get("similarity") or 0)))
+    return deduped[:k]
 
 
 def build_grounded_system(chunks: list[dict]) -> str:
@@ -143,7 +186,7 @@ async def chat_completions(request: Request):
         if query.strip():
             try:
                 emb = await embed_query(client, query)
-                chunks = await retrieve_chunks(client, emb)
+                chunks = await retrieve_chunks(client, emb, query)
                 log.info("Retrieved %d chunks for query: %.80s", len(chunks), query)
                 for i, c in enumerate(chunks, 1):
                     log.info("  [%d] sim=%.2f %s / %s", i, c.get("similarity", 0),

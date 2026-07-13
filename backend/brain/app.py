@@ -66,6 +66,9 @@ async def embed_query(client: httpx.AsyncClient, text: str) -> list[float]:
 
 
 async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], k: int = TOP_K) -> list[dict]:
+    # Over-fetch then dedupe: every proposal shares identical boilerplate sections
+    # (e.g., "Inspirit Vision operates through..."). Without dedup these crowd out
+    # specific content in the top-k. Fetch 3x, drop duplicate text, keep top k diverse.
     resp = await client.post(
         f"{SUPABASE_URL}/rest/v1/rpc/match_proposal_chunks",
         headers={
@@ -73,12 +76,21 @@ async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], k: 
             "Authorization": f"Bearer {SUPABASE_KEY}",
             "Content-Type": "application/json",
         },
-        # Pass embedding as a string to avoid PostgREST 300 Multiple Choices on vector params
-        json={"query_embedding": json.dumps(embedding, separators=(",", ":")), "match_count": k},
+        json={"query_embedding": json.dumps(embedding, separators=(",", ":")), "match_count": k * 3},
         timeout=30,
     )
     resp.raise_for_status()
-    return resp.json()
+    rows = resp.json() or []
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for r in rows:
+        key = (r.get("chunk_text") or "").strip()
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(r)
+        if len(deduped) >= k:
+            break
+    return deduped
 
 
 def build_grounded_system(chunks: list[dict]) -> str:
@@ -133,6 +145,9 @@ async def chat_completions(request: Request):
                 emb = await embed_query(client, query)
                 chunks = await retrieve_chunks(client, emb)
                 log.info("Retrieved %d chunks for query: %.80s", len(chunks), query)
+                for i, c in enumerate(chunks, 1):
+                    log.info("  [%d] sim=%.2f %s / %s", i, c.get("similarity", 0),
+                             c.get("client_name"), c.get("heading"))
             except Exception as e:
                 log.error("Retrieval failed (drafting ungrounded): %s", e)
 

@@ -15,13 +15,17 @@ name: sarvam
 
 services:
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    # Thin custom image (deploy/Dockerfile.webui) that strips Open WebUI's
+    # forced " (Open WebUI)" brand suffix so WEBUI_NAME shows cleanly.
+    build:
+      context: .
+      dockerfile: Dockerfile.webui
     container_name: sarvam-webui
     restart: always
     # Branding — persistent across rebuilds (was lost in the Sprint 3
     # docker-run -> compose migration because it was only a runtime env var).
     environment:
-      - WEBUI_NAME=Sarvam AI
+      - "WEBUI_NAME=Sarvam AI - Inspirit Vision Proposal Architect"
     ports:
       - "8080:8080"
     volumes:

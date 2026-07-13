@@ -1,16 +1,31 @@
-# Sarvam — Open WebUI with the forced " (Open WebUI)" brand suffix stripped.
+# Sarvam — Open WebUI with IV branding baked in.
 #
-# Open WebUI hardcodes, in backend/open_webui/env.py:
-#     WEBUI_NAME = os.getenv('WEBUI_NAME', 'Open WebUI')
-#     if WEBUI_NAME != 'Open WebUI':
-#         WEBUI_NAME += ' (Open WebUI)'
+# Thin layer on top of ghcr.io/open-webui/open-webui:main that:
+#   - replaces the logo/favicon assets with the Inspirit Vision icon mark
+#   - runs deploy/patch-webui.py to (a) strip the forced " (Open WebUI)"
+#     brand suffix from WEBUI_NAME and (b) force the sign-in logo to render
+#     centered above the title.
 #
-# So any custom WEBUI_NAME gets " (Open WebUI)" appended. We set our own brand
-# name via the WEBUI_NAME env var in docker-compose.yml and want it to show
-# cleanly, so we delete those two suffix lines. This self-adapts to the base
-# image version because sed runs against whatever env.py shipped in the image.
+# The custom name itself is set via the WEBUI_NAME env var in
+# docker-compose.yml. Rebuild with:  docker compose up -d --build
 FROM ghcr.io/open-webui/open-webui:main
-RUN sed -i "/if WEBUI_NAME != 'Open WebUI':/d" /app/backend/open_webui/env.py && \
-    sed -i "/WEBUI_NAME += ' (Open WebUI)'/d" /app/backend/open_webui/env.py && \
-    rm -f /app/backend/open_webui/__pycache__/env.*.pyc && \
-    grep -n "WEBUI_NAME" /app/backend/open_webui/env.py
+
+# --- IV logo + favicon assets (served from /static/...) --------------------
+# /static/favicon.png      -> sign-in page logo AND browser tab icon (app.html <link rel="icon">)
+# /static/logo.png         -> PWA manifest + sidebar
+# /static/favicon-96x96.png-> apple-touch / extra icon
+# /static/favicon-dark.png -> sign-in logo in dark mode
+# /static/favicon.ico      -> legacy shortcut icon
+COPY assets/iv-logo.png     /app/backend/open_webui/static/favicon.png
+COPY assets/iv-logo.png     /app/backend/open_webui/static/logo.png
+COPY assets/iv-logo-96.png  /app/backend/open_webui/static/favicon-96x96.png
+COPY assets/iv-logo-dark.png /app/backend/open_webui/static/favicon-dark.png
+COPY assets/iv-logo.ico     /app/backend/open_webui/static/favicon.ico
+
+# --- source patches --------------------------------------------------------
+COPY patch-webui.py /tmp/patch-webui.py
+RUN python3 /tmp/patch-webui.py && \
+    rm -f /app/backend/open_webui/__pycache__/env.*.pyc \
+          /app/backend/open_webui/__pycache__/main.*.pyc && \
+    echo "--- env.py WEBUI_NAME ---" && grep -n "WEBUI_NAME =" /app/backend/open_webui/env.py && \
+    echo "--- main.py auth_logo_position ---" && grep -n "auth_logo_position" /app/backend/open_webui/main.py

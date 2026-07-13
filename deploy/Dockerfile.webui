@@ -1,0 +1,16 @@
+# Sarvam — Open WebUI with the forced " (Open WebUI)" brand suffix stripped.
+#
+# Open WebUI hardcodes, in backend/open_webui/env.py:
+#     WEBUI_NAME = os.getenv('WEBUI_NAME', 'Open WebUI')
+#     if WEBUI_NAME != 'Open WebUI':
+#         WEBUI_NAME += ' (Open WebUI)'
+#
+# So any custom WEBUI_NAME gets " (Open WebUI)" appended. We set our own brand
+# name via the WEBUI_NAME env var in docker-compose.yml and want it to show
+# cleanly, so we delete those two suffix lines. This self-adapts to the base
+# image version because sed runs against whatever env.py shipped in the image.
+FROM ghcr.io/open-webui/open-webui:main
+RUN sed -i "/if WEBUI_NAME != 'Open WebUI':/d" /app/backend/open_webui/env.py && \
+    sed -i "/WEBUI_NAME += ' (Open WebUI)'/d" /app/backend/open_webui/env.py && \
+    rm -f /app/backend/open_webui/__pycache__/env.*.pyc && \
+    grep -n "WEBUI_NAME" /app/backend/open_webui/env.py

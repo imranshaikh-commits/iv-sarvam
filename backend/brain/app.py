@@ -73,7 +73,8 @@ async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], k: 
             "Authorization": f"Bearer {SUPABASE_KEY}",
             "Content-Type": "application/json",
         },
-        json={"query_embedding": embedding, "match_count": k},
+        # Pass embedding as a string to avoid PostgREST 300 Multiple Choices on vector params
+        json={"query_embedding": json.dumps(embedding, separators=(",", ":")), "match_count": k},
         timeout=30,
     )
     resp.raise_for_status()

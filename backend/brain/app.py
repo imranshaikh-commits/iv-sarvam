@@ -15,16 +15,21 @@ Endpoints:
   POST /v1/chat/completions
 """
 
+import asyncio
 import json
 import logging
 import os
 import re
 import time
 from difflib import SequenceMatcher
+from typing import Literal
 
 import httpx
+import instructor
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from openai import AsyncOpenAI
+from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("sarvam-brain")
@@ -38,6 +43,14 @@ EMBED_MODEL = "openai/text-embedding-3-small"   # must match scripts/ingest_v2.p
 DRAFT_MODEL = os.environ.get("DRAFT_MODEL", "deepseek/deepseek-v3.2-exp")
 TOP_K = int(os.environ.get("TOP_K", "8"))
 MODEL_ID = "sarvam-architect"
+
+# Compliance-matrix (Sprint 4 Phase 2)
+COMPLIANCE_CONCURRENCY = int(os.getenv("COMPLIANCE_CONCURRENCY", "3"))
+MAX_REQUIREMENTS = int(os.getenv("MAX_REQUIREMENTS", "20"))
+COMPLIANCE_TRIGGER = "compliance matrix"
+# Separate model for structured extraction/classification so it can be swapped via env
+# (without a code rebuild) if DeepSeek structured outputs misbehave on OpenRouter.
+STRUCTURED_MODEL = os.getenv("STRUCTURED_MODEL", DRAFT_MODEL)
 
 app = FastAPI(title="sarvam-brain")
 
@@ -160,6 +173,228 @@ def last_user_text(messages: list[dict]) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Compliance matrix (Sprint 4 Phase 2)
+# Paste RFP text -> structured requirement extraction (Instructor) ->
+# per-requirement coverage check against the proposal corpus.
+# ---------------------------------------------------------------------------
+
+class Requirement(BaseModel):
+    id: str = Field(..., description="Requirement identifier, e.g. REQ-001. Preserve RFP numbering if present.")
+    text: str = Field(..., description="The requirement statement, lightly cleaned, single testable claim.")
+    category: str | None = Field(None, description="Optional category: Security, Integration, Compliance, Performance, Support, etc.")
+
+
+class ExtractedRequirements(BaseModel):
+    requirements: list[Requirement]
+
+
+class EvidenceRef(BaseModel):
+    evidence_id: int = Field(..., description="The [N] evidence number from the provided EVIDENCE block (1-based).")
+    quote: str = Field(..., description="Short verbatim quote from that evidence chunk supporting the assessment.")
+    rationale: str = Field(..., description="Why this evidence is relevant to the requirement.")
+
+
+class CoverageEntry(BaseModel):
+    requirement_id: str
+    requirement_text: str = ""
+    status: Literal["covered", "partial", "missing", "needs-human"]
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    summary: str = Field(..., description="How IV's proposal corpus addresses this requirement, grounded in evidence.")
+    recommendation: str = Field(..., description="Concrete next step: reuse a cited approach, draft a new section, or escalate to SME.")
+
+
+class ComplianceMatrix(BaseModel):
+    entries: list[CoverageEntry]
+    overall_notes: str
+    truncated: bool = False
+
+
+_EXTRACT_PROMPT = (
+    "You extract compliance requirements from RFP / tender text as a structured list. "
+    "Preserve original numbering where present; otherwise assign REQ-001, REQ-002, ... "
+    "Each requirement must be a single, testable statement. Do NOT merge multiple requirements into one. "
+    "Output at most the requested number; if more exist, keep the most material ones."
+)
+
+_CLASSIFY_PROMPT = """You assess whether InspiritVision's past-proposal corpus COVERS a given RFP requirement.
+
+STATUS DEFINITIONS (choose exactly one):
+- covered: Direct internal evidence in the EVIDENCE clearly addresses the requirement.
+- partial: Related evidence exists, but a gap, version difference, or assumption remains.
+- missing: No relevant internal evidence found in the EVIDENCE.
+- needs-human: Ambiguous, or high-risk (regulatory, certification, pricing, product-version, legal, SLA), or evidence is insufficient to make a confident claim.
+
+HARD RULES (non-negotiable):
+1. NEVER mark a requirement "covered" or "partial" without at least one EvidenceRef whose quote is actually present (verbatim or near-verbatim) in the EVIDENCE block.
+2. evidence_id MUST be an integer in 1..N (the evidence numbers provided). Do NOT invent IDs.
+3. If the only matching evidence is generic methodology boilerplate (project phases, generic KT/testing steps) rather than specific technical content, prefer "needs-human" or "partial" — never "covered".
+4. For regulatory / compliance / certification / pricing / product-version / SLA claims, prefer "needs-human" unless the evidence states it explicitly.
+5. The summary and recommendation must reflect ONLY what the evidence supports. Do not invent capabilities, connectors, or commitments not in the evidence.
+6. This is a DRAFT internal compliance matrix for human review — never a client-ready commitment.
+"""
+
+
+_instructor_client = None
+
+
+def instructor_client():
+    """Lazy OpenAI-compatible client wrapped by Instructor.
+    OPENROUTER_STRUCTURED_OUTPUTS = OpenRouter's native structured-output path
+    (more reliable than generic JSON mode; OpenRouter handles model translation)."""
+    global _instructor_client
+    if _instructor_client is None:
+        oa = AsyncOpenAI(base_url=OPENROUTER_BASE, api_key=OPENROUTER_API_KEY)
+        _instructor_client = instructor.from_openai(oa, mode=instructor.Mode.OPENROUTER_STRUCTURED_OUTPUTS)
+    return _instructor_client
+
+
+async def extract_requirements(rfp_text: str) -> list[Requirement]:
+    ic = instructor_client()
+    resp: ExtractedRequirements = await ic.chat.completions.create(
+        model=STRUCTURED_MODEL,
+        temperature=0,
+        max_retries=2,
+        response_model=ExtractedRequirements,
+        messages=[
+            {"role": "system", "content": _EXTRACT_PROMPT},
+            {"role": "user", "content": f"Extract up to {MAX_REQUIREMENTS} compliance requirements from the following RFP text.\n\nRFP TEXT:\n{rfp_text[:12000]}"},
+        ],
+    )
+    return resp.requirements
+
+
+def build_evidence_block(chunks: list[dict]) -> str:
+    lines = []
+    for i, c in enumerate(chunks, 1):
+        head = c.get("heading") or "untitled section"
+        lines.append(
+            f"[{i}] (client: {c.get('client_name')}, vendor: {c.get('iam_vendor')}, section: {head})\n{c.get('chunk_text', '')}"
+        )
+    return "\n\n".join(lines) if lines else "(no relevant evidence found in the proposal corpus)"
+
+
+async def classify_coverage(req: Requirement, chunks: list[dict]) -> CoverageEntry:
+    ic = instructor_client()
+    entry: CoverageEntry = await ic.chat.completions.create(
+        model=STRUCTURED_MODEL,
+        temperature=0,
+        max_retries=2,
+        response_model=CoverageEntry,
+        messages=[
+            {"role": "system", "content": _CLASSIFY_PROMPT},
+            {"role": "user", "content": f"REQUIREMENT {req.id}:\n{req.text}\n\n=== EVIDENCE (from IV's past proposals) ===\n{build_evidence_block(chunks)}"},
+        ],
+    )
+    entry.requirement_id = req.id
+    entry.requirement_text = req.text
+    return validate_coverage(entry, chunks)
+
+
+def _norm_for_quote(s: str) -> str:
+    """Normalize for fuzzy quote-containment checks (lowercase, alnum+space, collapsed)."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", (s or "").lower())).strip()
+
+
+def validate_coverage(entry: CoverageEntry, chunks: list[dict]) -> CoverageEntry:
+    """Keep only evidence_refs whose quote is actually present in the cited chunk.
+    This is the core anti-hallucination rail: the model cannot mark a requirement
+    covered/partial on an invented quote — the quote must appear (normalized) in the
+    chunk at that evidence_id, or the citation is dropped and the status downgraded."""
+    valid: list[EvidenceRef] = []
+    for ref in entry.evidence_refs:
+        idx = (ref.evidence_id - 1) if isinstance(ref.evidence_id, int) else -1
+        if 0 <= idx < len(chunks):
+            quote = _norm_for_quote(ref.quote)
+            chunk = _norm_for_quote(chunks[idx].get("chunk_text", ""))
+            if len(quote) >= 12 and quote in chunk:
+                valid.append(ref)
+    entry.evidence_refs = valid
+    if entry.status in ("covered", "partial") and not valid:
+        entry.status = "needs-human"
+        note = "[Downgraded to needs-human: no valid evidence quote found in the cited chunk.]"
+        entry.summary = f"{entry.summary} {note}".strip()
+    return entry
+
+
+async def run_compliance_matrix(
+    client: httpx.AsyncClient, rfp_text: str, requirements: list[str] | None = None, top_k: int = TOP_K
+) -> ComplianceMatrix:
+    truncated = False
+    if requirements:
+        reqs = [Requirement(id=f"REQ-{i:03d}", text=t) for i, t in enumerate(requirements[:MAX_REQUIREMENTS], 1)]
+        truncated = len(requirements) > MAX_REQUIREMENTS
+    else:
+        reqs = await extract_requirements(rfp_text)
+        if len(reqs) > MAX_REQUIREMENTS:
+            reqs = reqs[:MAX_REQUIREMENTS]
+            truncated = True
+
+    sem = asyncio.Semaphore(COMPLIANCE_CONCURRENCY)
+
+    async def process(req: Requirement) -> CoverageEntry:
+        async with sem:
+            try:
+                emb = await embed_query(client, req.text)
+                chunks = await retrieve_chunks(client, emb, req.text, k=top_k)
+                log.info("Compliance %s: retrieved %d chunks", req.id, len(chunks))
+                return await classify_coverage(req, chunks)
+            except Exception as e:
+                log.error("Compliance classify failed for %s: %s", req.id, e)
+                return CoverageEntry(
+                    requirement_id=req.id, requirement_text=req.text, status="needs-human",
+                    evidence_refs=[], summary=f"Classification failed: {e}",
+                    recommendation="Escalate to SME and retry.",
+                )
+
+    entries = await asyncio.gather(*[process(r) for r in reqs])
+
+    counts = {s: sum(1 for e in entries if e.status == s) for s in ("covered", "partial", "missing", "needs-human")}
+    overall = (
+        f"DRAFT internal compliance matrix — {len(entries)} requirements assessed. "
+        f"Covered {counts['covered']}, partial {counts['partial']}, missing {counts['missing']}, needs-human {counts['needs-human']}. "
+        f"For human review only; not a client-ready compliance commitment."
+    )
+    if truncated:
+        overall += f" (Truncated: only the first {MAX_REQUIREMENTS} requirements assessed.)"
+    return ComplianceMatrix(entries=list(entries), overall_notes=overall, truncated=truncated)
+
+
+def render_matrix_markdown(matrix: ComplianceMatrix) -> str:
+    out = ["# DRAFT Compliance Matrix", "", matrix.overall_notes, "",
+           "| Req | Requirement | Status | Evidence | Summary | Next step |",
+           "|---|---|---|---|---|---|"]
+    label = {"covered": "Covered", "partial": "Partial", "missing": "Missing", "needs-human": "Needs human"}
+    for e in matrix.entries:
+        clean = lambda s: (s or "").replace("|", "/").replace("\n", " ").strip()
+        req = clean(e.requirement_text)[:100]
+        ev = "; ".join(f'[{r.evidence_id}] \"{clean(r.quote)[:90]}\"' for r in e.evidence_refs) or "—"
+        out.append(f"| {e.requirement_id} | {req} | {label[e.status]} | {ev} | {clean(e.summary)[:200]} | {clean(e.recommendation)[:200]} |")
+    out += ["", "> Draft internal aid. Every 'covered'/'partial' must be verified by a human against the cited evidence before any client-facing use."]
+    return "\n".join(out)
+
+
+def _sse_chunk(content: str) -> str:
+    return "data: " + json.dumps({
+        "id": "chatcmpl-sarvam-compliance",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": MODEL_ID,
+        "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+    }) + "\n\n"
+
+
+def _chat_completion_json(content: str) -> dict:
+    return {
+        "id": "chatcmpl-sarvam-compliance",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": MODEL_ID,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "model": MODEL_ID, "draft_model": DRAFT_MODEL}
@@ -173,12 +408,60 @@ async def models():
     }
 
 
+@app.post("/v1/compliance-matrix")
+async def compliance_matrix_endpoint(request: Request):
+    """Paste RFP text (or explicit requirements) -> structured compliance matrix.
+    Body: {"rfp_text": "...", "requirements": ["..."], "top_k": 8}
+    Returns: {"matrix": <ComplianceMatrix>, "markdown": "..."}
+    """
+    body = await request.json()
+    rfp_text = body.get("rfp_text", "") or ""
+    requirements = body.get("requirements")
+    top_k = int(body.get("top_k", TOP_K))
+    async with httpx.AsyncClient() as client:
+        matrix = await run_compliance_matrix(client, rfp_text, requirements, top_k=top_k)
+    return JSONResponse({"matrix": matrix.model_dump(), "markdown": render_matrix_markdown(matrix)})
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await request.json()
     messages = body.get("messages", [])
     stream = bool(body.get("stream", False))
     query = last_user_text(messages)
+
+    # Compliance-matrix chat trigger (explicit prefix, no fuzzy detection):
+    #   compliance matrix:
+    #   <paste RFP text / requirements>
+    q = query.strip()
+    if q.lower().startswith(COMPLIANCE_TRIGGER):
+        rfp_text = q[len(COMPLIANCE_TRIGGER):].lstrip(": \n\t")
+        instruction = ("Paste your RFP text after `compliance matrix:`. For example:\n"
+                       "````\ncompliance matrix:\n<RFP requirements here>\n````\n"
+                       "Or POST to /v1/compliance-matrix with JSON {\"rfp_text\": \"...\"}.")
+
+        if stream:
+            # Send the keep-alive comment FIRST, then run the (multi-call) pipeline
+            # inside the generator, so the client doesn't sit silently waiting.
+            async def sse():
+                yield ": building compliance matrix\n\n"
+                if not rfp_text.strip():
+                    content = instruction
+                else:
+                    async with httpx.AsyncClient() as cm_client:
+                        matrix = await run_compliance_matrix(cm_client, rfp_text, None)
+                    content = render_matrix_markdown(matrix)
+                for i in range(0, len(content), 3000):
+                    yield _sse_chunk(content[i:i + 3000])
+                yield "data: [DONE]\n\n"
+            return StreamingResponse(sse(), media_type="text/event-stream")
+
+        # Non-streaming: run pipeline, return as a single chat completion.
+        if not rfp_text.strip():
+            return JSONResponse(_chat_completion_json(instruction))
+        async with httpx.AsyncClient() as cm_client:
+            matrix = await run_compliance_matrix(cm_client, rfp_text, None)
+        return JSONResponse(_chat_completion_json(render_matrix_markdown(matrix)))
 
     async with httpx.AsyncClient() as client:
         # 1-2. Embed + retrieve (fail soft: draft without evidence rather than 500)

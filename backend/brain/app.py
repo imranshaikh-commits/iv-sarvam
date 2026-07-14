@@ -226,12 +226,13 @@ STATUS DEFINITIONS (choose exactly one):
 - needs-human: Ambiguous, or high-risk (regulatory, certification, pricing, product-version, legal, SLA), or evidence is insufficient to make a confident claim.
 
 HARD RULES (non-negotiable):
-1. NEVER mark a requirement "covered" or "partial" without at least one EvidenceRef whose quote is actually present (verbatim or near-verbatim) in the EVIDENCE block.
-2. evidence_id MUST be an integer in 1..N (the evidence numbers provided). Do NOT invent IDs.
-3. If the only matching evidence is generic methodology boilerplate (project phases, generic KT/testing steps) rather than specific technical content, prefer "needs-human" or "partial" — never "covered".
-4. For regulatory / compliance / certification / pricing / product-version / SLA claims, prefer "needs-human" unless the evidence states it explicitly.
-5. The summary and recommendation must reflect ONLY what the evidence supports. Do not invent capabilities, connectors, or commitments not in the evidence.
-6. This is a DRAFT internal compliance matrix for human review — never a client-ready commitment.
+1. To mark a requirement "covered" or "partial" you MUST include at least one EvidenceRef. The quote field MUST be an EXACT substring copied character-for-character from the EVIDENCE block — do NOT paraphrase, reword, summarize, or conflate multiple chunks. Paraphrased quotes will be rejected.
+2. If you cannot find an exact verbatim quote that supports the requirement, set status to "needs-human" and leave evidence_refs empty. Do NOT argue for "covered" in the summary if you have no verbatim quote.
+3. evidence_id MUST be the [N] number of the chunk you copied the quote from. Do NOT invent or mismatch IDs.
+4. If the only matching evidence is generic methodology boilerplate (project phases, generic KT/testing steps) rather than specific technical content, prefer "needs-human" or "partial" — never "covered".
+5. For regulatory / compliance / certification / pricing / product-version / SLA claims, prefer "needs-human" unless the evidence states it explicitly (then "covered" is allowed, still pending human verification).
+6. The summary and recommendation must reflect ONLY what the evidence supports. Do not invent capabilities, connectors, or commitments not in the evidence. The recommendation must be a concrete next step, NOT a status word.
+7. This is a DRAFT internal compliance matrix for human review — never a client-ready commitment.
 """
 
 
@@ -332,6 +333,10 @@ def validate_coverage(entry: CoverageEntry, chunks: list[dict]) -> CoverageEntry
         banner = ("[DOWNGRADED to needs-human: the cited quotes could not be verified "
                    "against the retrieved evidence — treat as unverified.]")
         entry.summary = f"{banner} {entry.summary}".strip()
+        entry.recommendation = (
+            "Escalate to SME: the model could not produce a verbatim evidence quote — "
+            "re-check retrieval for this requirement and confirm coverage manually."
+        )
     return entry
 
 

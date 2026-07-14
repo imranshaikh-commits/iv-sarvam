@@ -296,24 +296,42 @@ def _norm_for_quote(s: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", (s or "").lower())).strip()
 
 
+def _significant_tokens(s: str) -> set:
+    """Content-bearing tokens (len>=4) of a string, for overlap matching."""
+    return {w for w in _norm_for_quote(s).split() if len(w) >= 4}
+
+
 def validate_coverage(entry: CoverageEntry, chunks: list[dict]) -> CoverageEntry:
-    """Keep only evidence_refs whose quote is actually present in the cited chunk.
-    This is the core anti-hallucination rail: the model cannot mark a requirement
-    covered/partial on an invented quote — the quote must appear (normalized) in the
-    chunk at that evidence_id, or the citation is dropped and the status downgraded."""
+    """Keep only evidence_refs whose quote is actually grounded in the cited chunk.
+
+    Core anti-hallucination rail: a requirement can be 'covered'/'partial' only if the
+    cited quote is verifiably drawn from the chunk at that evidence_id. We accept a ref if
+    EITHER (a) the normalized quote appears verbatim in the chunk, OR (b) a strong
+    majority (>=0.6) of the quote's significant tokens occur in the chunk — this catches
+    faithful paraphrases while still blocking fabrication (a quote about terms absent from
+    the chunk has ~0 overlap and is rejected). Retrieval already ensured the chunk is
+    topically relevant; this check ensures the quote is grounded in its actual text."""
     valid: list[EvidenceRef] = []
     for ref in entry.evidence_refs:
         idx = (ref.evidence_id - 1) if isinstance(ref.evidence_id, int) else -1
-        if 0 <= idx < len(chunks):
-            quote = _norm_for_quote(ref.quote)
-            chunk = _norm_for_quote(chunks[idx].get("chunk_text", ""))
-            if len(quote) >= 12 and quote in chunk:
-                valid.append(ref)
+        if not (0 <= idx < len(chunks)):
+            continue
+        quote = _norm_for_quote(ref.quote)
+        if len(quote) < 12:
+            continue
+        sig = _significant_tokens(ref.quote)
+        if not sig:
+            continue
+        chunk_text = _norm_for_quote(chunks[idx].get("chunk_text", ""))
+        overlap = len(sig & set(chunk_text.split())) / len(sig)
+        if quote in chunk_text or overlap >= 0.6:
+            valid.append(ref)
     entry.evidence_refs = valid
     if entry.status in ("covered", "partial") and not valid:
         entry.status = "needs-human"
-        note = "[Downgraded to needs-human: no valid evidence quote found in the cited chunk.]"
-        entry.summary = f"{entry.summary} {note}".strip()
+        banner = ("[DOWNGRADED to needs-human: the cited quotes could not be verified "
+                   "against the retrieved evidence — treat as unverified.]")
+        entry.summary = f"{banner} {entry.summary}".strip()
     return entry
 
 

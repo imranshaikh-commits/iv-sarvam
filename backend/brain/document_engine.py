@@ -28,6 +28,7 @@ from typing import Awaitable, Callable, Optional
 import httpx
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
@@ -167,7 +168,7 @@ async def draft_section(
     content = (content or "").strip()
     if needs_sme_review and not content.startswith("[SME REVIEW"):
         content = (
-            f"{SME_REVIEW_MARKER}: weak evidence] Retrieval found "
+            f"[SME REVIEW: weak evidence] Retrieval found "
             f"{'no' if not chunks else 'only low-similarity'} supporting evidence "
             f"(max similarity {max_similarity:.2f}). Verify and expand with an SME.\n\n"
             + content
@@ -191,6 +192,37 @@ _BODY_FONT = "Calibri"
 _TITLE_COLOR = RGBColor(0x1F, 0x3A, 0x5F)  # deep navy
 _DRAFT_COLOR = RGBColor(0xB0, 0x00, 0x00)  # warning red
 _CITATION_RE = re.compile(r"\[(\d+)\]")
+
+
+
+def _add_toc_field(document: Document) -> None:
+    """Insert a real, F9-refreshable Word Table of Contents field.
+
+    Until the user updates the field in Word (right-click -> Update Field, or
+    F9), Word shows the instructional placeholder text below.
+    """
+    para = document.add_paragraph()
+    run = para.add_run()
+    r = run._r
+    fld_begin = OxmlElement("w:fldChar")
+    fld_begin.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = r'TOC \o "1-3" \h \z \u'
+    fld_sep = OxmlElement("w:fldChar")
+    fld_sep.set(qn("w:fldCharType"), "separate")
+    placeholder = OxmlElement("w:t")
+    placeholder.text = (
+        "Right-click here and choose 'Update Field' (or press F9) to build the "
+        "table of contents from the section headings below."
+    )
+    fld_end = OxmlElement("w:fldChar")
+    fld_end.set(qn("w:fldCharType"), "end")
+    r.append(fld_begin)
+    r.append(instr)
+    r.append(fld_sep)
+    r.append(placeholder)
+    r.append(fld_end)
 
 
 def _set_base_font(document: Document) -> None:
@@ -312,20 +344,9 @@ def assemble_docx(
 
     document.add_page_break()
 
-    # --- Table of contents placeholder -------------------------------------
+    # --- Table of contents (real, refreshable Word TOC field) --------------
     document.add_heading("Table of Contents", level=1)
-    toc_note = document.add_paragraph()
-    tn = toc_note.add_run(
-        "This table of contents is a placeholder. In Microsoft Word, select "
-        "References → Table of Contents (or press F9) to generate it from the headings below."
-    )
-    tn.italic = True
-    tn.font.size = Pt(10)
-    for sec in sections:
-        document.add_paragraph(sec.get("title", "Untitled"), style="List Number")
-    if compliance_markdown:
-        document.add_paragraph("Compliance Matrix", style="List Number")
-    document.add_paragraph("Citation Appendix", style="List Number")
+    _add_toc_field(document)
     document.add_page_break()
 
     # --- Sections -----------------------------------------------------------

@@ -472,7 +472,14 @@ async def generate_proposal_endpoint(request: Request):
     iam_vendor = (body.get("iam_vendor") or "").strip() or None
     sections = body.get("sections")
     include_compliance_matrix = bool(body.get("include_compliance_matrix", False))
-    top_k = int(body.get("top_k", TOP_K))
+    try:
+        top_k = int(body.get("top_k", TOP_K))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "top_k must be an integer"}, status_code=400)
+    if top_k < 1 or top_k > 20:
+        return JSONResponse({"error": "top_k must be between 1 and 20"}, status_code=400)
+    if sections is not None and not isinstance(sections, list):
+        return JSONResponse({"error": "sections must be a list of strings"}, status_code=400)
 
     if proposal_type not in {"implementation", "mss"}:
         return JSONResponse({"error": "proposal_type must be 'implementation' or 'mss'"}, status_code=400)

@@ -27,9 +27,14 @@ from typing import Literal
 import httpx
 import instructor
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
+
+# Sprint 5 document-production engine. Safe top-level import: document_engine
+# does NOT import app (it receives the brain helpers as parameters), so there
+# is no circular dependency.
+from document_engine import generate_proposal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("sarvam-brain")
@@ -444,6 +449,68 @@ async def compliance_matrix_endpoint(request: Request):
     async with httpx.AsyncClient() as client:
         matrix = await run_compliance_matrix(client, rfp_text, requirements, top_k=top_k)
     return JSONResponse({"matrix": matrix.model_dump(), "markdown": render_matrix_markdown(matrix)})
+
+
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+@app.post("/v1/generate-proposal")
+async def generate_proposal_endpoint(request: Request):
+    """Sprint 5 — turn an RFP + context into a downloadable DOCX proposal draft.
+
+    Body: {"rfp_text","client_name","proposal_type":"implementation|mss",
+           "iam_vendor","sections":[optional],"include_compliance_matrix":bool,"top_k":int}
+    Returns: a DOCX attachment, or {"error": ...} with 400 on bad input.
+
+    NOTE: does NOT persist to the generated_proposals table (auth/user id
+    unresolved). It only streams the DOCX back for human review.
+    """
+    body = await request.json()
+    rfp_text = (body.get("rfp_text") or "").strip()
+    client_name = (body.get("client_name") or "").strip()
+    proposal_type = (body.get("proposal_type") or "").strip().lower()
+    iam_vendor = (body.get("iam_vendor") or "").strip() or None
+    sections = body.get("sections")
+    include_compliance_matrix = bool(body.get("include_compliance_matrix", False))
+    top_k = int(body.get("top_k", TOP_K))
+
+    if proposal_type not in {"implementation", "mss"}:
+        return JSONResponse({"error": "proposal_type must be 'implementation' or 'mss'"}, status_code=400)
+    if not client_name:
+        return JSONResponse({"error": "client_name is required"}, status_code=400)
+    if not rfp_text:
+        return JSONResponse({"error": "rfp_text is required"}, status_code=400)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            result = await generate_proposal(
+                client,
+                rfp_text=rfp_text,
+                client_name=client_name,
+                proposal_type=proposal_type,
+                iam_vendor=iam_vendor,
+                embed_fn=embed_query,
+                retrieve_fn=retrieve_chunks,
+                build_grounded_system_fn=build_grounded_system,
+                run_compliance_matrix_fn=run_compliance_matrix,
+                render_matrix_markdown_fn=render_matrix_markdown,
+                sections=sections,
+                include_compliance_matrix=include_compliance_matrix,
+                top_k=top_k,
+            )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        log.error("generate-proposal failed: %s", e)
+        return JSONResponse({"error": f"proposal generation failed: {e}"}, status_code=500)
+
+    filename = result["filename"]
+    log.info("Generated proposal %s (%d sections)", filename, len(result["sections_meta"]))
+    return Response(
+        content=result["docx_bytes"],
+        media_type=DOCX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/v1/chat/completions")

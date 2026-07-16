@@ -27,11 +27,11 @@ from typing import Awaitable, Callable, Optional
 
 import httpx
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
+import branding
 from proposal_templates import (
     COMPLIANCE_SECTION_ID,
     SectionSpec,
@@ -235,9 +235,7 @@ async def draft_section(
 # DOCX assembly
 # ---------------------------------------------------------------------------
 
-_BODY_FONT = "Calibri"
-_TITLE_COLOR = RGBColor(0x1F, 0x3A, 0x5F)  # deep navy
-_DRAFT_COLOR = RGBColor(0xB0, 0x00, 0x00)  # warning red
+_DRAFT_COLOR = RGBColor(0xB0, 0x00, 0x00)  # warning red (SME-review flag)
 _CITATION_RE = re.compile(r"\[(\d+)\]")
 
 
@@ -272,43 +270,6 @@ def _add_toc_field(document: Document) -> None:
     r.append(fld_end)
 
 
-def _set_base_font(document: Document) -> None:
-    style = document.styles["Normal"]
-    style.font.name = _BODY_FONT
-    style.font.size = Pt(11)
-    # Ensure the east-asian font mapping also uses the base font (docx quirk).
-    rpr = style.element.get_or_add_rPr()
-    rfonts = rpr.get_or_add_rFonts()
-    rfonts.set(qn("w:ascii"), _BODY_FONT)
-    rfonts.set(qn("w:hAnsi"), _BODY_FONT)
-
-
-def _add_page_number_footer(document: Document) -> None:
-    """Footer with 'DRAFT — Internal Use Only' and a live Page N field."""
-    section = document.sections[0]
-    footer = section.footer
-    footer.is_linked_to_previous = False
-    para = footer.paragraphs[0]
-    para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    para.text = ""
-
-    run = para.add_run("DRAFT — Internal Use Only  |  Page ")
-    run.font.size = Pt(8)
-    run.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
-
-    # PAGE field: <w:fldSimple w:instr="PAGE">
-    fld = para.add_run()
-    fld.font.size = Pt(8)
-    fld.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
-    fldchar_begin = fld._r.makeelement(qn("w:fldChar"), {qn("w:fldCharType"): "begin"})
-    instr = fld._r.makeelement(qn("w:instrText"), {qn("xml:space"): "preserve"})
-    instr.text = "PAGE"
-    fldchar_end = fld._r.makeelement(qn("w:fldChar"), {qn("w:fldCharType"): "end"})
-    fld._r.append(fldchar_begin)
-    fld._r.append(instr)
-    fld._r.append(fldchar_end)
-
-
 def _add_body_paragraphs(document: Document, text: str) -> None:
     """Add body text, preserving [N] citation markers, splitting on blank lines."""
     for block in re.split(r"\n\s*\n", text.strip()):
@@ -333,73 +294,40 @@ def assemble_docx(
     metadata: dict,
     sections: list[dict],
     compliance_markdown: Optional[str] = None,
+    client_logo_path: Optional[str] = None,
 ) -> bytes:
-    """Build a professional Word document and return its bytes.
+    """Build a professional, IV-branded Word document and return its bytes.
 
-    metadata keys: client_name, proposal_type, iam_vendor (optional), generated_at (optional).
+    metadata keys: client_name, proposal_type, iam_vendor (optional),
+    generated_at (optional), version (optional).
+
+    client_logo_path: optional path to a client logo image embedded in the
+    title-page box. When None (default) a bordered "Client Logo" placeholder is
+    drawn instead. Logos are never sourced online in this pass.
     """
-    client_name = metadata.get("client_name") or "Client"
-    proposal_type = metadata.get("proposal_type") or "implementation"
-    iam_vendor = metadata.get("iam_vendor") or ""
-    generated_at = metadata.get("generated_at") or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    metadata = {
+        **metadata,
+        "generated_at": metadata.get("generated_at")
+        or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+    }
 
     document = Document()
-    _set_base_font(document)
-    _add_page_number_footer(document)
+    branding.configure_base_styles(document)
+    branding.apply_header_footer(document, metadata.get("client_name") or "Client")
 
-    # --- Title page ---------------------------------------------------------
-    for _ in range(3):
-        document.add_paragraph()
-    title = document.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    trun = title.add_run(f"{proposal_type.upper()} PROPOSAL")
-    trun.bold = True
-    trun.font.size = Pt(28)
-    trun.font.color.rgb = _TITLE_COLOR
-
-    subtitle = document.add_paragraph()
-    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    srun = subtitle.add_run(f"Prepared for {client_name}")
-    srun.font.size = Pt(18)
-    srun.font.color.rgb = _TITLE_COLOR
-
-    if iam_vendor:
-        vend = document.add_paragraph()
-        vend.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        vrun = vend.add_run(f"IAM Platform: {iam_vendor}")
-        vrun.font.size = Pt(13)
-
-    document.add_paragraph()
-    draft = document.add_paragraph()
-    draft.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    drun = draft.add_run("DRAFT — FOR INTERNAL REVIEW ONLY")
-    drun.bold = True
-    drun.font.size = Pt(14)
-    drun.font.color.rgb = _DRAFT_COLOR
-
-    ts = document.add_paragraph()
-    ts.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    tsrun = ts.add_run(f"Generated by Sarvam on {generated_at}")
-    tsrun.italic = True
-    tsrun.font.size = Pt(10)
-
-    prep = document.add_paragraph()
-    prep.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    prun = prep.add_run("Inspirit Vision — AI Proposal Architect")
-    prun.font.size = Pt(10)
-    prun.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
-
+    # --- Title page (IV branding) ------------------------------------------
+    branding.add_title_page(document, metadata, client_logo_path=client_logo_path)
     document.add_page_break()
 
     # --- Table of contents (real, refreshable Word TOC field) --------------
-    document.add_heading("Table of Contents", level=1)
+    branding.add_section_heading(document, "Table of Contents")
     _add_toc_field(document)
     document.add_page_break()
 
     # --- Sections -----------------------------------------------------------
     aggregated_assumptions: list[str] = []
     for sec in sections:
-        heading = document.add_heading(sec.get("title", "Untitled"), level=1)
+        heading = branding.add_section_heading(document, sec.get("title", "Untitled"))
         if sec.get("needs_sme_review"):
             flag = heading.add_run("   [SME REVIEW REQUIRED]")
             flag.font.size = Pt(10)
@@ -416,7 +344,7 @@ def assemble_docx(
     # --- Assumptions & Open Questions (ensure one always exists) ------------
     has_dedicated_assumptions = any("assumption" in (s.get("id") or "").lower() for s in sections)
     if not has_dedicated_assumptions:
-        document.add_heading("Assumptions & Open Questions", level=1)
+        branding.add_section_heading(document, "Assumptions & Open Questions")
         if aggregated_assumptions:
             for a in aggregated_assumptions:
                 document.add_paragraph(a, style="List Bullet")
@@ -430,12 +358,12 @@ def assemble_docx(
     # --- Compliance Matrix (optional) --------------------------------------
     if compliance_markdown:
         document.add_page_break()
-        document.add_heading("Compliance Matrix", level=1)
+        branding.add_section_heading(document, "Compliance Matrix")
         _add_markdown_ish(document, compliance_markdown)
 
     # --- Citation Appendix --------------------------------------------------
     document.add_page_break()
-    document.add_heading("Citation Appendix", level=1)
+    branding.add_section_heading(document, "Citation Appendix")
     intro = document.add_paragraph()
     irun = intro.add_run(
         "Each [N] marker in the draft above maps to a source chunk from Inspirit Vision's "

@@ -7,7 +7,7 @@ Flow per user message:
   1. Embed the query  (openai/text-embedding-3-small via OpenRouter — MUST match ingest)
   2. Retrieve top-k chunks from Supabase pgvector (match_proposal_chunks RPC)
   3. Build grounded system prompt with numbered evidence + safety rails
-  4. Draft with DeepSeek via OpenRouter (streaming or non-streaming)
+  4. Draft with GLM 5.2 (Qwen fallback) via OpenRouter (streaming or non-streaming)
 
 Endpoints:
   GET  /health
@@ -45,7 +45,10 @@ SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
 EMBED_MODEL = "openai/text-embedding-3-small"   # must match scripts/ingest_v2.py
-DRAFT_MODEL = os.environ.get("DRAFT_MODEL", "deepseek/deepseek-v3.2-exp")
+# LLM models are HARDCODED (no env override) so EC2 env cannot silently pin an
+# old model. Every LLM call site tries the primary, then falls back to Qwen.
+PRIMARY_LLM_MODEL = "z-ai/glm-5.2"
+FALLBACK_LLM_MODEL = "qwen/qwen3-235b-a22b-2507"
 TOP_K = int(os.environ.get("TOP_K", "8"))
 MODEL_ID = "sarvam-architect"
 
@@ -53,9 +56,8 @@ MODEL_ID = "sarvam-architect"
 COMPLIANCE_CONCURRENCY = int(os.getenv("COMPLIANCE_CONCURRENCY", "3"))
 MAX_REQUIREMENTS = int(os.getenv("MAX_REQUIREMENTS", "20"))
 COMPLIANCE_TRIGGER = "compliance matrix"
-# Separate model for structured extraction/classification so it can be swapped via env
-# (without a code rebuild) if DeepSeek structured outputs misbehave on OpenRouter.
-STRUCTURED_MODEL = os.getenv("STRUCTURED_MODEL", DRAFT_MODEL)
+# Structured extraction/classification uses the same hardcoded primary model.
+STRUCTURED_MODEL = PRIMARY_LLM_MODEL
 
 app = FastAPI(title="sarvam-brain")
 
@@ -256,17 +258,35 @@ def instructor_client():
     return _instructor_client
 
 
-async def extract_requirements(rfp_text: str) -> list[Requirement]:
+async def _structured_with_fallback(response_model, messages: list[dict], **kwargs):
+    """Instructor structured call: try PRIMARY_LLM_MODEL, then FALLBACK_LLM_MODEL
+    on ANY exception (instructor validation, HTTP, schema). Keep max_retries low
+    (caller sets it) so instructor doesn't multi-retry a bad model before we fall
+    back to the other one."""
     ic = instructor_client()
-    resp: ExtractedRequirements = await ic.chat.completions.create(
-        model=STRUCTURED_MODEL,
-        temperature=0,
-        max_retries=2,
-        response_model=ExtractedRequirements,
+    for model in (PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL):
+        try:
+            result = await ic.chat.completions.create(
+                model=model, response_model=response_model, messages=messages, **kwargs
+            )
+            log.info("Structured LLM model=%s", model)
+            return result
+        except Exception as e:
+            if model == FALLBACK_LLM_MODEL:
+                raise
+            log.warning("Structured call failed on primary %s (%s); falling back to %s",
+                        model, e, FALLBACK_LLM_MODEL)
+
+
+async def extract_requirements(rfp_text: str) -> list[Requirement]:
+    resp: ExtractedRequirements = await _structured_with_fallback(
+        ExtractedRequirements,
         messages=[
             {"role": "system", "content": _EXTRACT_PROMPT},
             {"role": "user", "content": f"Extract up to {MAX_REQUIREMENTS} compliance requirements from the following RFP text.\n\nRFP TEXT:\n{rfp_text[:12000]}"},
         ],
+        temperature=0,
+        max_retries=1,
     )
     return resp.requirements
 
@@ -282,9 +302,12 @@ def build_evidence_block(chunks: list[dict]) -> str:
 
 
 async def classify_coverage(req: Requirement, chunks: list[dict]) -> CoverageEntry:
-    ic = instructor_client()
-    entry: CoverageEntry = await ic.chat.completions.create(
-        model=STRUCTURED_MODEL,
+    entry: CoverageEntry = await _structured_with_fallback(
+        CoverageEntry,
+        messages=[
+            {"role": "system", "content": _CLASSIFY_PROMPT},
+            {"role": "user", "content": f"REQUIREMENT {req.id}:\n{req.text}\n\n=== EVIDENCE (from IV's past proposals) ===\n{build_evidence_block(chunks)}"},
+        ],
         temperature=0,
         max_tokens=768,
         # LOW frequency_penalty: caps runaway repetition without penalizing the
@@ -293,11 +316,6 @@ async def classify_coverage(req: Requirement, chunks: list[dict]) -> CoverageEnt
         # latency/cost), so retries are dropped to 1.
         frequency_penalty=0.2,
         max_retries=1,
-        response_model=CoverageEntry,
-        messages=[
-            {"role": "system", "content": _CLASSIFY_PROMPT},
-            {"role": "user", "content": f"REQUIREMENT {req.id}:\n{req.text}\n\n=== EVIDENCE (from IV's past proposals) ===\n{build_evidence_block(chunks)}"},
-        ],
     )
     entry.requirement_id = req.id
     entry.requirement_text = req.text
@@ -451,7 +469,8 @@ def _chat_completion_json(content: str) -> dict:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model": MODEL_ID, "draft_model": DRAFT_MODEL}
+    return {"status": "ok", "model": MODEL_ID,
+            "primary_model": PRIMARY_LLM_MODEL, "fallback_model": FALLBACK_LLM_MODEL}
 
 
 @app.get("/v1/models")
@@ -605,7 +624,7 @@ async def chat_completions(request: Request):
             m for m in messages if m.get("role") != "system"
         ]
         payload = {
-            "model": DRAFT_MODEL,
+            "model": PRIMARY_LLM_MODEL,
             "messages": out_messages,
             "stream": stream,
             "temperature": body.get("temperature", 0.4),
@@ -613,20 +632,48 @@ async def chat_completions(request: Request):
         headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
 
         if not stream:
-            resp = await client.post(f"{OPENROUTER_BASE}/chat/completions", headers=headers,
-                                     json=payload, timeout=180)
-            data = resp.json()
-            if "model" in data:
+            # Try primary, fall back to Qwen on 4xx/5xx or network/timeout error.
+            data, status_code = None, 502
+            for model in (PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL):
+                try:
+                    resp = await client.post(f"{OPENROUTER_BASE}/chat/completions", headers=headers,
+                                             json={**payload, "model": model}, timeout=180)
+                    resp.raise_for_status()
+                    data, status_code = resp.json(), resp.status_code
+                    log.info("OpenRouter chat model=%s", model)
+                    break
+                except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                    log.warning("OpenRouter chat failed on %s (%s)%s", model, e,
+                                "" if model == FALLBACK_LLM_MODEL else f"; falling back to {FALLBACK_LLM_MODEL}")
+                    if model == FALLBACK_LLM_MODEL:
+                        if isinstance(e, httpx.HTTPStatusError):
+                            data, status_code = e.response.json(), e.response.status_code
+                        else:
+                            data, status_code = {"error": str(e)}, 502
+            if isinstance(data, dict) and "model" in data:
                 data["model"] = MODEL_ID
-            return JSONResponse(data, status_code=resp.status_code)
+            return JSONResponse(data, status_code=status_code)
 
     # Streaming: separate client lifecycle inside the generator
     async def sse():
         async with httpx.AsyncClient() as sclient:
-            async with sclient.stream("POST", f"{OPENROUTER_BASE}/chat/completions",
-                                      headers=headers, json=payload, timeout=300) as resp:
-                async for line in resp.aiter_lines():
-                    if line:
-                        yield line + "\n\n"
+            # Try primary, fall back to Qwen if it fails before streaming starts.
+            for model in (PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL):
+                try:
+                    async with sclient.stream("POST", f"{OPENROUTER_BASE}/chat/completions",
+                                              headers=headers, json={**payload, "model": model},
+                                              timeout=300) as resp:
+                        resp.raise_for_status()
+                        log.info("OpenRouter chat (stream) model=%s", model)
+                        async for line in resp.aiter_lines():
+                            if line:
+                                yield line + "\n\n"
+                    return
+                except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                    log.warning("OpenRouter stream failed on %s (%s)%s", model, e,
+                                "" if model == FALLBACK_LLM_MODEL else f"; falling back to {FALLBACK_LLM_MODEL}")
+                    if model == FALLBACK_LLM_MODEL:
+                        yield "data: " + json.dumps({"error": str(e)}) + "\n\n"
+                        return
 
     return StreamingResponse(sse(), media_type="text/event-stream")

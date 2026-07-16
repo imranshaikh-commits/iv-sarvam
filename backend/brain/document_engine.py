@@ -45,7 +45,10 @@ log = logging.getLogger("sarvam-brain.doc-engine")
 # that it stays importable in a keyless environment (smoke test / CI).
 OPENROUTER_BASE = os.environ.get("OPENROUTER_BASE", "https://openrouter.ai/api/v1")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-DRAFT_MODEL = os.environ.get("DRAFT_MODEL", "deepseek/deepseek-v3.2-exp")
+# Hardcoded LLM models (kept in sync with app.py). document_engine must NOT
+# import app (circular-import rule), so the constants are duplicated here.
+PRIMARY_LLM_MODEL = "z-ai/glm-5.2"
+FALLBACK_LLM_MODEL = "qwen/qwen3-235b-a22b-2507"
 TOP_K = int(os.environ.get("TOP_K", "8"))
 DOC_CONCURRENCY = int(os.environ.get("DOC_CONCURRENCY", os.environ.get("COMPLIANCE_CONCURRENCY", "3")))
 
@@ -81,41 +84,80 @@ def _vendor_clause(iam_vendor: Optional[str]) -> str:
     return f" using {iam_vendor}" if iam_vendor else ""
 
 
-async def draft_with_openrouter(
-    client: httpx.AsyncClient,
-    system_prompt: str,
-    user_prompt: str,
-) -> str:
-    """Single, isolated OpenRouter chat call. Monkeypatched by the smoke test.
+def _draft_payload(model: str, system_prompt: str, user_prompt: str,
+                   include_frequency_penalty: bool = True) -> dict:
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,
+        "temperature": 0.4,
+        # Cap runaway generation (same repetition-spiral risk as the compliance
+        # classifier). LOW frequency_penalty preserves grounded citation/vendor terms.
+        "max_tokens": 1500,
+    }
+    if include_frequency_penalty:
+        payload["frequency_penalty"] = 0.2
+    return payload
 
-    Mirrors the non-streaming drafting pattern used in app.py's
-    /v1/chat/completions endpoint.
-    """
+
+async def _post_draft(client: httpx.AsyncClient, payload: dict) -> str:
     resp = await client.post(
         f"{OPENROUTER_BASE}/chat/completions",
         headers={
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
         },
-        json={
-            "model": DRAFT_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "stream": False,
-            "temperature": 0.4,
-            # Cap runaway generation (same repetition-spiral risk as the
-            # compliance classifier). LOW frequency_penalty preserves grounded
-            # citation/vendor terms.
-            "max_tokens": 1500,
-            "frequency_penalty": 0.2,
-        },
+        json=payload,
         timeout=180,
     )
     resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+async def draft_with_openrouter(
+    client: httpx.AsyncClient,
+    system_prompt: str,
+    user_prompt: str,
+) -> str:
+    """Isolated OpenRouter chat call with primary->fallback. Monkeypatched by the smoke test.
+
+    Tries PRIMARY_LLM_MODEL, then FALLBACK_LLM_MODEL on HTTP/network/timeout
+    error. Defensive: a 400 caused by an unsupported param (frequency_penalty)
+    triggers a same-model retry WITHOUT frequency_penalty before falling back.
+    """
+    last_exc: Exception | None = None
+    for model in (PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL):
+        try:
+            content = await _post_draft(client, _draft_payload(model, system_prompt, user_prompt))
+            log.info("OpenRouter draft model=%s", model)
+            return content
+        except httpx.HTTPStatusError as e:
+            last_exc = e
+            # A 400 may be an unsupported-param error (e.g. frequency_penalty).
+            # Retry the SAME model once without it before falling back.
+            if e.response is not None and e.response.status_code == 400:
+                try:
+                    content = await _post_draft(
+                        client, _draft_payload(model, system_prompt, user_prompt,
+                                               include_frequency_penalty=False))
+                    log.info("OpenRouter draft model=%s (no frequency_penalty)", model)
+                    return content
+                except (httpx.HTTPStatusError, httpx.RequestError) as e2:
+                    last_exc = e2
+            if model == FALLBACK_LLM_MODEL:
+                raise
+            log.warning("draft failed on primary %s (%s); falling back to %s",
+                        model, e, FALLBACK_LLM_MODEL)
+        except httpx.RequestError as e:
+            last_exc = e
+            if model == FALLBACK_LLM_MODEL:
+                raise
+            log.warning("draft failed on primary %s (%s); falling back to %s",
+                        model, e, FALLBACK_LLM_MODEL)
+    raise last_exc  # pragma: no cover
 
 
 async def draft_section(

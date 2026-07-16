@@ -105,6 +105,11 @@ async def draft_with_openrouter(
             ],
             "stream": False,
             "temperature": 0.4,
+            # Cap runaway generation (same repetition-spiral risk as the
+            # compliance classifier). LOW frequency_penalty preserves grounded
+            # citation/vendor terms.
+            "max_tokens": 1500,
+            "frequency_penalty": 0.2,
         },
         timeout=180,
     )

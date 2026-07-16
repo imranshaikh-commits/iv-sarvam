@@ -197,7 +197,7 @@ class ExtractedRequirements(BaseModel):
 class EvidenceRef(BaseModel):
     evidence_id: int = Field(..., description="The [N] evidence number from the provided EVIDENCE block (1-based).")
     quote: str = Field(..., description="Short verbatim quote from that evidence chunk supporting the assessment.")
-    rationale: str = Field(..., description="Why this evidence is relevant to the requirement.")
+    rationale: str = Field(..., description="Why this evidence is relevant to the requirement. Max ~25 words.")
 
 
 class CoverageEntry(BaseModel):
@@ -205,8 +205,8 @@ class CoverageEntry(BaseModel):
     requirement_text: str = ""
     status: Literal["covered", "partial", "missing", "needs-human"]
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
-    summary: str = Field(..., description="How IV's proposal corpus addresses this requirement, grounded in evidence.")
-    recommendation: str = Field(..., description="Concrete next step: reuse a cited approach, draft a new section, or escalate to SME.")
+    summary: str = Field(..., description="How IV's proposal corpus addresses this requirement, grounded in evidence. Keep it to 2-3 sentences (~80 words max). Never repeat phrases.")
+    recommendation: str = Field(..., description="Concrete next step: reuse a cited approach, draft a new section, or escalate to SME. Max ~30 words.")
 
 
 class ComplianceMatrix(BaseModel):
@@ -238,6 +238,7 @@ HARD RULES (non-negotiable):
 5. For regulatory / compliance / certification / pricing / product-version / SLA claims, prefer "needs-human" unless the evidence states it explicitly (then "covered" is allowed, still pending human verification).
 6. The summary and recommendation must reflect ONLY what the evidence supports. Do not invent capabilities, connectors, or commitments not in the evidence. The recommendation must be a concrete next step, NOT a status word.
 7. This is a DRAFT internal compliance matrix for human review — never a client-ready commitment.
+8. LENGTH LIMITS (strict): summary max 80 words (2-3 sentences); recommendation max 30 words; each EvidenceRef.rationale max 25 words; at most 2 evidence_refs. Never repeat the same sentence or phrase — say something once and stop.
 """
 
 
@@ -285,7 +286,13 @@ async def classify_coverage(req: Requirement, chunks: list[dict]) -> CoverageEnt
     entry: CoverageEntry = await ic.chat.completions.create(
         model=STRUCTURED_MODEL,
         temperature=0,
-        max_retries=2,
+        max_tokens=768,
+        # LOW frequency_penalty: caps runaway repetition without penalizing the
+        # repeated vendor/product/evidence terms that verbatim-quote grounding
+        # relies on. A degenerate spiral shouldn't be retried (it just multiplies
+        # latency/cost), so retries are dropped to 1.
+        frequency_penalty=0.2,
+        max_retries=1,
         response_model=CoverageEntry,
         messages=[
             {"role": "system", "content": _CLASSIFY_PROMPT},
@@ -305,6 +312,20 @@ def _norm_for_quote(s: str) -> str:
 def _significant_tokens(s: str) -> set:
     """Content-bearing tokens (len>=4) of a string, for overlap matching."""
     return {w for w in _norm_for_quote(s).split() if len(w) >= 4}
+
+
+def _truncate_at_sentence(s: str, limit: int) -> str:
+    """Belt-and-suspenders clamp: cut a string at the last sentence boundary
+    <= limit chars (falling back to a hard cut). Guards against a degenerate
+    LLM repetition spiral slipping past the prompt/max_tokens caps."""
+    s = s or ""
+    if len(s) <= limit:
+        return s
+    head = s[:limit]
+    cut = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+    if cut >= 0:
+        return head[: cut + 1].rstrip()
+    return head.rstrip()
 
 
 def validate_coverage(entry: CoverageEntry, chunks: list[dict]) -> CoverageEntry:
@@ -342,6 +363,11 @@ def validate_coverage(entry: CoverageEntry, chunks: list[dict]) -> CoverageEntry
             "Escalate to SME: the model could not produce a verbatim evidence quote — "
             "re-check retrieval for this requirement and confirm coverage manually."
         )
+    # Final length clamp (defence in depth against runaway generation).
+    entry.summary = _truncate_at_sentence(entry.summary, 600)
+    entry.recommendation = _truncate_at_sentence(entry.recommendation, 250)
+    for ref in entry.evidence_refs:
+        ref.rationale = _truncate_at_sentence(ref.rationale, 250)
     return entry
 
 

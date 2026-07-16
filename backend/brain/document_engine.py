@@ -617,9 +617,14 @@ async def generate_proposal(
         }
         for d in drafted
     ]
+    draft_markdown = "\n\n".join(
+        f"## {d['title']}\n\n{d.get('content', '')}".rstrip() for d in drafted
+    )
+
     return {
         "docx_bytes": docx_bytes,
         "sections_meta": sections_meta,
+        "draft_markdown": draft_markdown,
         "filename": filename,
         "included_compliance_matrix": compliance_markdown is not None,
     }

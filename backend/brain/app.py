@@ -36,6 +36,10 @@ from pydantic import BaseModel, Field
 # is no circular dependency.
 from document_engine import generate_proposal
 
+# Sprint 5 Pass 1 — structured intake + persistence. Neither module imports app.
+from intake_template import get_intake_template, missing_required
+import supabase_client
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("sarvam-brain")
 
@@ -51,6 +55,11 @@ PRIMARY_LLM_MODEL = "z-ai/glm-5.2"
 FALLBACK_LLM_MODEL = "qwen/qwen3-235b-a22b-2507"
 TOP_K = int(os.environ.get("TOP_K", "8"))
 MODEL_ID = "sarvam-architect"
+
+# Single Inspirit Vision organisation. Hard-coded until real multi-tenant auth
+# propagates an org id through the request. Used to scope intake sessions and
+# persisted proposals server-side (service-role key, RLS bypassed).
+IV_ORG_ID = os.environ.get("IV_ORG_ID", "5ec29afe-13ff-4657-a4cd-9a078226cdc2")
 
 # Compliance-matrix (Sprint 4 Phase 2)
 COMPLIANCE_CONCURRENCY = int(os.getenv("COMPLIANCE_CONCURRENCY", "3"))
@@ -499,16 +508,98 @@ async def compliance_matrix_endpoint(request: Request):
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
+# =====================================================================
+# Sprint 5 Pass 1 — structured intake (discovery interview) endpoints
+# =====================================================================
+
+@app.get("/v1/intake-template")
+async def intake_template_endpoint(request: Request):
+    """Return the discovery-interview schema, optionally tailored to a proposal type.
+
+    Query: ?proposal_type=implementation|mss|migration (optional)
+    Returns: {"template_version","proposal_type","buckets":[{id,title,questions}]}
+    """
+    proposal_type = (request.query_params.get("proposal_type") or "").strip().lower() or None
+    return JSONResponse(get_intake_template(proposal_type))
+
+
+@app.post("/v1/intake-sessions")
+async def create_intake_session_endpoint(request: Request):
+    """Start a new discovery interview.
+
+    Body (all optional): {"proposal_type","client_name","iam_vendor","answers":{}}
+    Returns: {"id", "status":"in_progress"} — REQUIRED op, 502 if Supabase fails.
+    """
+    body = await request.json()
+    answers = body.get("answers") or {}
+    if not isinstance(answers, dict):
+        return JSONResponse({"error": "answers must be an object"}, status_code=400)
+    proposal_type = (body.get("proposal_type") or answers.get("proposal_type") or "").strip().lower() or None
+    client_name = (body.get("client_name") or answers.get("client_name") or "").strip() or None
+    iam_vendor = (body.get("iam_vendor") or answers.get("iam_vendor") or "").strip() or None
+    try:
+        async with httpx.AsyncClient() as client:
+            session_id = await supabase_client.create_intake_session(
+                client,
+                org_id=IV_ORG_ID,
+                proposal_type=proposal_type,
+                client_name=client_name,
+                iam_vendor=iam_vendor,
+                answers=answers,
+            )
+    except supabase_client.SupabaseError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    return JSONResponse({"id": session_id, "status": "in_progress"}, status_code=201)
+
+
+@app.patch("/v1/intake-sessions/{session_id}")
+async def patch_intake_session_endpoint(session_id: str, request: Request):
+    """Save (merge) partial answers into an in-progress session.
+
+    Body: {"answers": {question_id: value, ...}}
+    Returns: {"id","status","answers"} or 404/502 on failure.
+    """
+    body = await request.json()
+    answers_partial = body.get("answers")
+    if answers_partial is None or not isinstance(answers_partial, dict):
+        return JSONResponse({"error": "answers object is required"}, status_code=400)
+    async with httpx.AsyncClient() as client:
+        row = await supabase_client.patch_intake_answers(client, session_id, answers_partial)
+    if row is None:
+        return JSONResponse({"error": "intake session not found or update failed"}, status_code=404)
+    return JSONResponse({"id": row.get("id"), "status": row.get("status"), "answers": row.get("answers")})
+
+
+@app.post("/v1/intake-sessions/{session_id}/complete")
+async def complete_intake_session_endpoint(session_id: str):
+    """Validate required answers and mark the session complete.
+
+    Returns: {"session_id","status","complete":bool,"missing":[ids...]}.
+    complete=False with a missing[] list is a normal 200 validation result, not
+    an error. Transport failures return 502.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            result = await supabase_client.complete_intake_session(client, session_id)
+    except supabase_client.SupabaseError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    return JSONResponse(result)
+
+
 @app.post("/v1/generate-proposal")
 async def generate_proposal_endpoint(request: Request):
     """Sprint 5 — turn an RFP + context into a downloadable DOCX proposal draft.
 
     Body: {"rfp_text","client_name","proposal_type":"implementation|mss",
-           "iam_vendor","sections":[optional],"include_compliance_matrix":bool,"top_k":int}
+           "iam_vendor","sections":[optional],"include_compliance_matrix":bool,
+           "top_k":int,"intake_session_id":optional}
     Returns: a DOCX attachment, or {"error": ...} with 400 on bad input.
 
-    NOTE: does NOT persist to the generated_proposals table (auth/user id
-    unresolved). It only streams the DOCX back for human review.
+    If intake_session_id is supplied, its stored answers backfill any omitted
+    core field (client_name/proposal_type/iam_vendor/rfp_text) and enrich the
+    retrieval text with scope/objectives. After the DOCX is built the draft is
+    persisted to generated_proposals (fail-soft — persistence failure never
+    blocks the download) and linked back to the intake session.
     """
     body = await request.json()
     rfp_text = (body.get("rfp_text") or "").strip()
@@ -517,6 +608,30 @@ async def generate_proposal_endpoint(request: Request):
     iam_vendor = (body.get("iam_vendor") or "").strip() or None
     sections = body.get("sections")
     include_compliance_matrix = bool(body.get("include_compliance_matrix", False))
+    intake_session_id = (body.get("intake_session_id") or "").strip() or None
+
+    # Load intake answers and backfill any core field the caller omitted.
+    intake_answers: dict = {}
+    if intake_session_id:
+        async with httpx.AsyncClient() as sclient:
+            session = await supabase_client.get_intake_session(sclient, intake_session_id)
+        if session is None:
+            return JSONResponse({"error": "intake_session_id not found"}, status_code=404)
+        intake_answers = session.get("answers") or {}
+        client_name = client_name or (session.get("client_name") or intake_answers.get("client_name") or "").strip()
+        proposal_type = proposal_type or (session.get("proposal_type") or intake_answers.get("proposal_type") or "").strip().lower()
+        iam_vendor = iam_vendor or (session.get("iam_vendor") or intake_answers.get("iam_vendor") or "").strip() or None
+        rfp_text = rfp_text or (intake_answers.get("rfp_text") or "").strip()
+        # Enrich retrieval text with scope/objectives when present (does not
+        # change section depth or length — just gives retrieval more to match).
+        extra = "\n\n".join(
+            str(intake_answers[k]).strip()
+            for k in ("business_objectives", "in_scope", "out_of_scope", "current_state")
+            if str(intake_answers.get(k) or "").strip()
+        )
+        if extra:
+            rfp_text = (rfp_text + "\n\n" + extra).strip() if rfp_text else extra
+
     try:
         top_k = int(body.get("top_k", TOP_K))
     except (TypeError, ValueError):
@@ -558,6 +673,27 @@ async def generate_proposal_endpoint(request: Request):
 
     filename = result["filename"]
     log.info("Generated proposal %s (%d sections)", filename, len(result["sections_meta"]))
+
+    # Fail-soft persistence: never let a Supabase hiccup block the download.
+    draft_markdown = result.get("draft_markdown", "")
+    try:
+        async with httpx.AsyncClient() as pclient:
+            proposal_id = await supabase_client.insert_generated_proposal(
+                pclient,
+                org_id=IV_ORG_ID,
+                client_name=client_name,
+                proposal_type=proposal_type,
+                iam_vendor=iam_vendor,
+                discovery_answers=intake_answers,
+                draft_markdown=draft_markdown,
+                retrieval_trace=result.get("sections_meta", []),
+                intake_session_id=intake_session_id,
+            )
+            if proposal_id and intake_session_id:
+                await supabase_client.link_intake_to_proposal(pclient, intake_session_id, proposal_id)
+    except Exception as e:  # noqa: BLE001 — persistence must never break the download
+        log.error("generate-proposal persistence failed (returning DOCX anyway): %s", e)
+
     return Response(
         content=result["docx_bytes"],
         media_type=DOCX_MEDIA_TYPE,

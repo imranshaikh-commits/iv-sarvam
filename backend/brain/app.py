@@ -7,7 +7,7 @@ Flow per user message:
   1. Embed the query  (openai/text-embedding-3-small via OpenRouter — MUST match ingest)
   2. Retrieve top-k chunks from Supabase pgvector (match_proposal_chunks RPC)
   3. Build grounded system prompt with numbered evidence + safety rails
-  4. Draft with DeepSeek via OpenRouter (streaming or non-streaming)
+  4. Draft with GLM 5.2 (Qwen fallback) via OpenRouter (streaming or non-streaming)
 
 Endpoints:
   GET  /health
@@ -27,9 +27,18 @@ from typing import Literal
 import httpx
 import instructor
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
+
+# Sprint 5 document-production engine. Safe top-level import: document_engine
+# does NOT import app (it receives the brain helpers as parameters), so there
+# is no circular dependency.
+from document_engine import generate_proposal
+
+# Sprint 5 Pass 1 — structured intake + persistence. Neither module imports app.
+from intake_template import get_intake_template, missing_required
+import supabase_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("sarvam-brain")
@@ -40,17 +49,24 @@ SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
 EMBED_MODEL = "openai/text-embedding-3-small"   # must match scripts/ingest_v2.py
-DRAFT_MODEL = os.environ.get("DRAFT_MODEL", "deepseek/deepseek-v3.2-exp")
+# LLM models are HARDCODED (no env override) so EC2 env cannot silently pin an
+# old model. Every LLM call site tries the primary, then falls back to Qwen.
+PRIMARY_LLM_MODEL = "z-ai/glm-5.2"
+FALLBACK_LLM_MODEL = "qwen/qwen3-235b-a22b-2507"
 TOP_K = int(os.environ.get("TOP_K", "8"))
 MODEL_ID = "sarvam-architect"
+
+# Single Inspirit Vision organisation. Hard-coded until real multi-tenant auth
+# propagates an org id through the request. Used to scope intake sessions and
+# persisted proposals server-side (service-role key, RLS bypassed).
+IV_ORG_ID = os.environ.get("IV_ORG_ID", "5ec29afe-13ff-4657-a4cd-9a078226cdc2")
 
 # Compliance-matrix (Sprint 4 Phase 2)
 COMPLIANCE_CONCURRENCY = int(os.getenv("COMPLIANCE_CONCURRENCY", "3"))
 MAX_REQUIREMENTS = int(os.getenv("MAX_REQUIREMENTS", "20"))
 COMPLIANCE_TRIGGER = "compliance matrix"
-# Separate model for structured extraction/classification so it can be swapped via env
-# (without a code rebuild) if DeepSeek structured outputs misbehave on OpenRouter.
-STRUCTURED_MODEL = os.getenv("STRUCTURED_MODEL", DRAFT_MODEL)
+# Structured extraction/classification uses the same hardcoded primary model.
+STRUCTURED_MODEL = PRIMARY_LLM_MODEL
 
 app = FastAPI(title="sarvam-brain")
 
@@ -192,7 +208,7 @@ class ExtractedRequirements(BaseModel):
 class EvidenceRef(BaseModel):
     evidence_id: int = Field(..., description="The [N] evidence number from the provided EVIDENCE block (1-based).")
     quote: str = Field(..., description="Short verbatim quote from that evidence chunk supporting the assessment.")
-    rationale: str = Field(..., description="Why this evidence is relevant to the requirement.")
+    rationale: str = Field(..., description="Why this evidence is relevant to the requirement. Max ~25 words.")
 
 
 class CoverageEntry(BaseModel):
@@ -200,8 +216,8 @@ class CoverageEntry(BaseModel):
     requirement_text: str = ""
     status: Literal["covered", "partial", "missing", "needs-human"]
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
-    summary: str = Field(..., description="How IV's proposal corpus addresses this requirement, grounded in evidence.")
-    recommendation: str = Field(..., description="Concrete next step: reuse a cited approach, draft a new section, or escalate to SME.")
+    summary: str = Field(..., description="How IV's proposal corpus addresses this requirement, grounded in evidence. Keep it to 2-3 sentences (~80 words max). Never repeat phrases.")
+    recommendation: str = Field(..., description="Concrete next step: reuse a cited approach, draft a new section, or escalate to SME. Max ~30 words.")
 
 
 class ComplianceMatrix(BaseModel):
@@ -233,6 +249,7 @@ HARD RULES (non-negotiable):
 5. For regulatory / compliance / certification / pricing / product-version / SLA claims, prefer "needs-human" unless the evidence states it explicitly (then "covered" is allowed, still pending human verification).
 6. The summary and recommendation must reflect ONLY what the evidence supports. Do not invent capabilities, connectors, or commitments not in the evidence. The recommendation must be a concrete next step, NOT a status word.
 7. This is a DRAFT internal compliance matrix for human review — never a client-ready commitment.
+8. LENGTH LIMITS (strict): summary max 80 words (2-3 sentences); recommendation max 30 words; each EvidenceRef.rationale max 25 words; at most 2 evidence_refs. Never repeat the same sentence or phrase — say something once and stop.
 """
 
 
@@ -250,17 +267,35 @@ def instructor_client():
     return _instructor_client
 
 
-async def extract_requirements(rfp_text: str) -> list[Requirement]:
+async def _structured_with_fallback(response_model, messages: list[dict], **kwargs):
+    """Instructor structured call: try PRIMARY_LLM_MODEL, then FALLBACK_LLM_MODEL
+    on ANY exception (instructor validation, HTTP, schema). Keep max_retries low
+    (caller sets it) so instructor doesn't multi-retry a bad model before we fall
+    back to the other one."""
     ic = instructor_client()
-    resp: ExtractedRequirements = await ic.chat.completions.create(
-        model=STRUCTURED_MODEL,
-        temperature=0,
-        max_retries=2,
-        response_model=ExtractedRequirements,
+    for model in (PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL):
+        try:
+            result = await ic.chat.completions.create(
+                model=model, response_model=response_model, messages=messages, **kwargs
+            )
+            log.info("Structured LLM model=%s", model)
+            return result
+        except Exception as e:
+            if model == FALLBACK_LLM_MODEL:
+                raise
+            log.warning("Structured call failed on primary %s (%s); falling back to %s",
+                        model, e, FALLBACK_LLM_MODEL)
+
+
+async def extract_requirements(rfp_text: str) -> list[Requirement]:
+    resp: ExtractedRequirements = await _structured_with_fallback(
+        ExtractedRequirements,
         messages=[
             {"role": "system", "content": _EXTRACT_PROMPT},
             {"role": "user", "content": f"Extract up to {MAX_REQUIREMENTS} compliance requirements from the following RFP text.\n\nRFP TEXT:\n{rfp_text[:12000]}"},
         ],
+        temperature=0,
+        max_retries=1,
     )
     return resp.requirements
 
@@ -276,16 +311,20 @@ def build_evidence_block(chunks: list[dict]) -> str:
 
 
 async def classify_coverage(req: Requirement, chunks: list[dict]) -> CoverageEntry:
-    ic = instructor_client()
-    entry: CoverageEntry = await ic.chat.completions.create(
-        model=STRUCTURED_MODEL,
-        temperature=0,
-        max_retries=2,
-        response_model=CoverageEntry,
+    entry: CoverageEntry = await _structured_with_fallback(
+        CoverageEntry,
         messages=[
             {"role": "system", "content": _CLASSIFY_PROMPT},
             {"role": "user", "content": f"REQUIREMENT {req.id}:\n{req.text}\n\n=== EVIDENCE (from IV's past proposals) ===\n{build_evidence_block(chunks)}"},
         ],
+        temperature=0,
+        max_tokens=768,
+        # LOW frequency_penalty: caps runaway repetition without penalizing the
+        # repeated vendor/product/evidence terms that verbatim-quote grounding
+        # relies on. A degenerate spiral shouldn't be retried (it just multiplies
+        # latency/cost), so retries are dropped to 1.
+        frequency_penalty=0.2,
+        max_retries=1,
     )
     entry.requirement_id = req.id
     entry.requirement_text = req.text
@@ -300,6 +339,20 @@ def _norm_for_quote(s: str) -> str:
 def _significant_tokens(s: str) -> set:
     """Content-bearing tokens (len>=4) of a string, for overlap matching."""
     return {w for w in _norm_for_quote(s).split() if len(w) >= 4}
+
+
+def _truncate_at_sentence(s: str, limit: int) -> str:
+    """Belt-and-suspenders clamp: cut a string at the last sentence boundary
+    <= limit chars (falling back to a hard cut). Guards against a degenerate
+    LLM repetition spiral slipping past the prompt/max_tokens caps."""
+    s = s or ""
+    if len(s) <= limit:
+        return s
+    head = s[:limit]
+    cut = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+    if cut >= 0:
+        return head[: cut + 1].rstrip()
+    return head.rstrip()
 
 
 def validate_coverage(entry: CoverageEntry, chunks: list[dict]) -> CoverageEntry:
@@ -337,6 +390,11 @@ def validate_coverage(entry: CoverageEntry, chunks: list[dict]) -> CoverageEntry
             "Escalate to SME: the model could not produce a verbatim evidence quote — "
             "re-check retrieval for this requirement and confirm coverage manually."
         )
+    # Final length clamp (defence in depth against runaway generation).
+    entry.summary = _truncate_at_sentence(entry.summary, 600)
+    entry.recommendation = _truncate_at_sentence(entry.recommendation, 250)
+    for ref in entry.evidence_refs:
+        ref.rationale = _truncate_at_sentence(ref.rationale, 250)
     return entry
 
 
@@ -420,7 +478,8 @@ def _chat_completion_json(content: str) -> dict:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model": MODEL_ID, "draft_model": DRAFT_MODEL}
+    return {"status": "ok", "model": MODEL_ID,
+            "primary_model": PRIMARY_LLM_MODEL, "fallback_model": FALLBACK_LLM_MODEL}
 
 
 @app.get("/v1/models")
@@ -444,6 +503,202 @@ async def compliance_matrix_endpoint(request: Request):
     async with httpx.AsyncClient() as client:
         matrix = await run_compliance_matrix(client, rfp_text, requirements, top_k=top_k)
     return JSONResponse({"matrix": matrix.model_dump(), "markdown": render_matrix_markdown(matrix)})
+
+
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+# =====================================================================
+# Sprint 5 Pass 1 — structured intake (discovery interview) endpoints
+# =====================================================================
+
+@app.get("/v1/intake-template")
+async def intake_template_endpoint(request: Request):
+    """Return the discovery-interview schema, optionally tailored to a proposal type.
+
+    Query: ?proposal_type=implementation|mss|migration (optional)
+    Returns: {"template_version","proposal_type","buckets":[{id,title,questions}]}
+    """
+    proposal_type = (request.query_params.get("proposal_type") or "").strip().lower() or None
+    return JSONResponse(get_intake_template(proposal_type))
+
+
+@app.post("/v1/intake-sessions")
+async def create_intake_session_endpoint(request: Request):
+    """Start a new discovery interview.
+
+    Body (all optional): {"proposal_type","client_name","iam_vendor","answers":{}}
+    Returns: {"id", "status":"in_progress"} — REQUIRED op, 502 if Supabase fails.
+    """
+    body = await request.json()
+    answers = body.get("answers") or {}
+    if not isinstance(answers, dict):
+        return JSONResponse({"error": "answers must be an object"}, status_code=400)
+    proposal_type = (body.get("proposal_type") or answers.get("proposal_type") or "").strip().lower() or None
+    client_name = (body.get("client_name") or answers.get("client_name") or "").strip() or None
+    iam_vendor = (body.get("iam_vendor") or answers.get("iam_vendor") or "").strip() or None
+    try:
+        async with httpx.AsyncClient() as client:
+            session_id = await supabase_client.create_intake_session(
+                client,
+                org_id=IV_ORG_ID,
+                proposal_type=proposal_type,
+                client_name=client_name,
+                iam_vendor=iam_vendor,
+                answers=answers,
+            )
+    except supabase_client.SupabaseError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    return JSONResponse({"id": session_id, "status": "in_progress"}, status_code=201)
+
+
+@app.patch("/v1/intake-sessions/{session_id}")
+async def patch_intake_session_endpoint(session_id: str, request: Request):
+    """Save (merge) partial answers into an in-progress session.
+
+    Body: {"answers": {question_id: value, ...}}
+    Returns: {"id","status","answers"} or 404/502 on failure.
+    """
+    body = await request.json()
+    answers_partial = body.get("answers")
+    if answers_partial is None or not isinstance(answers_partial, dict):
+        return JSONResponse({"error": "answers object is required"}, status_code=400)
+    async with httpx.AsyncClient() as client:
+        row = await supabase_client.patch_intake_answers(client, session_id, answers_partial)
+    if row is None:
+        return JSONResponse({"error": "intake session not found or update failed"}, status_code=404)
+    return JSONResponse({"id": row.get("id"), "status": row.get("status"), "answers": row.get("answers")})
+
+
+@app.post("/v1/intake-sessions/{session_id}/complete")
+async def complete_intake_session_endpoint(session_id: str):
+    """Validate required answers and mark the session complete.
+
+    Returns: {"session_id","status","complete":bool,"missing":[ids...]}.
+    complete=False with a missing[] list is a normal 200 validation result, not
+    an error. Transport failures return 502.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            result = await supabase_client.complete_intake_session(client, session_id)
+    except supabase_client.SupabaseError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    return JSONResponse(result)
+
+
+@app.post("/v1/generate-proposal")
+async def generate_proposal_endpoint(request: Request):
+    """Sprint 5 — turn an RFP + context into a downloadable DOCX proposal draft.
+
+    Body: {"rfp_text","client_name","proposal_type":"implementation|mss",
+           "iam_vendor","sections":[optional],"include_compliance_matrix":bool,
+           "top_k":int,"intake_session_id":optional}
+    Returns: a DOCX attachment, or {"error": ...} with 400 on bad input.
+
+    If intake_session_id is supplied, its stored answers backfill any omitted
+    core field (client_name/proposal_type/iam_vendor/rfp_text) and enrich the
+    retrieval text with scope/objectives. After the DOCX is built the draft is
+    persisted to generated_proposals (fail-soft — persistence failure never
+    blocks the download) and linked back to the intake session.
+    """
+    body = await request.json()
+    rfp_text = (body.get("rfp_text") or "").strip()
+    client_name = (body.get("client_name") or "").strip()
+    proposal_type = (body.get("proposal_type") or "").strip().lower()
+    iam_vendor = (body.get("iam_vendor") or "").strip() or None
+    sections = body.get("sections")
+    include_compliance_matrix = bool(body.get("include_compliance_matrix", False))
+    intake_session_id = (body.get("intake_session_id") or "").strip() or None
+
+    # Load intake answers and backfill any core field the caller omitted.
+    intake_answers: dict = {}
+    if intake_session_id:
+        async with httpx.AsyncClient() as sclient:
+            session = await supabase_client.get_intake_session(sclient, intake_session_id)
+        if session is None:
+            return JSONResponse({"error": "intake_session_id not found"}, status_code=404)
+        intake_answers = session.get("answers") or {}
+        client_name = client_name or (session.get("client_name") or intake_answers.get("client_name") or "").strip()
+        proposal_type = proposal_type or (session.get("proposal_type") or intake_answers.get("proposal_type") or "").strip().lower()
+        iam_vendor = iam_vendor or (session.get("iam_vendor") or intake_answers.get("iam_vendor") or "").strip() or None
+        rfp_text = rfp_text or (intake_answers.get("rfp_text") or "").strip()
+        # Enrich retrieval text with scope/objectives when present (does not
+        # change section depth or length — just gives retrieval more to match).
+        extra = "\n\n".join(
+            str(intake_answers[k]).strip()
+            for k in ("business_objectives", "in_scope", "out_of_scope", "current_state")
+            if str(intake_answers.get(k) or "").strip()
+        )
+        if extra:
+            rfp_text = (rfp_text + "\n\n" + extra).strip() if rfp_text else extra
+
+    try:
+        top_k = int(body.get("top_k", TOP_K))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "top_k must be an integer"}, status_code=400)
+    if top_k < 1 or top_k > 20:
+        return JSONResponse({"error": "top_k must be between 1 and 20"}, status_code=400)
+    if sections is not None and not isinstance(sections, list):
+        return JSONResponse({"error": "sections must be a list of strings"}, status_code=400)
+
+    if proposal_type not in {"implementation", "mss"}:
+        return JSONResponse({"error": "proposal_type must be 'implementation' or 'mss'"}, status_code=400)
+    if not client_name:
+        return JSONResponse({"error": "client_name is required"}, status_code=400)
+    if not rfp_text:
+        return JSONResponse({"error": "rfp_text is required"}, status_code=400)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            result = await generate_proposal(
+                client,
+                rfp_text=rfp_text,
+                client_name=client_name,
+                proposal_type=proposal_type,
+                iam_vendor=iam_vendor,
+                embed_fn=embed_query,
+                retrieve_fn=retrieve_chunks,
+                build_grounded_system_fn=build_grounded_system,
+                run_compliance_matrix_fn=run_compliance_matrix,
+                render_matrix_markdown_fn=render_matrix_markdown,
+                sections=sections,
+                include_compliance_matrix=include_compliance_matrix,
+                top_k=top_k,
+            )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        log.error("generate-proposal failed: %s", e)
+        return JSONResponse({"error": f"proposal generation failed: {e}"}, status_code=500)
+
+    filename = result["filename"]
+    log.info("Generated proposal %s (%d sections)", filename, len(result["sections_meta"]))
+
+    # Fail-soft persistence: never let a Supabase hiccup block the download.
+    draft_markdown = result.get("draft_markdown", "")
+    try:
+        async with httpx.AsyncClient() as pclient:
+            proposal_id = await supabase_client.insert_generated_proposal(
+                pclient,
+                org_id=IV_ORG_ID,
+                client_name=client_name,
+                proposal_type=proposal_type,
+                iam_vendor=iam_vendor,
+                discovery_answers=intake_answers,
+                draft_markdown=draft_markdown,
+                retrieval_trace=result.get("sections_meta", []),
+                intake_session_id=intake_session_id,
+            )
+            if proposal_id and intake_session_id:
+                await supabase_client.link_intake_to_proposal(pclient, intake_session_id, proposal_id)
+    except Exception as e:  # noqa: BLE001 — persistence must never break the download
+        log.error("generate-proposal persistence failed (returning DOCX anyway): %s", e)
+
+    return Response(
+        content=result["docx_bytes"],
+        media_type=DOCX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/v1/chat/completions")
@@ -505,7 +760,7 @@ async def chat_completions(request: Request):
             m for m in messages if m.get("role") != "system"
         ]
         payload = {
-            "model": DRAFT_MODEL,
+            "model": PRIMARY_LLM_MODEL,
             "messages": out_messages,
             "stream": stream,
             "temperature": body.get("temperature", 0.4),
@@ -513,20 +768,48 @@ async def chat_completions(request: Request):
         headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
 
         if not stream:
-            resp = await client.post(f"{OPENROUTER_BASE}/chat/completions", headers=headers,
-                                     json=payload, timeout=180)
-            data = resp.json()
-            if "model" in data:
+            # Try primary, fall back to Qwen on 4xx/5xx or network/timeout error.
+            data, status_code = None, 502
+            for model in (PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL):
+                try:
+                    resp = await client.post(f"{OPENROUTER_BASE}/chat/completions", headers=headers,
+                                             json={**payload, "model": model}, timeout=180)
+                    resp.raise_for_status()
+                    data, status_code = resp.json(), resp.status_code
+                    log.info("OpenRouter chat model=%s", model)
+                    break
+                except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                    log.warning("OpenRouter chat failed on %s (%s)%s", model, e,
+                                "" if model == FALLBACK_LLM_MODEL else f"; falling back to {FALLBACK_LLM_MODEL}")
+                    if model == FALLBACK_LLM_MODEL:
+                        if isinstance(e, httpx.HTTPStatusError):
+                            data, status_code = e.response.json(), e.response.status_code
+                        else:
+                            data, status_code = {"error": str(e)}, 502
+            if isinstance(data, dict) and "model" in data:
                 data["model"] = MODEL_ID
-            return JSONResponse(data, status_code=resp.status_code)
+            return JSONResponse(data, status_code=status_code)
 
     # Streaming: separate client lifecycle inside the generator
     async def sse():
         async with httpx.AsyncClient() as sclient:
-            async with sclient.stream("POST", f"{OPENROUTER_BASE}/chat/completions",
-                                      headers=headers, json=payload, timeout=300) as resp:
-                async for line in resp.aiter_lines():
-                    if line:
-                        yield line + "\n\n"
+            # Try primary, fall back to Qwen if it fails before streaming starts.
+            for model in (PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL):
+                try:
+                    async with sclient.stream("POST", f"{OPENROUTER_BASE}/chat/completions",
+                                              headers=headers, json={**payload, "model": model},
+                                              timeout=300) as resp:
+                        resp.raise_for_status()
+                        log.info("OpenRouter chat (stream) model=%s", model)
+                        async for line in resp.aiter_lines():
+                            if line:
+                                yield line + "\n\n"
+                    return
+                except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                    log.warning("OpenRouter stream failed on %s (%s)%s", model, e,
+                                "" if model == FALLBACK_LLM_MODEL else f"; falling back to {FALLBACK_LLM_MODEL}")
+                    if model == FALLBACK_LLM_MODEL:
+                        yield "data: " + json.dumps({"error": str(e)}) + "\n\n"
+                        return
 
     return StreamingResponse(sse(), media_type="text/event-stream")

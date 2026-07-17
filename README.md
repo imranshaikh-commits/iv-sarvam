@@ -13,6 +13,44 @@
 
 ---
 
+## Progress Dashboard
+
+> Quick-glance project status. Last updated: 2026-07-17 (IST).
+
+**Overall completion: ~58%**
+`███████████░░░░░░░░░`
+
+### Phase completion (6 phases / 12 sprints)
+
+| Phase | Status | Progress |
+|---|---|---|
+| 0 — Foundation & accounts | Done | `████████████████████` 100% |
+| 1 — Data foundation (ingest + Supabase + embeddings) | Done | `████████████████████` 100% |
+| 2 — Agent backend (EC2 + Docker + OpenRouter) | Done | `████████████████████` 100% |
+| 3 — Retrieval + drafting | Done | `████████████████████` 100% |
+| 4 — Conversational frontend + auth | Partial | `███████░░░░░░░░░░░░░` 35% |
+| 5 — Architecture approval gate + compression/export | In progress | `████████░░░░░░░░░░░░` 40% |
+| 6 — Pilot + hardening + rollout | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
+
+### Phase 5 enhancement sprint (5 passes)
+
+| Pass | Scope | Status |
+|---|---|---|
+| 1 | Intake + persistence | Done — `7622a4d` |
+| 2 | DOCX branding | Done — `b4d42b0` |
+| 3 | Long-form depth (`proposal_depth` tiers) | Done — `04fcd12` (merged to main `bee4264`) |
+| 4 | Architecture diagram framework | Queued |
+| 5 | Open WebUI integration (incl. interview gating) | Queued |
+
+### Known gaps before pilot
+
+- **OWUI logo branding not rendering in-app** — critical post-pilot, pre-deployment sprint; see [`docs/SPRINT_OWUI_BRANDING.md`](docs/SPRINT_OWUI_BRANDING.md).
+- **Interview gating in chat** — "Hi" returns a RAG reply instead of starting the discovery interview (Pass 5 work).
+- Lite (<5 MB) compression, PDF export, storage signed-URL delivery — not started.
+- Supabase Auth / Worker / multi-tenancy not wired (RLS + disabled sign-ups is the interim gate).
+
+---
+
 ## Executive Summary
 
 Inspirit Vision currently spends multiple person-days drafting each client proposal from scratch — assembling company profile, similar experience, scope understanding, solution architecture, implementation methodology, RACI, timeline, and compliance from memory and old files. With a bank of 100+ historical proposals across SailPoint, Ping Identity, IBM Security Verify, Red Hat Keycloak (RHBK), and ForgeRock engagements, there is enough reusable intellectual property to power a system that drafts, diagrams, and delivers proposals in a fraction of the time.

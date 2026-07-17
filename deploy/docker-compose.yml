@@ -26,6 +26,7 @@ services:
     # docker-run -> compose migration because it was only a runtime env var).
     environment:
       - "WEBUI_NAME=Sarvam AI - Inspirit Vision Proposal Architect"
+      - "WEBUI_FAVICON_URL=/static/favicon.png"
     ports:
       - "8080:8080"
     volumes:

@@ -2,19 +2,32 @@
 
 > **Purpose.** This document lets any new operator (human or AI agent) pick up the Sarvam build exactly where it stands today, with zero re-discovery. It was written because the build may move to a different Perplexity account when credits on the originating account run low. Read it in full before starting work; it is self-contained.
 >
-> **Last updated:** 2026-07-17 (IST). **Repo:** `imranshaikh-commits/iv-sarvam` (public fork of `creator-imran/sarvam`). **Default branch:** `main`. **Working branch:** `main` (single-branch workflow as of 2026-07-17; `sprint5-doc-engine` and `docs/readme-redesign` were deleted after full merges). Current HEAD: `main` is `cb18462`. **Always verify current HEAD before acting.**
+> **Last updated:** 2026-07-17, end of Round 3 (IST). **Repo:** `imranshaikh-commits/iv-sarvam` (public fork of `creator-imran/sarvam`). **Default branch:** `main` (single-branch workflow; all feature branches deleted after merge). **Current HEAD:** `main` is `863fa26`. The EC2 host working tree is at `0ef3c7b` — all brain code is present and current; the commits between `0ef3c7b` and `863fa26` are docs-only (README/HANDOVER) and do not affect the running brain. **Always verify current HEAD before acting** (`gh api repos/imranshaikh-commits/iv-sarvam/commits/main`).
 >
-> **Public-safe.** This file is committed to a public repository. It contains **no** secrets, API keys, EC2 IPs, or Supabase project refs. Identifiers are described by name/region so the operator can locate them; secrets live only on the EC2 host's local env file.
+> **Public-safe.** This file is committed to a public repository. It contains **no** secrets, API keys, EC2 IPs, or Supabase project refs. Identifiers are described by name/region so the operator can locate them; secrets live only on the EC2 host's local env file. Sensitive IDs (EC2 public IP, Supabase project ref, key file path) are carried in the private startup prompt, not here.
+
+---
+
+## ⚡ Where things stand right now (read this first)
+
+This is the exact state as of 2026-07-17, ~15:30 IST. If you do nothing else, read this.
+
+- **All 5 enhancement passes + the export pipeline + the persistence fix + OWUI branding are merged to `main` (`863fa26`) and deployed live on the EC2 brain.** The brain was rebuilt this session with LibreOffice + Pillow + `export_engine` (apt + pip layers ran fresh, not cached). Health: `{"status":"ok","primary_model":"z-ai/glm-5.2","fallback_model":"qwen/qwen3-235b-a22b-2507"}`. Inside the container: `import export_engine, PIL` OK; `soffice` present at `/usr/bin/soffice`.
+- **Full end-to-end live validation PASSED this session** (13-step E2E script, all green): health/models → interview gating (0-token discovery) → intake session create/PATCH/complete → generate proposal (240 KB DOCX, persists `proposal_id`) → compliance matrix (real RAG grounding) → export pipeline (lite + 167 KB PDF via LibreOffice + signed URLs to `generated-drafts` bucket) → diagram flow (create spec → `needs_review` → `approved` with `dot` render uploaded to `diagram-renders` → re-embed in a 298 KB DOCX).
+- **One known bug is mid-investigation — the NoneType section-drafting soft-fail.** When the LLM returns `null` for a subsection draft, the code does `'NoneType' object has no attribute 'strip'` and that subsection comes back **empty** (fail-soft, so generation completes). At `proposal_depth="full"` (3 subsections/section) it fires repeatedly and is the single biggest reason proposals stay short. Confirmed firing this session on: `Considerations & Dependencies` (technical_approach), `Detailed Design` (integration_points), `Overview` + `Detailed Design` (assumptions_open_questions). **This is the #1 fix lever for length + completeness, and it is fully grounded (no hallucination cost).** See [§13](#13-known-gaps--not-pilot-ready-yet) + [§14](#14-immediate-next-steps).
+- **A `proposal_depth="full"` generation was launched right before this handover** to measure the real page count (the user needs a boss-ready 100+ page proposal; the "brief" run was 9 pages by design). The result was not captured before credits ran low — **re-run it and count the pages** (command in [§11](#11-deploy-workflow-user-runs-on-ec2) + [§14](#14-immediate-next-steps)).
+- **OWUI in-app logo branding is merged (`3501254`) but the `open-webui` container has NOT been rebuilt** — the logo won't render until `docker compose up -d --build open-webui` is run on the EC2 host. Tab title/favicon are OK; sidebar/sign-in logo still default.
+- **Credits are low.** The user is credit-conscious (migrated across 3-4 Perplexity accounts already). Minimize tool calls; prefer `gh`/git + the Supabase connector over browser automation; do not spawn subagents for tasks you can do from context.
 
 ---
 
 ## 0. How to use this document
 
-1. Read this file end-to-end.
-2. Read [`README.md`](../README.md) (the public face) and [`docs/PROJECT.md`](PROJECT.md) (the original 6-phase/12-sprint blueprint).
+1. Read this file end-to-end (especially [⚡ Where things stand](#-where-things-stand-right-now-read-this-first)).
+2. Read [`README.md`](../README.md) (the public face + progress dashboard) and [`docs/PROJECT.md`](PROJECT.md) (the original 6-phase/12-sprint blueprint).
 3. Connect the three external services on the new account (see [§5](#5-live-infrastructure--external-services)).
 4. Recreate the keep-alive cron (see [§15](#15-accountsession-specific-items-to-recreate)).
-5. Start on [Pass 3](#14-immediate-next-steps) — do not re-do Pass 1 or Pass 2; they are done and live.
+5. Resume the in-flight work in [§14](#14-immediate-next-steps) — do **not** re-do Pass 1–5 or the export pipeline; they are done and live.
 
 ---
 
@@ -28,91 +41,33 @@ He is **not a chatbot and not a search engine**. He is a well-read junior consul
 
 **Persona:** consultative not compliant; precise on scope, conservative on claims; vendor-agnostic by conviction; bilingually and culturally aware; structured but never robotic; self-aware about his limits. Signature opening: *"Sarvam here — IV's Proposal Architect. New deal, or picking up something from earlier?"* Full persona in [`docs/SARVAM_PERSONA.md`](SARVAM_PERSONA.md); one-pager in [`docs/MEET_SARVAM.md`](MEET_SARVAM.md).
 
-**People:** Imran (project lead, prompt engineering, persona, sprint reviews); Ashish (technical reviewer — architecture quality gate, IAM accuracy, pricing).
+**People:** Imran (project lead, prompt engineering, persona, sprint reviews; also runs all EC2 host commands — the agent has no SSH access); Ashish (technical reviewer — architecture quality gate, IAM accuracy, pricing).
 
 ---
 
 ## 2. Current status (TL;DR)
 
-- **Phases 0–3 are substantially complete** (foundation, data, agent backend, retrieval + drafting). External research (Exa/Firecrawl) deferred.
-- **Phase 4 is partial:** Open WebUI is deployed; Supabase Auth / Worker / multi-tenancy is **not wired**.
-- **Phase 5 is ~90% complete** through a 5-pass enhancement sprint + export pipeline:
-  - Pass 1 (intake + persistence) — **DONE** (`7622a4d`, migration `005` applied to live DB)
-  - Pass 2 (DOCX branding) — **DONE** (`b4d42b0`)
-  - Pass 3 (long-form depth) — **DONE** (`04fcd123`; merged to `main` as `bee4264`; verified live on EC2)
-  - Pass 4 (diagram framework) — **DONE** (`d1a8805`; Graphviz render + approval state machine)
-  - Pass 5 (Open WebUI interview gating, core) — **DONE** (`cb18462`; client-logo sourcing deferred)
-  - Export pipeline (lite <5 MB DOCX + PDF export + signed URLs) — **DONE** (`5301bade`); OWUI branding fix `3501254`; persistence status fix (draft→drafting) included
+- **Phases 0–3 complete** (foundation, data, agent backend, retrieval + drafting). External research (Exa/Firecrawl) deferred.
+- **Phase 4 ~45%:** Open WebUI deployed + interview gating wired + branding code merged; Supabase Auth / Worker / multi-tenancy **not wired**.
+- **Phase 5 ~95%:** all 5 enhancement passes done + live-validated; export pipeline (lite + PDF + signed URLs) done + live-validated; persistence fixed + live-validated. Remaining: NoneType section-drafting bug (the active item), client-logo sourcing, durable diagram spec-template store, `approved_by` (blocked on Phase 4 auth).
 - **Phase 6** (pilot, hardening, rollout) — not started.
+- **Overall completion: ~80%.** The honest remaining gap to 100% is Phase 4 auth + Phase 6 pilot (both large), plus the small Phase 5 polish items.
 
-Everything through the export pipeline + branding fix + persistence fix is on `main` (`7fd241b`, includes all docs). The live brain on EC2 runs `main` (single-branch workflow as of 2026-07-17; all feature branches deleted after merge).
+Everything through the export pipeline + branding + persistence fix is on `main` (`863fa26`). The live brain on EC2 runs `main` brain code (host tree at `0ef3c7b`; commits since are docs-only).
 
----
+### Round 3 — what landed this session (2026-07-17)
 
-## Status update — 2026-07-17 (IST)
+- **OWUI in-app logo branding** — `WEBUI_FAVICON_URL=/static/favicon.png` env + `Dockerfile.webui` COPY of IV logos into `/app/build/static/` (compiled frontend defaults replaced, not just backend static). Merged `3501254` (from `cf25a37`). ⚠️ **`open-webui` container not yet rebuilt — run `docker compose up -d --build open-webui` to render the logo.** Fallback if OWUI DB settings override env: OWUI Admin → Settings → Images (non-destructive).
+- **Phase 5 export pipeline** — new `export_engine.py` (Pillow lite DOCX compression <5 MB over `word/media/*`, LibreOffice-headless DOCX→PDF, all fail-soft); `supabase_client` upload + signed-URL delivery to the `generated-drafts` bucket; opt-in params `lite`/`include_pdf`/`return_signed_urls` on `/v1/generate-proposal` (**no flags = legacy DOCX binary, byte-for-byte; any flag = JSON with sizes + signed URLs**). Dockerfile adds `libreoffice-writer` + `fonts-dejavu-core`; requirements adds `pillow`. 59 tests pass. Merged `5301bade` (feat `6f45522` + status fix `c14bdef`).
+- **Persistence 400 fixed** — `insert_generated_proposal` sent `status="draft"`, but DB CHECK `generated_proposals_status_check` only allows `drafting`; every insert 400-ed and `generated_proposals` stayed empty (this blocked the diagram-embed flow, which needs a persisted `proposal_id`). One-line fix `draft`→`drafting` + regression test. Merged in `5301bade`.
+- **EC2 deploy unblocked** — the host was stuck at `2ca7788` because `git pull` was blocked by an uncommitted local edit to `deploy/docker-compose.yml` (the same `WEBUI_FAVICON_URL` line that branding later added to `main`). Resolution: `git stash` → `git pull origin main` (fast-forward to `0ef3c7b`) → `docker compose up -d --build sarvam-brain` (apt installed libreoffice fresh). The stashed edit was redundant (main had it) and was dropped.
+- **Live validation PASSED** — see [⚡ Where things stand](#-where-things-stand-right-now-read-this-first).
 
-### Completed this session
+### Earlier rounds (already on main, preserved for context)
 
-- **Pass 3 (long-form depth)** implemented, tested (18/18 keyless tests pass),
-  sample DOCX visually inspected (title page, TOC, body subsections, all 5
-  appendix tables clean). Commit `04fcd123` on `sprint5-doc-engine`; merged to
-  `main` as merge commit `bee4264` (no force, no rewrite).
-- **Pass 3 deployed live** to the EC2 brain (sprint5-doc-engine pull +
-  sarvam-brain rebuild). Verified live: `/health` OK; `/v1/models` OK (only
-  sarvam-architect); `/v1/intake-template` OK (24 buckets); intake session
-  create/PATCH/complete + validation OK; `/v1/compliance-matrix` OK;
-  `/v1/generate-proposal` returns a valid branded DOCX (HTTP 200, ~50s for
-  brief, ~240 KB, content-type
-  `application/vnd.openxmlformats-officedocument.wordprocessingml.document`).
-- **Daily Supabase keep-alive** scheduled task recreated on this account
-  (cron ~09:00 UTC, background; pings `SELECT count(*) FROM organizations;`,
-  auto-restores the project and notifies the user only on failure).
-- **Connectors** (GitHub, Supabase, AWS) reconnected on this account.
-- **Live state verified** against the handover — exact match: 8 tables
-  (RLS enabled on all), 11 proposals, 1,413 chunks, 5 migrations
-  (sarvam_001..sarvam_005), 1 organization. No data/schema/context lost across
-  the 3-4 account migrations.
-
-### Branch HEADs (verified 2026-07-17)
-
-- `main`: `cb18462` (single branch; Pass 3 + all docs merged)
-- (single-branch workflow as of 2026-07-17; `sprint5-doc-engine` deleted after full merge — trees were byte-identical, nothing lost)
-
-### Pass 4 + Pass 5 — completed 2026-07-17 (IST)
-
-- **Pass 4 (architecture diagram framework)** — `DiagramSpec` JSON from GLM 5.2 -> local Graphviz renderer (deterministic, no external data leak); approval state machine on `architecture_diagrams` (draft -> needs_review -> approved/rejected); only approved diagrams embed in the DOCX; fail-soft when graphviz or the `diagram-renders` bucket is absent. New endpoints `/v1/proposals/{id}/diagrams` + `/v1/diagrams/{id}`. 37 tests pass. Merged to `main` as `d1a8805`. **EC2 dep:** `sudo apt-get install -y graphviz`.
-- **Pass 5 (OWUI interview gating, core)** — `/v1/chat/completions` with no `intake_session_id` now starts the Stage 1 discovery interview (no RAG/drafting/network); session present -> existing RAG path; streaming + non-streaming both handled. Client-logo sourcing deferred. 42 tests pass total. Merged to `main` as `cb18462`.
-- **Branch cleanup:** temporary `pass4-diagrams` + `pass5-interview-gating` branches deleted after merge; repo remains single-branch `main`.
-
-### New known gaps
-
-- **OWUI logo branding not rendering in-app** — tab title + tab favicon are OK;
-  sidebar + sign-in logo still default. Critical post-pilot / pre-deployment
-  sprint — see `docs/SPRINT_OWUI_BRANDING.md`.
-- **Interview gating not wired** in `/v1/chat/completions` — "Hi" returns a RAG
-  reply, not the discovery interview. This is Pass 5 work (not started).
-- **Recurring SSH access breaks** are caused by a dynamic client public IP
-  (rules pinned to /32 stop matching when the IP rotates), NOT by AWS
-  auto-changing rules. Permanent fix: AWS Systems Manager Session Manager
-  (no inbound port 22, no IP rules).
-
-### Round 3 — OWUI branding + export pipeline + persistence fix — 2026-07-17 (IST)
-
-- **OWUI in-app logo branding** — fixed via `WEBUI_FAVICON_URL=/static/favicon.png` env + `Dockerfile.webui` COPY of IV logos into `/app/build/static/` (compiled frontend defaults now replaced, not just the backend static path). Merged `3501254`. Fallback if OWUI DB settings override env: OWUI Admin → Settings → Images (non-destructive).
-- **Phase 5 export pipeline** — new `export_engine.py` (Pillow lite DOCX compression <5 MB over `word/media/*`, LibreOffice-headless DOCX→PDF, all fail-soft); `supabase_client` upload + signed-URL delivery to the `generated-drafts` bucket; opt-in params `lite`/`include_pdf`/`return_signed_urls` on `/v1/generate-proposal` (no flags = legacy DOCX binary byte-for-byte; any flag = JSON with sizes + signed URLs). Dockerfile adds `libreoffice-writer` + `fonts-dejavu-core`; requirements adds `pillow`. 59 tests pass (42 + 16 new + 1 regression). Merged `5301bade`.
-- **Persistence 400 fixed** — `insert_generated_proposal` sent `status="draft"`, but DB CHECK `generated_proposals_status_check` only allows `drafting`; every insert 400-ed and `generated_proposals` stayed empty (this blocked the diagram-embed flow, which needs a persisted `proposal_id`). One-line fix `draft`→`drafting` + regression test. Merged `5301bade`.
-- **EC2 deploy (rebuild required — new APT/pip deps):**
-
-  ```
-  cd ~/iv-sarvam && git pull origin main
-  cd deploy
-  docker compose up -d --build open-webui    # branding fix
-  docker compose up -d --build sarvam-brain  # export pipeline + persistence fix
-  curl -s http://127.0.0.1:8000/health
-  ```
-
-- **Diagram + export live validation — PASSED (2026-07-17)** — full flow confirmed live: `POST /v1/proposals/{id}/diagrams` (LLM produced a 6-node IAM architecture spec) → `PATCH needs_review` → `PATCH approved` (rendered via `dot`, uploaded to `diagram-renders`, `rendered_svg_path` set) → regenerate with `generated_proposal_id` produced a 298 KB DOCX (~57 KB larger than the 240 KB base = diagram embedded). Export pipeline also live-validated: lite compression (already <5 MB), PDF 167 KB via LibreOffice, signed URLs to the `generated-drafts` bucket (created). Persistence fix confirmed (`generated_proposal_id` returned + row persists).
-- **Still open:** client-logo sourcing (Pass 5 deferred); `generated-drafts` Supabase Storage bucket must be created manually for signed-URL delivery; Supabase Auth/Worker/multi-tenancy (Phase 4) not wired; Phase 6 not started.
+- **Pass 3 (long-form depth)** — `proposal_depth` tiers `brief`/`standard`/`full`; multi-subsection drafting + retrieval fan-out + appendix pack (RACI/timeline/sizing/integration inventory/risks). Merged `bee4264` (from `04fcd123`).
+- **Pass 4 (diagram framework)** — `DiagramSpec` JSON → local Graphviz renderer; approval state machine on `architecture_diagrams.status` (`draft`→`needs_review`→`approved`/`rejected`); only approved diagrams embed. Endpoints `/v1/proposals/{id}/diagrams` + `/v1/diagrams/{id}`. Merged `d1a8805`.
+- **Pass 5 (OWUI interview gating)** — `/v1/chat/completions` with no `intake_session_id` starts the Stage 1 discovery interview (no RAG/drafting/network); session present → existing RAG path. Client-logo sourcing deferred. Merged `cb18462` (from `ffc8818`).
 
 ---
 
@@ -121,22 +76,22 @@ Everything through the export pipeline + branding fix + persistence fix is on `m
 ```mermaid
 flowchart TB
     subgraph EC2["AWS EC2 · Ubuntu 24.04 (ARM) · Mumbai region"]
-        OWUI["Open WebUI<br/>(chat frontend, public)"]
-        BRAIN["Sarvam Brain<br/>FastAPI (internal-only)"]
+        OWUI["Open WebUI<br/>(chat frontend, public, port 8080)"]
+        BRAIN["Sarvam Brain<br/>FastAPI (internal-only, port 8000 localhost)"]
         OWUI -->|OpenAI-compatible API| BRAIN
     end
     ROUTER["OpenRouter (LLM gateway)"]
     GLM["GLM 5.2 (primary, hardcoded)"]
     QWEN["Qwen3 235B (fallback, hardcoded)"]
     EMB["text-embedding-3-small (1536-dim)"]
-    SB["Supabase · Postgres 17 + pgvector (RLS-enforced)"]
+    SB["Supabase · Postgres 17 + pgvector (RLS-enforced, Tokyo)"]
     BRAIN -->|chat + drafting| ROUTER
     ROUTER --> GLM
     ROUTER -.fallback.-> QWEN
     BRAIN -->|embed query| EMB
     BRAIN -->|match_proposal_chunks RPC| SB
     BRAIN --> DOCS["Document Engine<br/>python-docx + Jinja2"]
-    DOCS --> DOCX["Branded DOCX (Full + Lite)"]
+    DOCS --> DOCX["Branded DOCX (Full/Lite) + PDF + signed URLs"]
 ```
 
 **The brain is internal-only** (bound to localhost). Every external path runs through Open WebUI. The brain holds the only keys to Supabase and OpenRouter.
@@ -159,30 +114,32 @@ The blueprint's intent (conversation-first, retrieval-grounded, human-in-loop, s
 ## 4. Repository
 
 - **URL:** https://github.com/imranshaikh-commits/iv-sarvam
-- **Branch:** `main` (HEAD `cb18462`, single-branch workflow as of 2026-07-17) — has everything through Pass 3 + redesigned README + all docs. EC2 pulls `main`.
-- (Former working branches `sprint5-doc-engine` and `docs/readme-redesign` were deleted on 2026-07-17 after full merges — trees were byte-identical, nothing lost.)
+- **Branch:** `main` (HEAD `863fa26`, single-branch workflow). EC2 pulls `main`.
+- All former feature branches (`sprint5-doc-engine`, `docs/readme-redesign`, `pass4-diagrams`, `pass5-interview-gating`, `export-pipeline`, `owui-branding-fix`) were deleted after merge — trees were byte-identical, nothing lost.
 
 ### Key files
 
 ```
 backend/brain/
-  app.py                # all endpoints, model constants, _structured_with_fallback (5 LLM call sites)
-  document_engine.py    # draft_section, assemble_docx (branded), generate_proposal, draft_with_openrouter
-  proposal_templates.py  # Jinja2 section templates (implementation + mss, 8 sections each)
+  app.py                # all endpoints, model constants, _structured_with_fallback (5 LLM call sites), export opt-in params
+  document_engine.py    # draft_section, assemble_docx (branded), generate_proposal, draft_with_openrouter, MAX_DRAFT_TOKENS=1500
+  proposal_templates.py  # DepthTier (brief/standard/full), get_depth_tier, Jinja2 section templates (implementation + mss)
   intake_template.py     # 24-bucket discovery interview schema (Pass 1)
-  supabase_client.py     # thin PostgREST helpers, fail-soft (Pass 1)
+  supabase_client.py     # thin PostgREST helpers, insert_generated_proposal (status="drafting"), upload_generated_draft, create_signed_url (fail-soft)
   branding.py            # DOCX branding: logo, navy/orange, header/footer, section dividers, client-logo placeholder (Pass 2)
+  export_engine.py       # NEW (Round 3): Pillow lite DOCX compression <5MB, LibreOffice-headless DOCX→PDF, fail-soft
+  diagram_engine.py      # DiagramSpec + Graphviz render_spec (Pass 4)
   assets/                # iv_logo.png (1600px), iv_logo_header.png (400px)
-  tests/                 # test_intake_template.py (7 keyless tests), test_document_engine.py
-  Dockerfile             # COPYs all modules + assets
+  tests/                 # test_intake_template.py, test_document_engine.py, test_export_engine.py (59 tests total, keyless)
+  Dockerfile             # COPYs all modules + assets; apt installs graphviz + libreoffice-writer + fonts-dejavu-core
 deploy/
-  docker-compose.yml     # open-webui (public) + sarvam-brain (internal-only)
-  Dockerfile.webui, patch-webui.py, assets/   # OWUI persona + lockdown
+  docker-compose.yml     # open-webui (public 8080) + sarvam-brain (localhost 8000); WEBUI_FAVICON_URL env
+  Dockerfile.webui, patch-webui.py, assets/   # OWUI persona + lockdown + IV logo into /app/build/static
 supabase/migrations/
   001_init.sql
   sarvam_005_intake_and_diagrams.sql   # intake_sessions table + diagram columns (applied to live DB)
-scripts/                 # ingest_proposals.py, ingest_v2.py, run_ingest.sh
-docs/                    # PROJECT.md, SARVAM_PERSONA.md, MEET_SARVAM.md, sprint docs
+scripts/                 # ingest_proposals.py, ingest_v2.py, run_ingest.sh; sarvam.env (gitignored, secrets)
+docs/                    # PROJECT.md, SARVAM_PERSONA.md, MEET_SARVAM.md, sprint docs, HANDOVER.md (this file)
 data/                    # raw (gitignored) + tagging templates
 ```
 
@@ -190,53 +147,55 @@ data/                    # raw (gitignored) + tagging templates
 
 | SHA | What |
 |---|---|
-| `7fd241b` | docs: update progress dashboard (~78%, Phase 5 ~90%) |
-| `5301bad` | Merge export-pipeline: Phase 5 lite DOCX + PDF + signed URLs + persistence status fix |
+| `863fa26` | docs: handover — diagram + export live validation PASSED (2026-07-17) |
+| `cac8e3e` | docs: Phase 5 live-validated — diagram create→approve→embed + export PDF/signed-URLs (~80%, P5 95%) |
+| `0ef3c7b` | docs: handover round-3 — branding + export pipeline + persistence fix, deploy + diagram-validation steps |
+| `7fd241b` | docs: dashboard — Phase 5 export pipeline done, branding + persistence fix |
+| `5301bad` | Merge export-pipeline: lite DOCX + PDF + signed URLs + persistence status fix (draft→drafting) |
 | `c14bdef` | fix(brain): use valid 'drafting' status on generated_proposals insert |
 | `6f45522` | feat(brain): Phase 5 opt-in export pipeline (lite DOCX, PDF, signed URLs) |
 | `3501254` | Merge owui-branding-fix: OWUI in-app logo branding (favicon env + /app/build/static) |
-| `8558913` | docs: redesign README (merge into sprint5-doc-engine) |
-| `ae019ed` | docs: redesign README — actual build, master-plan status, known gaps |
+| `cf25a37` | fix(owui): render IV in-app logo via build/static override + favicon env |
+| `2ca7788` | docs(handover): record Pass 4 + Pass 5 completion |
+| `cb18462` | Merge Pass 5: OWUI interview gating in /v1/chat/completions |
+| `ffc8818` | feat(brain): gate /v1/chat/completions to start Stage 1 discovery interview |
+| `d1a8805` | Merge Pass 4: architecture diagram framework (DiagramSpec + Graphviz + approval state machine) |
+| `8558913` | docs: redesign README |
 | `b4d42b0` | feat(brain): Pass 2 — DOCX branding |
 | `7622a4d` | feat(brain): Pass 1 — intake sessions + persistence foundation |
-| `56d777b` | feat(brain): switch LLM to GLM 5.2 primary + Qwen3 fallback (DeepSeek removed) |
-| `1793f6e` | fix(brain): cap compliance-classifier max_tokens + length caps (repetition spiral) |
-| `41437c7` | fix: real refreshable TOC field, clean SME marker, input validation |
-| `55266ff` | feat: Sprint 5 document-production engine (/v1/generate-proposal) |
-| `1549fab` | fix: require verbatim quotes + consistent downgrade output |
 
 ---
 
 ## 5. Live infrastructure & external services
 
-The new account must reconnect these three connectors (the originating account's connections do not transfer). Use Perplexity's connector system (`list_external_tools` → connect). Locate each by the descriptors below — **never paste secrets into chat or commit them**.
+The new account must reconnect these three connectors (the originating account's connections do not transfer). Use Perplexity's connector system (`list_external_tools` → `connect`). Locate each by the descriptors below — **never paste secrets into chat or commit them**.
 
 | Service | How to identify it | Connector tooling |
 |---|---|---|
 | **GitHub** | repo `imranshaikh-commits/iv-sarvam` | `gh` / `git` CLIs (via `api_credentials=["github"]`) and GitHub connector |
-| **Supabase** | project named `imranshaikh-iv-sarvam`, Tokyo region, Postgres 17 + pgvector, free tier | Supabase connector: `execute_sql`, `apply_migration`, `restore_project`, `get_project`, `list_tables`, `list_migrations` |
-| **AWS** | Sarvam EC2 host in Mumbai (ARM, Ubuntu 24.04, static Elastic IP) | AWS connector (note: the agent has **no SSH access** — the user/operator runs all host commands) |
+| **Supabase** | project named `imranshaikh-iv-sarvam`, Tokyo region (ap-northeast-1), Postgres 17 + pgvector, free tier | Supabase connector: `execute_sql`, `apply_migration`, `restore_project`, `get_project`, `list_tables`, `list_migrations` |
+| **AWS** | Sarvam EC2 host in Mumbai (ap-south-1, ARM, Ubuntu 24.04, static Elastic IP) | AWS connector (note: the agent has **no SSH access** — the user runs all host/docker commands) |
 
-**OpenRouter** (LLM gateway): primary `z-ai/glm-5.2`, fallback `qwen/qwen3-235b-a22b-2507`, embedding `openai/text-embedding-3-small`. The API key lives only in the server-local environment file (restricted permissions). The agent never touches it.
+**OpenRouter** (LLM gateway): primary `z-ai/glm-5.2`, fallback `qwen/qwen3-235b-a22b-2507`, embedding `openai/text-embedding-3-small`. The API key lives only in the server-local environment file (`scripts/sarvam.env`, restricted permissions, gitignored). The agent never touches it.
 
 **Open WebUI:** self-hosted on the EC2 box; model `sarvam-architect` → the brain's OpenAI-compatible endpoint. All other LLM connections in OWUI are disabled by the user (only sarvam-brain is enabled).
 
-**Secrets location:** a single server-local environment file on the EC2 host (restricted permissions). Contains the OpenRouter key, Supabase URL/key, and OpenAI key (for embeddings). Rotated quarterly. Never committed.
+**Secrets location:** a single server-local environment file on the EC2 host (`scripts/sarvam.env`, restricted permissions). Contains the OpenRouter key, Supabase URL/key, and OpenAI key (for embeddings). Rotated quarterly. Never committed.
 
 ---
 
 ## 6. Database (Supabase Postgres + pgvector)
 
-**Live counts (verified 2026-07-16):** 8 tables · 5 migrations · 11 proposals · 1,413 chunks · 1 intake_session (test) · 0 generated_proposals · 0 architecture_diagrams.
+**Live counts (verified 2026-07-17):** 8 tables · 5 migrations · 11 proposals · 1,413 chunks · 1 organization. After this session's live validation: `intake_sessions` has the test session `cd986560-2dea-4c08-bda6-e3efb5e25654` (complete, client "Acme Financial Services", SailPoint, implementation); `generated_proposals` has the test row `7e09e870-60f8-4df9-8fc2-26f193391b1a` (status `drafting`, lite_docx_path + final_pdf_path set); `architecture_diagrams` has `8a95b403-2146-44d4-8440-b513c96d1fbe` (status `approved`, rendered via `dot`, `rendered_svg_path` set).
 
 ### Tables
-- `organizations` — 1 row (the IV org; UUID intentionally omitted from public docs)
+- `organizations` — 1 row (the IV org)
 - `org_members`, `profiles`
 - `proposals` — 11 rows; columns: id, org_id, proposal_slug, source_filename, file_type, total_word_count, image_count, client_name, industry, country, iam_vendor, proposal_type, user_count, app_count, deal_size_bucket, outcome, year, notes, created_at
 - `proposal_chunks` — 1,413 rows, `VECTOR(1536)`; section_type taxonomy: other(555), table(268), ocr(262), page(198), assumptions(29), diagram(26), architecture(17), solution(13), scope(10), exec_summary(8), similar_experience(8), timeline(7), pricing(5), why_vendor(5), cover(2)
-- `generated_proposals` — 0 rows; `/v1/generate-proposal` persists here (fail-soft). User attribution pending until Auth/Worker identity is wired.
-- `intake_sessions` — 0 production rows (1 test); Pass 1. Columns include id, org_id, proposal_type, answers jsonb, status, created_at, completed_at.
-- `architecture_diagrams` — 0 rows; Pass 4 target. Columns: id, org_id, generated_proposal_id, mermaid_source (legacy col), rendered_svg_path, approved, approved_by, approved_at, rejection_comments, iteration, created_at, diagram_type, title, spec_json jsonb, renderer (default 'graphviz'), status (CHECK draft|needs_review|approved|rejected), intake_session_id.
+- `generated_proposals` — columns: id (uuid PK), org_id (NOT NULL FK→organizations), created_by (nullable FK→auth.users), client_name, proposal_type (CHECK: implementation|mss), iam_vendor, discovery_answers (jsonb), status (NOT NULL, CHECK: discovery|architecture_review|architecture_approved|drafting|review|final|abandoned, default 'discovery'), architecture_diagram_id, draft_markdown, final_docx_path, final_pdf_path, lite_docx_path, retrieval_trace (jsonb), created_at, updated_at, intake_session_id (FK→intake_sessions).
+- `intake_sessions` — Pass 1. Columns include id, org_id, proposal_type, answers jsonb, status, created_at, completed_at.
+- `architecture_diagrams` — Pass 4. Columns: id, org_id, generated_proposal_id, mermaid_source (legacy col), rendered_svg_path, approved, approved_by (NULL — blocked on Phase 4 auth), approved_at, rejection_comments, iteration, created_at, diagram_type, title, spec_json jsonb, renderer (default 'graphviz'), status (CHECK draft|needs_review|approved|rejected), intake_session_id.
 
 ### Migrations
 1. `sarvam_001_schema` — core tables
@@ -247,7 +206,8 @@ The new account must reconnect these three connectors (the originating account's
 
 **RLS is enforced at the database layer. Do not disable.** The brain uses a server-side key; anon access is policy-gated.
 
-**Storage buckets** (pending manual creation): `source-proposals`, `proposal-images`, `generated-drafts`, `diagram-renders`.
+### Storage buckets
+`source-proposals`, `proposal-images` (legacy, pre-existing). **`generated-drafts`** + **`diagram-renders`** created this session (both private/public=false). The export pipeline uploads lite DOCX + PDF to `generated-drafts` and issues signed URLs (1-hour TTL); the diagram renderer uploads rendered PNGs to `diagram-renders`.
 
 ### Free-tier caveat
 Supabase free tier auto-pauses after 7 days of inactivity. A daily keep-alive cron prevents this — see [§15](#15-accountsession-specific-items-to-recreate).
@@ -260,7 +220,8 @@ Supabase free tier auto-pauses after 7 days of inactivity. A daily keep-alive cr
 - **Fallback LLM:** `qwen/qwen3-235b-a22b-2507` (Qwen3 235B, flagship) — auto-triggered at every LLM call site if the primary fails before streaming, via `_structured_with_fallback`.
 - **Hardcoded** as constants — no env override, no model chooser in the UI. Open WebUI exposes a single model: "Sarvam Architect".
 - **Embeddings:** `openai/text-embedding-3-small` (1536-dim), unchanged.
-- **DeepSeek was removed entirely** — it spiraled on ambiguous compliance requirements (hundreds of thousands of characters, multi-minute hangs). Guarded against recurrence with per-call `max_tokens` caps, `frequency_penalty=0.2`, `max_retries=1`, and a truncation guard.
+- **DeepSeek was removed entirely** — it spiraled on ambiguous compliance requirements (hundreds of thousands of characters, multi-minute hangs). Guarded against recurrence with per-call `max_tokens` caps (`MAX_DRAFT_TOKENS = 1500`), `frequency_penalty=0.2`, `max_retries=1`, and a truncation guard.
+- **Token cap rationale (important):** depth grows by making *more* LLM calls (more subsections + retrieval fan-out), **never** a bigger single call. The 1500-token hard cap is an anti-repetition-spiral + cost guard, **not** the primary hallucination control. Hallucination is prevented by RAG grounding + `[N]` citations + `[ASSUMPTION]` markers + weak-evidence downgrade — these stay on regardless of length.
 - **5 LLM call sites:** chat drafting, section drafting, compliance classification, open-router raw drafting, diagram-spec generation.
 
 ---
@@ -275,110 +236,124 @@ From [`docs/PROJECT.md`](PROJECT.md):
 | 1 — Data foundation (ingest + Supabase + embeddings) | 1–2 | Done (11 proposals, 1,413 chunks) |
 | 2 — Agent backend (EC2 + Docker + OpenRouter) | 3–4 | Done |
 | 3 — Retrieval + drafting | 5–6 | Done (RAG end-to-end, compliance matrix); external research deferred |
-| 4 — Conversational frontend + auth | 7–8 | Open WebUI deployed; Supabase Auth/Worker/multi-tenancy **not wired** |
-| 5 — Architecture approval gate + compression/export | 9–10 | ~90% — diagram framework + interview gating + lite/PDF/signed-URL export done; client-logo sourcing + live diagram validation pending |
+| 4 — Conversational frontend + auth | 7–8 | ~45% — Open WebUI deployed + interview gating + branding code merged; Supabase Auth/Worker/multi-tenancy **not wired** |
+| 5 — Architecture approval gate + compression/export | 9–10 | ~95% — diagram framework + interview gating + lite/PDF/signed-URL export all done + live-validated; NoneType bug + client-logo sourcing + durable spec store pending; `approved_by` blocked on Phase 4 |
 | 6 — Pilot + hardening + rollout | 11–12 | Not started |
 
-**Post-Sprint-5 extras (handover doc 05 §4-5), not started:** Exa+Firecrawl external research, fact-checker LLM, hybrid search (BM25+vector+RRF), retrieval tuning.
+**Post-Sprint-5 extras, not started:** Exa+Firecrawl external research, fact-checker LLM, hybrid search (BM25+vector+RRF), retrieval tuning.
 
 ---
 
-## 9. The enhancement sprint (Pass 1–5) — detailed
+## 9. The enhancement sprint (Pass 1–5) + export pipeline — detailed
 
-This is the current active work — Phase 5 catch-up + enhancement, triggered by the user's big enhancement bundle. **Sequencing (advisor-validated): each pass is tightly scoped and verified independently.**
+Sequencing (advisor-validated): each pass tightly scoped and verified independently. **All passes + the export pipeline are DONE and live.**
 
 ### Pass 1 — Intake + persistence foundation — DONE (`7622a4d`)
 - `intake_sessions` migration (`sarvam_005`), applied to live DB.
 - `GET /v1/intake-template` — 24-bucket discovery interview, filters by proposal type.
 - `POST /v1/intake-sessions`, `PATCH /v1/intake-sessions/{id}`, `POST /v1/intake-sessions/{id}/complete` (validates required answers).
 - `/v1/generate-proposal` accepts `intake_session_id` to backfill + persist to `generated_proposals` (fail-soft).
-- `intake_template.py` (24 buckets), `supabase_client.py` (httpx PostgREST), `tests/test_intake_template.py` (7 keyless tests, all pass).
-- 24-bucket interview covers: client, engagement, scale/volumetrics, scope, architecture (deployment model, required diagram types + count, hardware sizing, HA/DR, security architecture, cluster topology), migration, integration, compliance/regulatory, timeline, MSS-specific (conditional), submission constraints, audience/tone, client pain + win themes, current-state systems, target architecture constraints, NFRs, delivery model, commercials, post-go-live, reuse controls, branding (client logo), depth.
+- 24-bucket interview covers: client, engagement, scale/volumetrics, scope, architecture (deployment model, diagram types + count, hardware sizing, HA/DR, security architecture, cluster topology), migration, integration, compliance/regulatory, timeline, MSS-specific (conditional), submission constraints, audience/tone, client pain + win themes, current-state systems, target architecture constraints, NFRs, delivery model, commercials, post-go-live, reuse controls, branding (client logo), depth.
 
 ### Pass 2 — DOCX branding — DONE (`b4d42b0`)
 - `branding.py` (leaf module, imported by `document_engine`, no circular import, keyless/offline).
 - IV identity: navy `#231154` primary, orange `#E85A24` accent, Calibri sans-serif, WCAG-AA contrast.
-- Branded title page (logo, navy/orange divider, title, client, vendor, date+version, `DRAFT · CONFIDENTIAL`), running header (logo + `Technical Proposal — {client}` + navy rule, content pages only), running footer (`Inspirit Vision — Confidential` + `Page N` + navy rule, numbering starts at 1 after title), section dividers (orange tick + navy left bar, kept out of TOC), client-logo placeholder box (`client_logo_path` param embeds a supplied logo instead; no online sourcing yet).
-- Assets: `iv_logo.png` (1600px, ~172KB), `iv_logo_header.png` (400px, ~27KB). Source 4000px JPEG not committed.
-- `document_engine.assemble_docx` rebuilt to use branding; `generate_proposal` signature/return, depth/max_tokens logic, endpoints, diagrams, Pass 1 files untouched.
-- Dockerfile COPYs `branding.py` + `assets/`.
-- Verified: py_compile OK, keyless smoke test pass, sample rendered to PDF→PNG, visually confirmed no overflow/wrapping/contrast.
+- Branded title page (logo, navy/orange divider, title, client, vendor, date+version, `DRAFT · CONFIDENTIAL`), running header (logo + `Technical Proposal — {client}` + navy rule), running footer (`Inspirit Vision — Confidential` + `Page N` + navy rule), section dividers (orange tick + navy left bar, kept out of TOC), client-logo placeholder box (`client_logo_path` param embeds a supplied logo; no online sourcing yet).
+- Assets: `iv_logo.png` (1600px, ~172KB), `iv_logo_header.png` (400px, ~27KB).
 
-### Pass 3 — Long-form depth — DONE (`04fcd123`, merged to `main` `bee4264`, verified live)
+### Pass 3 — Long-form depth — DONE (`bee4264`, from `04fcd123`)
 **Goal:** take drafts from ~12 pages toward 100+ page source-proposal parity.
-- `proposal_depth` tiers: `brief` / `standard` / `full` (control via number of subsections drafted + retrieval fan-out, not by inflating a single giant call).
-- Multi-subsection drafting per section.
-- More retrieval queries per section.
-- Tables/appendices: RACI, timeline, sizing, integration inventory, risks.
-- Keep per-call token caps + frequency penalty to avoid repetition spirals.
+- `proposal_depth` tiers: `brief` (1 subsection, 1 query, no appendices, 900 tok/call) / `standard` (1/1/none, 1500) / `full` (3 subsections — Overview + Detailed Design + Considerations & Dependencies — 3 queries, appendices on, 1500). Unknown/absent → `standard`.
+- Multi-subsection drafting per section (each facet its own LLM call, same per-call cap).
+- Appendices (full depth only): RACI, timeline, sizing, integration inventory, risks — as real DOCX tables, assumption-marked where data is absent (never fabricated).
+- **Known issue (the active bug):** when a subsection LLM call returns `null`, `draft_section` raises `'NoneType' object has no attribute 'strip'` and that subsection is silently dropped. Fail-soft (generation completes) but empties content. Most visible at `full` depth. See [§13](#13-known-gaps--not-pilot-ready-yet).
 
-**Acceptance criteria:**
-- `proposal_depth` supports `brief`, `standard`, `full`.
-- Existing `/v1/generate-proposal` calls still work with a safe default.
-- `full` adds multi-subsection drafting + appendices (RACI, timeline, sizing, integration inventory, risks).
-- Per-call token caps + frequency penalty preserved.
-- Keyless tests pass; sample DOCX generated and visually checked.
-- Commit to `sprint5-doc-engine`; provide EC2 deploy command.
-
-**Subagent setup (for the next agent):**
-```
-Repository setup: managed clone from https://github.com/imranshaikh-commits/iv-sarvam. Work on `main` (single-branch workflow). Do not manually clone it.
-```
-
-### Pass 4 — Architecture diagram framework — queued
-**Goal:** dynamic, approval-gated diagrams embedded in the DOCX.
-- GLM 5.2 emits structured `DiagramSpec` JSON.
-- Local Graphviz renderer → PNG/SVG (deterministic, apt-installable, no external data leak). **Not** Mermaid CLI (heavy Chromium dep), **not** Kroki (leaks client data), **not** image-gen model (unreliable at precise schematic labels).
+### Pass 4 — Architecture diagram framework — DONE (`d1a8805`)
+- GLM 5.2 emits structured `DiagramSpec` JSON (`nodes` + `edges` + `title` + `diagram_type`).
+- Local Graphviz renderer (`dot`) → PNG (deterministic, apt-installable in the Dockerfile, no external data leak). Not Mermaid CLI (heavy Chromium), not Kroki (leaks client data), not image-gen (unreliable at schematic labels).
 - Approval state machine on `architecture_diagrams.status`: `draft` → `needs_review` → `approved`/`rejected` (with `rejection_comments`, `iteration`).
-- Only `approved` diagrams are embedded in the DOCX.
-- **Reuse at spec-template level (not pixel):** store reusable DiagramSpec templates in Supabase keyed by `vendor` + `diagram_type`; approved diagrams promote to templates. Engine clones-and-edits a template rather than recreating from scratch.
-- Diagram reuse analysis (already done): 260 images across 8 DOCX, 199 distinct; ~38% reused/templated (45 exact-reused, 30 near-duplicate, 124 one-off). Reuse is per-vendor + per-diagram-type (two SailPoint implementation proposals share deployment/HRMS/SSO diagrams; two Ping proposals share reference architectures).
-- Image-gen models available on OpenRouter (Unified Image API: Google Nano Banana, OpenAI GPT Image, Flux, Seedream) but **not needed** for architecture diagrams. If polished non-diagram visuals wanted later: primary Google Nano Banana 2, fallback OpenAI GPT Image or ByteDance Seedream 4.5.
+- Only `approved` diagrams with a rendered image embed in the DOCX; draft/rejected/needs_review silently skipped.
+- Endpoints: `POST /v1/proposals/{proposal_id}/diagrams` (body: `title`, `diagram_type`, `context_text`, `intake_session_id`, `iam_vendor`, `client_name`), `GET /v1/proposals/{proposal_id}/diagrams`, `PATCH /v1/diagrams/{id}` (`{status}`).
+- **Diagram opt-in for embedding:** pass `generated_proposal_id` in the `/v1/generate-proposal` body — the engine lists diagrams for that proposal, renders approved ones via `diagram_engine.render_spec`, and embeds them.
+- **Deferred:** reusable DiagramSpec templates in Supabase keyed by `vendor` + `diagram_type` (approved diagrams would promote to templates; engine clones-and-edits instead of recreating). Diagram-reuse analysis already done: 260 images across 8 DOCX, ~38% reused/templated.
 
-### Pass 5 — Open WebUI integration — queued
-- Investigate the OWUI chat payload; enforce brain-side: no `intake_session_id` → respond with the interview (Stage 1 discovery) instead of drafting.
-- Download-button via OWUI extension/action so generated DOCX is downloadable from chat.
-- Persist generated proposals to `generated_proposals` once auth/user IDs are wired.
+### Pass 5 — OWUI interview gating — DONE (`cb18462`, from `ffc8818`)
+- `/v1/chat/completions` with no `intake_session_id` starts the Stage 1 discovery interview (no RAG/drafting/network — 0 tokens).
+- Session present → existing RAG path. Streaming + non-streaming both handled.
+- Client-logo sourcing deferred.
 
-### Cross-cutting (also queued)
-- **Client-logo sourcing:** web/image search + approval-gated embedding (ties Pass 1 interview + Pass 2 branding). If the correct logo is uncertain, confirm with the user.
-- **Tune weak-evidence threshold** against real similarity scores after reviewing several outputs.
+### Export pipeline (Round 3) — DONE (`5301bade`, from `6f45522` + `c14bdef`)
+- `export_engine.py`: Pillow lite DOCX compression (downscales images in `word/media/*` to hit <5 MB; no-op if already under target), LibreOffice-headless DOCX→PDF, all fail-soft.
+- `supabase_client`: `upload_generated_draft` (to `generated-drafts` bucket) + `create_signed_url` (1-hour TTL). RLS untouched.
+- `/v1/generate-proposal` opt-in params: `lite` (bool), `include_pdf` (bool), `return_signed_urls` (bool). **No flags → legacy DOCX binary, byte-for-byte. Any flag → JSON** with `filename`, `docx` (sizes), `pdf` (size), `signed_urls` (docx + pdf), `generated_proposal_id`.
+- Dockerfile: `libreoffice-writer` + `fonts-dejavu-core`; requirements: `pillow`. 59 tests pass.
 
 ---
 
 ## 10. Hard rules & constraints (do not violate)
 
 - **Do NOT touch the WordPress Lightsail instance.** Out of scope entirely.
-- **Never commit `.env` files or anything under `data/raw/`.** (`.gitignore` blocks `.env`, `*.pem`, `*.key`, key patterns.)
+- **Never commit `.env` files or anything under `data/raw/`.** (`.gitignore` blocks `.env`, `*.pem`, `*.key`, `scripts/sarvam.env`, key patterns.)
 - **RLS is enforced at the database layer — do not disable.**
 - **The brain (`sarvam-brain`, port 8000) is bound to localhost only.** Never expose it publicly.
 - **Rotate API keys quarterly.**
-- **No EC2 SSH access for the agent** (no `.pem` key). The user runs all host/docker commands; the agent gives exact commands.
-- **The agent cannot read the server-local env file** (secrets). Don't try.
-- **Public repo:** never put the EC2 public IP, Supabase project ref, or any key in committed docs.
+- **No EC2 SSH access for the agent** (no `.pem` key). The user runs all host/docker commands; the agent gives exact commands. (The user holds their own SSH key on their Mac — the agent still never SSHes; it gives commands for the user to run.)
+- **The agent cannot read the server-local env file** (`scripts/sarvam.env`, secrets). Don't try.
+- **Public repo:** never put the EC2 public IP, Supabase project ref, or any key in committed docs. Sensitive IDs go in the private startup prompt only.
 
 ---
 
 ## 11. Deploy workflow (user runs on EC2)
 
+The EC2 host runs single-branch `main`. Standard update:
 ```bash
-cd ~/iv-sarvam && git fetch && git pull origin main && cd deploy && docker compose up -d --build sarvam-brain && sleep 5 && H=127.0.0.1; P=8000; curl -s http://$H:$P/health; echo
+cd ~/iv-sarvam && git fetch && git pull origin main
+cd deploy
+docker compose up -d --build sarvam-brain     # brain (export pipeline + persistence fix)
+docker compose up -d --build open-webui      # OWUI branding (STILL PENDING this session — run to render the logo)
+sleep 5; H=127.0.0.1; P=8000; curl -s http://$H:$P/health; echo
 ```
 Expected health: `{"status":"ok","model":"sarvam-architect","primary_model":"z-ai/glm-5.2","fallback_model":"qwen/qwen3-235b-a22b-2507"}`
 
-URL-mangling note: chat clients auto-linkify URLs in code blocks. When giving the user a `curl` command, build the URL from shell variables (`H=127.0.0.1; P=8000; http://$H:$P/...`) so it survives copy-paste.
+Post-rebuild sanity (confirms the new deps landed):
+```bash
+docker compose exec sarvam-brain python3 -c "import export_engine, PIL; print('export_engine + Pillow OK')"
+docker compose exec sarvam-brain sh -c 'command -v soffice && echo soffice OK || echo soffice MISSING'
+```
+
+**Gotcha (hit this session):** if `git pull` aborts with "Your local changes to deploy/docker-compose.yml would be overwritten", the host has an uncommitted local edit. `git diff deploy/docker-compose.yml` to inspect, then `git stash` → `git pull origin main`. If the stashed edit is just the `WEBUI_FAVICON_URL` line (now in main), `git stash drop` it.
+
+**URL-mangling gotcha:** chat clients auto-linkify URLs in code blocks. Build `curl` URLs from shell variables (`H=127.0.0.1; P=8000; http://$H:$P/...`) so they survive copy-paste. Also: the `pp(){ python3 -m json.tool 2>/dev/null || cat; }` helper silently swallows non-JSON (binary DOCX) — use `-o file -w "HTTP %{http_code}..."` + `head -c` for debugging instead.
 
 ### Brain endpoints
-`GET /health` · `GET /v1/models` (only sarvam-architect) · `POST /v1/chat/completions` (grounded RAG + streaming) · `POST /v1/compliance-matrix` · `POST /v1/generate-proposal` (accepts `intake_session_id`, persists) · `GET /v1/intake-template` · `POST /v1/intake-sessions` · `PATCH /v1/intake-sessions/{id}` · `POST /v1/intake-sessions/{id}/complete`
+`GET /health` · `GET /v1/models` (only sarvam-architect) · `POST /v1/chat/completions` (grounded RAG + streaming; no session → discovery interview) · `POST /v1/compliance-matrix` · `POST /v1/generate-proposal` (accepts `intake_session_id`, `generated_proposal_id`, `proposal_depth`, `lite`, `include_pdf`, `return_signed_urls`, `include_compliance_matrix`; persists) · `GET /v1/intake-template` · `POST /v1/intake-sessions` · `PATCH /v1/intake-sessions/{id}` · `POST /v1/intake-sessions/{id}/complete` · `POST /v1/proposals/{id}/diagrams` · `GET /v1/proposals/{id}/diagrams` · `PATCH /v1/diagrams/{id}` · `GET /v1/diagrams/{id}`
+
+### E2E validation script (the 13-step one that passed this session)
+Reuse the existing test intake session `cd986560-2dea-4c08-bda6-e3efb5e25654` (client "Acme Financial Services", SailPoint, implementation). The full script + the full-depth page-count probe are in the originating session's transcript; the key shapes:
+```bash
+# generate (brief) → persists
+curl -s -o /tmp/sarvam.docx -w "HTTP %{http_code} size=%{size_download}B time=%{time_total}s\n" \
+  $B/v1/generate-proposal -H "Content-Type: application/json" \
+  -d '{"intake_session_id":"<SID>","proposal_depth":"brief","include_compliance_matrix":true,"rfp_text":"..."}'
+
+# export pipeline → JSON with PDF + signed URLs
+curl -s $B/v1/generate-proposal -H "Content-Type: application/json" \
+  -d '{"intake_session_id":"<SID>","proposal_depth":"brief","lite":true,"include_pdf":true,"return_signed_urls":true}' | python3 -m json.tool
+
+# full-depth page-count probe (THE IN-FLIGHT ONE — re-run + count pages)
+curl -s $B/v1/generate-proposal -H "Content-Type: application/json" \
+  -d '{"generated_proposal_id":"<PID>","intake_session_id":"<SID>","proposal_depth":"full","include_compliance_matrix":true,"rfp_text":"...","lite":true,"include_pdf":true,"return_signed_urls":true}' | python3 -m json.tool
+# then fetch the returned PDF signed URL and count /Type /Page (the 8-page "full-depth sample" in the workspace suggests full may still be short — fix the NoneType bug first)
+```
 
 ---
 
 ## 12. Key decisions & rationale
 
-- **Model swap:** GLM 5.2 primary + Qwen3 235B fallback, hardcoded. DeepSeek removed (compliance spiral). Fallback at all 5 call sites via `_structured_with_fallback`. Embedding unchanged.
+- **Model swap:** GLM 5.2 primary + Qwen3 235B fallback, hardcoded. DeepSeek removed (compliance spiral). Fallback at all 5 call sites via `_structured_with_fallback`.
 - **Diagrams = DiagramSpec + Graphviz** (not Mermaid/Kroki/image-gen) — see Pass 4.
-- **Diagram reuse at spec-template level** (not pixel) — per vendor + diagram type.
-- **5-pass sequencing:** Pass 1 → 2 → 3 → 4 → 5, each verified independently. Passes 1–2 done.
+- **Diagram reuse at spec-template level** (not pixel) — per vendor + diagram type. Deferred.
+- **Depth via more calls, not bigger calls** — the 1500-token hard cap is anti-spiral + cost, not anti-hallucination. Hallucination is controlled by RAG + citations + assumption markers.
 - **Fail-soft persistence:** if a Supabase write fails, the generated DOCX is still returned — generation never blocks on storage.
 - **OWUI lockdown:** only sarvam-brain connection enabled; OpenAI/OpenRouter/Ollama connections disabled by the user. Multi-model dropdown removed.
 
@@ -386,25 +361,33 @@ URL-mangling note: chat clients auto-linkify URLs in code blocks. When giving th
 
 ## 13. Known gaps / not pilot-ready yet
 
-- Auth/multi-tenancy not wired (network isolation + disabled sign-ups is the interim gate).
-- Architecture approval gate pending Pass 4.
-- Long-form depth pending Pass 3.
-- Lite (under 5 MB) compression, PDF export, delivery to storage signed URLs — not done.
-- External research (Exa/Firecrawl) + fact-checker LLM — deferred post-pilot.
-- Hybrid search (BM25+vector+RRF) — deferred.
-- Pilot validation against historical RFPs — not started.
-- Supabase storage buckets pending manual creation.
+**Active bug (fix first):**
+- **NoneType section-drafting soft-fail.** When a subsection LLM call returns `null`, `draft_section` does `'NoneType' object has no attribute 'strip'` and drops that subsection (empty). Non-fatal (fail-soft) but is the #1 reason proposals stay short + have missing sections, especially at `proposal_depth="full"`. Confirmed firing on `Considerations & Dependencies`/technical_approach, `Detailed Design`/integration_points, `Overview`+`Detailed Design`/assumptions_open_questions. Fix: treat a `null`/empty draft as a retry (once) then a grounded `[ASSUMPTION]`-marked placeholder instead of crashing to empty. ~30 min, fully grounded.
+
+**Phase 5 polish (small):**
+- Client-logo sourcing (web/image search + approval-gated embedding) — deferred from Pass 5.
+- Durable diagram spec-template store (Supabase, keyed by vendor + diagram_type) — deferred from Pass 4.
+- `approved_by` on architecture_diagrams is NULL — blocked on Phase 4 auth (no user identity yet).
+- OWUI in-app logo: code merged but `open-webui` container not yet rebuilt (see [§11](#11-deploy-workflow-user-runs-on-ec2)).
+
+**Phase 4 (the real remaining gap):**
+- Supabase Auth / Worker / multi-tenancy not wired. Currently gated by RLS + disabled sign-ups + brain-localhost isolation. Unblocks `approved_by` + real per-org data isolation.
+
+**Phase 6 (not started):**
+- Pilot (5-10 historical RFPs, scoring rubric), hardening, rollout.
+
+**Deferred post-pilot:** Exa+Firecrawl external research, fact-checker LLM, hybrid search (BM25+vector+RRF), retrieval tuning, AWS Systems Manager Session Manager (permanent SSH fix vs dynamic client IP rules).
 
 ---
 
 ## 14. Immediate next steps
 
-1. Pass 4 (architecture diagram framework) — or prioritize interview-gating
-   (Pass 5) for the biggest user-visible win.
-2. OWUI branding fix (`docs/SPRINT_OWUI_BRANDING.md`) — post-pilot, pre-deploy.
-3. Phase 6 pilot (5-10 historical RFPs, scoring rubric, hardening, rollout).
+1. **Measure the full-depth page count** (in-flight). Re-run the full-depth probe in [§11](#11-deploy-workflow-user-runs-on-ec2), fetch the returned PDF signed URL, count `/Type /Page`. The honest expectation: even at `full`, output is bounded by the 1500-token/call cap + section fill rate; the 8-page prior sample suggests it may still be short. Report the real number, not a guess.
+2. **Fix the NoneType section-drafting bug** ([§13](#13-known-gaps--not-pilot-ready-yet)). Biggest lever for length + completeness; fully grounded. Delegate to a coding subagent (managed clone from the repo, single-branch `main`) per the coding skill — do not hand-edit.
+3. **Rebuild `open-webui`** on the EC2 host to render the merged branding logo (`docker compose up -d --build open-webui`).
+4. **Then decide direction with the user:** close Phase 5 polish to ~100% (client-logo + durable spec store), or jump to Phase 4 auth (the bigger lever toward a real pilot) / Phase 6 pilot.
 
-**Before each pass:** verify live state (branch HEAD, DB counts) with `gh api` and the Supabase connector; do not trust stale memory.
+**Before each step:** verify live state (branch HEAD via `gh api`, DB counts via the Supabase connector); do not trust stale memory. If a coding subagent returns empty after hitting its turn limit, ask the user whether to continue — do not re-spawn or continue the work yourself.
 
 ---
 
@@ -412,13 +395,14 @@ URL-mangling note: chat clients auto-linkify URLs in code blocks. When giving th
 
 These live on the originating account/session and **will not transfer** to a new account:
 
-1. **Daily Supabase keep-alive cron** (originating id `88b8e51a`, fires ~05:39 IST daily). On the new account, recreate it via `schedule_cron`:
-   - `cron`: `9 0 * * *` (UTC) — i.e. ~05:39 IST.
+1. **Daily Supabase keep-alive cron** (originating id `081d3850`, fires `54 0 * * *` UTC — i.e. ~06:24 IST daily, background). On the new account, recreate via `schedule_cron`:
+   - `cron`: `54 0 * * *` (UTC).
    - `background`: true.
-   - Task: call the Supabase connector `execute_sql` on the project with `SELECT count(*) AS c FROM organizations;`. If it succeeds, end silently (no notification). If it fails/paused, call `restore_project`, then `send_notification` (in-app) to the user: title "Sarvam Supabase was paused — auto-restored".
-2. **Connectors:** GitHub, Supabase, AWS — reconnect on the new account (see [§5](#5-live-infrastructure--external-services)).
-3. **Workspace files:** the 10 source proposals and 5 handover docs were uploaded attachments on the originating session — they are **already ingested into Supabase** (11 proposals, 1,413 chunks), so re-upload is only needed if re-analysis of raw files is required (e.g. deeper diagram study). The diagram-reuse analysis is already captured in [§9 Pass 4](#pass-4--architecture-diagram-framework--queued).
-4. **IV logo assets** are committed in `backend/brain/assets/` and `uploaded_attachments/.../InspiritVision_Logo_*` — the committed ones are enough; originals are on the EC2 host if needed.
+   - Task: call the Supabase connector `execute_sql` on the project with `SELECT count(*) AS c FROM organizations;`. If it succeeds, end silently (no notification). If it fails/paused, call `restore_project`, then `send_notification` (in-app only) to the user: title "Sarvam Supabase was paused — auto-restored", short body. Never notify on success.
+2. **Connectors:** GitHub, Supabase, AWS — reconnect on the new account (see [§5](#5-live-infrastructure--external-services)). The user will reconnect when prompted — do not ask for keys or paste secrets.
+3. **Workspace files:** the 10 source proposals and 5 handover docs were uploaded attachments on the originating session — they are **already ingested into Supabase** (11 proposals, 1,413 chunks), so re-upload is only needed if re-analysis of raw files is required. The diagram-reuse analysis is captured in [§9 Pass 4](#pass-4--architecture-diagram-framework--done-d1a8805).
+4. **IV logo assets** are committed in `backend/brain/assets/` — the committed ones are enough; originals are on the EC2 host if needed.
+5. **Test data (reusable):** intake session `cd986560-2dea-4c08-bda6-e3efb5e25654`, generated proposal `7e09e870-60f8-4df9-8fc2-26f193391b1a`, approved diagram `8a95b403-2146-44d4-8440-b513c96d1fbe`. Safe to reuse for validation; do not delete.
 
 ---
 

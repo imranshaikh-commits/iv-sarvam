@@ -2,7 +2,7 @@
 
 > **Purpose.** This document lets any new operator (human or AI agent) pick up the Sarvam build exactly where it stands today, with zero re-discovery. It was written because the build may move to a different Perplexity account when credits on the originating account run low. Read it in full before starting work; it is self-contained.
 >
-> **Last updated:** 2026-07-17 (IST). **Repo:** `imranshaikh-commits/iv-sarvam` (public fork of `creator-imran/sarvam`). **Default branch:** `main`. **Working branch:** `sprint5-doc-engine`. Current HEADs: `main` is `bee4264`, `sprint5-doc-engine` is `04fcd12`. **Always verify current HEADs before acting.**
+> **Last updated:** 2026-07-17 (IST). **Repo:** `imranshaikh-commits/iv-sarvam` (public fork of `creator-imran/sarvam`). **Default branch:** `main`. **Working branch:** `main` (single-branch workflow as of 2026-07-17; `sprint5-doc-engine` and `docs/readme-redesign` were deleted after full merges). Current HEAD: `main` is `5b9fab3`. **Always verify current HEAD before acting.**
 >
 > **Public-safe.** This file is committed to a public repository. It contains **no** secrets, API keys, EC2 IPs, or Supabase project refs. Identifiers are described by name/region so the operator can locate them; secrets live only on the EC2 host's local env file.
 
@@ -44,7 +44,7 @@ He is **not a chatbot and not a search engine**. He is a well-read junior consul
   - Pass 5 (Open WebUI integration) — queued
 - **Phase 6** (pilot, hardening, rollout) — not started.
 
-Everything through Pass 3 + the redesigned README is merged to `main` (`bee4264`). The live brain on EC2 runs `sprint5-doc-engine` (`04fcd12`).
+Everything through Pass 3 + the redesigned README is on `main` (`5b9fab3`, includes all docs). The live brain on EC2 runs `main` (single-branch workflow as of 2026-07-17; `sprint5-doc-engine` was deleted after a full, byte-identical merge).
 
 ---
 
@@ -74,8 +74,8 @@ Everything through Pass 3 + the redesigned README is merged to `main` (`bee4264`
 
 ### Branch HEADs (verified 2026-07-17)
 
-- `main`: `bee4264` (merge of Pass 3 into main)
-- `sprint5-doc-engine`: `04fcd12` (Pass 3)
+- `main`: `5b9fab3` (single branch; Pass 3 + all docs merged)
+- (single-branch workflow as of 2026-07-17; `sprint5-doc-engine` deleted after full merge — trees were byte-identical, nothing lost)
 
 ### New known gaps
 
@@ -134,9 +134,8 @@ The blueprint's intent (conversation-first, retrieval-grounded, human-in-loop, s
 ## 4. Repository
 
 - **URL:** https://github.com/imranshaikh-commits/iv-sarvam
-- **Default branch:** `main` (HEAD `644cc7e`) — has everything through Pass 2 + redesigned README.
-- **Working branch:** `sprint5-doc-engine` (HEAD `8558913`) — where active dev happens; EC2 pulls this.
-- **Aux branch:** `docs/readme-redesign` (can be deleted; already merged).
+- **Branch:** `main` (HEAD `5b9fab3`, single-branch workflow as of 2026-07-17) — has everything through Pass 3 + redesigned README + all docs. EC2 pulls `main`.
+- (Former working branches `sprint5-doc-engine` and `docs/readme-redesign` were deleted on 2026-07-17 after full merges — trees were byte-identical, nothing lost.)
 
 ### Key files
 
@@ -293,7 +292,7 @@ This is the current active work — Phase 5 catch-up + enhancement, triggered by
 
 **Subagent setup (for the next agent):**
 ```
-Repository setup: managed clone from https://github.com/imranshaikh-commits/iv-sarvam. Branch from sprint5-doc-engine. Do not manually clone it.
+Repository setup: managed clone from https://github.com/imranshaikh-commits/iv-sarvam. Work on `main` (single-branch workflow). Do not manually clone it.
 ```
 
 ### Pass 4 — Architecture diagram framework — queued
@@ -333,7 +332,7 @@ Repository setup: managed clone from https://github.com/imranshaikh-commits/iv-s
 ## 11. Deploy workflow (user runs on EC2)
 
 ```bash
-cd ~/iv-sarvam && git fetch && git pull origin sprint5-doc-engine && cd deploy && docker compose up -d --build sarvam-brain && sleep 5 && H=127.0.0.1; P=8000; curl -s http://$H:$P/health; echo
+cd ~/iv-sarvam && git fetch && git pull origin main && cd deploy && docker compose up -d --build sarvam-brain && sleep 5 && H=127.0.0.1; P=8000; curl -s http://$H:$P/health; echo
 ```
 Expected health: `{"status":"ok","model":"sarvam-architect","primary_model":"z-ai/glm-5.2","fallback_model":"qwen/qwen3-235b-a22b-2507"}`
 
@@ -401,4 +400,4 @@ These live on the originating account/session and **will not transfer** to a new
 
 ---
 
-*End of handover. When in doubt, read [`README.md`](../README.md), [`docs/PROJECT.md`](PROJECT.md), and the code on `sprint5-doc-engine`. Verify live state before acting; do not trust memory alone.*
+*End of handover. When in doubt, read [`README.md`](../README.md), [`docs/PROJECT.md`](PROJECT.md), and the code on `main`. Verify live state before acting; do not trust memory alone.*

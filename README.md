@@ -17,7 +17,7 @@
 
 > Quick-glance project status. Last updated: 2026-07-17 (IST).
 
-**Overall completion: ~78%**
+**Overall completion: ~80%**
 `████████████████░░░░`
 
 ### Phase completion (6 phases / 12 sprints)
@@ -29,7 +29,7 @@
 | 2 — Agent backend (EC2 + Docker + OpenRouter) | Done | `████████████████████` 100% |
 | 3 — Retrieval + drafting | Done | `████████████████████` 100% |
 | 4 — Conversational frontend + auth | Partial | `█████████░░░░░░░░░░░` 45% |
-| 5 — Architecture approval gate + compression/export | In progress | `█████████████████░░░` 90% |
+| 5 — Architecture approval gate + compression/export | In progress | `███████████████████░░` 95% |
 | 6 — Pilot + hardening + rollout | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
 
 ### Phase 5 enhancement sprint (5 passes)
@@ -41,13 +41,13 @@
 | 3 | Long-form depth (`proposal_depth` tiers) | Done — `04fcd12` (merged to main `bee4264`) |
 | 4 | Architecture diagram framework | Done — merged `d1a8805` |
 | 5 | Open WebUI integration (interview gating) | Done (core) — merged `cb18462`; client-logo sourcing deferred |
-| 6 | Export pipeline (lite <5 MB + PDF + signed URLs) | Done — merged `5301bade`; OWUI branding fix `3501254`; persistence status fix (draft→drafting) included |
+| 6 | Export pipeline (lite <5 MB + PDF + signed URLs) | Done + live-validated — merged `5301bade`; PDF 167 KB via LibreOffice, signed URLs to `generated-drafts` bucket, persistence fix all confirmed live |
 
 ### Known gaps before pilot
 
 - **OWUI logo branding (in-app)** — resolved via `WEBUI_FAVICON_URL` env + `/app/build/static` logo override (merged `3501254`); verify after redeploy — fallback OWUI Admin → Settings → Images if DB settings override env.
 - **Persistence status bug fixed** — `generated_proposals` inserts were 400-ing on `status="draft"` (DB CHECK only allows `drafting`); now persists, so the diagram-embed flow has a `proposal_id` (merged `5301bade`).
-- Live diagram validation pending — deploy brain, generate a fresh proposal, then run create→approve→embed (see HANDOVER §2).
+- **Diagram flow live-validated (2026-07-17)** — create spec (6-node IAM architecture) → approve (rendered via `dot`, `rendered_svg_path` set) → regenerate with `generated_proposal_id` produced a 298 KB DOCX (diagram embedded).
 - **Client-logo sourcing** (web/image search + approval-gated embedding) — deferred from Pass 5.
 - **Architecture diagrams need graphviz** — EC2 host runs `sudo apt-get install -y graphviz` (Dockerfile installs it in the image).
 - Lite (<5 MB) DOCX compression, PDF export (LibreOffice headless), storage signed-URL delivery — done (merged `5301bade`). The `generated-drafts` Supabase Storage bucket must be created manually for signed-URL delivery (fail-soft if absent).

@@ -94,7 +94,7 @@ def _vendor_clause(iam_vendor: Optional[str]) -> str:
 # Hard ceiling on any single draft call's token budget. Pass 3 depth tiers vary
 # the budget DOWN for leaner tiers but must never raise a call above this — depth
 # comes from more (fanned-out) calls, not from one runaway call.
-MAX_DRAFT_TOKENS = 1500
+MAX_DRAFT_TOKENS = 3500
 
 
 def _draft_payload(model: str, system_prompt: str, user_prompt: str,

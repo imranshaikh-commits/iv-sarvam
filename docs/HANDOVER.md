@@ -111,7 +111,7 @@ Everything through the export pipeline + branding fix + persistence fix is on `m
   curl -s http://127.0.0.1:8000/health
   ```
 
-- **Diagram live validation (pending user deploy)** — after the brain rebuild, generate a fresh proposal (`proposal_type` = `implementation` or `mss`), then: `POST /v1/proposals/{id}/diagrams` (LLM spec, ~seconds) → `PATCH /v1/diagrams/{diag_id}` `{"status":"needs_review"}` → `PATCH` `{"status":"approved"}` (renders via `dot`, uploads to `diagram-renders`) → optional `POST /v1/generate-proposal` with `generated_proposal_id` to re-embed the approved diagram (~60s LLM regen).
+- **Diagram + export live validation — PASSED (2026-07-17)** — full flow confirmed live: `POST /v1/proposals/{id}/diagrams` (LLM produced a 6-node IAM architecture spec) → `PATCH needs_review` → `PATCH approved` (rendered via `dot`, uploaded to `diagram-renders`, `rendered_svg_path` set) → regenerate with `generated_proposal_id` produced a 298 KB DOCX (~57 KB larger than the 240 KB base = diagram embedded). Export pipeline also live-validated: lite compression (already <5 MB), PDF 167 KB via LibreOffice, signed URLs to the `generated-drafts` bucket (created). Persistence fix confirmed (`generated_proposal_id` returned + row persists).
 - **Still open:** client-logo sourcing (Pass 5 deferred); `generated-drafts` Supabase Storage bucket must be created manually for signed-URL delivery; Supabase Auth/Worker/multi-tenancy (Phase 4) not wired; Phase 6 not started.
 
 ---

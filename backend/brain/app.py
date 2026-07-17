@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Literal
 
@@ -39,6 +40,11 @@ from document_engine import generate_proposal
 # Sprint 5 Pass 1 — structured intake + persistence. Neither module imports app.
 from intake_template import get_intake_template, missing_required
 import supabase_client
+
+# Sprint 5 Pass 4 — architecture diagrams. diagram_engine does NOT import app
+# (the structured LLM helper is injected), so this stays a one-way dependency.
+import diagram_engine
+from diagram_engine import DiagramSpec, InvalidTransition
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("sarvam-brain")
@@ -653,6 +659,31 @@ async def generate_proposal_endpoint(request: Request):
     if not rfp_text:
         return JSONResponse({"error": "rfp_text is required"}, status_code=400)
 
+    # Pass 4 — embed approved architecture diagrams. Opt-in via an existing
+    # generated_proposal_id; when omitted the default path is byte-for-byte
+    # unchanged (Pass 1-3). Approved diagrams are rendered fail-soft (a missing
+    # `dot` binary just skips the embed, never breaks generation).
+    embed_diagrams: list[dict] = []
+    embed_proposal_id = (body.get("generated_proposal_id") or "").strip() or None
+    if embed_proposal_id:
+        async with httpx.AsyncClient() as dclient:
+            diagram_rows = await supabase_client.list_diagrams_for_proposal(dclient, embed_proposal_id)
+        for drow in diagram_rows:
+            if (drow.get("status") or "") != "approved":
+                continue
+            try:
+                spec = DiagramSpec.model_validate(drow.get("spec_json") or {})
+                image = diagram_engine.render_spec(spec, fmt="png")
+            except Exception as e:  # noqa: BLE001 — fail soft per diagram
+                log.error("approved diagram render failed (skipping embed): %s", e)
+                image = None
+            if image:
+                embed_diagrams.append(
+                    {"title": drow.get("title") or "Architecture Diagram",
+                     "status": "approved", "image_bytes": image,
+                     "diagram_type": drow.get("diagram_type")}
+                )
+
     try:
         async with httpx.AsyncClient() as client:
             result = await generate_proposal(
@@ -670,6 +701,7 @@ async def generate_proposal_endpoint(request: Request):
                 include_compliance_matrix=include_compliance_matrix,
                 top_k=top_k,
                 proposal_depth=proposal_depth,
+                diagrams=embed_diagrams or None,
             )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
@@ -705,6 +737,145 @@ async def generate_proposal_endpoint(request: Request):
         media_type=DOCX_MEDIA_TYPE,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# =====================================================================
+# Sprint 5 Pass 4 — architecture diagram approval flow
+# =====================================================================
+# The LLM emits a structured DiagramSpec (never raw DOT); diagram_engine builds
+# DOT deterministically and renders via the local `dot` binary (fail-soft). Only
+# 'approved' diagrams are embedded into the proposal DOCX.
+
+def _diagram_public(row: dict) -> dict:
+    """Trim a DB row to the fields the API exposes."""
+    return {
+        "id": row.get("id"),
+        "generated_proposal_id": row.get("generated_proposal_id"),
+        "intake_session_id": row.get("intake_session_id"),
+        "diagram_type": row.get("diagram_type"),
+        "title": row.get("title"),
+        "status": row.get("status"),
+        "approved": row.get("approved"),
+        "iteration": row.get("iteration"),
+        "renderer": row.get("renderer"),
+        "rendered_svg_path": row.get("rendered_svg_path"),
+        "rejection_comments": row.get("rejection_comments"),
+        "spec_json": row.get("spec_json"),
+        "created_at": row.get("created_at"),
+    }
+
+
+@app.post("/v1/proposals/{proposal_id}/diagrams")
+async def create_diagram_endpoint(proposal_id: str, request: Request):
+    """Generate a structured architecture-diagram spec (LLM) and persist as draft.
+
+    Body: {"title","diagram_type","context_text","intake_session_id"} (all
+    optional except a sensible default title). Returns the created diagram row.
+    The spec is generated via the shared _structured_with_fallback helper and
+    sanitized/capped before storage. No raw DOT is ever accepted.
+    """
+    body = await request.json()
+    title = (body.get("title") or "Solution Architecture").strip() or "Solution Architecture"
+    diagram_type = (body.get("diagram_type") or "architecture").strip().lower()
+    context_text = (body.get("context_text") or "").strip()
+    intake_session_id = (body.get("intake_session_id") or "").strip() or None
+    iam_vendor = (body.get("iam_vendor") or "").strip() or None
+    client_name = (body.get("client_name") or "the client").strip() or "the client"
+
+    try:
+        spec = await diagram_engine.generate_diagram_spec(
+            _structured_with_fallback,
+            title=title,
+            diagram_type=diagram_type,
+            context_text=context_text,
+            client_name=client_name,
+            iam_vendor=iam_vendor,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.error("diagram spec generation failed: %s", e)
+        return JSONResponse({"error": f"diagram spec generation failed: {e}"}, status_code=502)
+
+    async with httpx.AsyncClient() as client:
+        row = await supabase_client.insert_diagram(
+            client,
+            org_id=IV_ORG_ID,
+            generated_proposal_id=proposal_id,
+            diagram_type=spec.diagram_type,
+            title=spec.title,
+            spec_json=spec.model_dump(),
+            status="draft",
+            intake_session_id=intake_session_id,
+        )
+    if row is None:
+        return JSONResponse({"error": "could not persist diagram"}, status_code=502)
+    return JSONResponse(_diagram_public(row), status_code=201)
+
+
+@app.get("/v1/proposals/{proposal_id}/diagrams")
+async def list_diagrams_endpoint(proposal_id: str):
+    """List all diagrams attached to a proposal (newest first)."""
+    async with httpx.AsyncClient() as client:
+        rows = await supabase_client.list_diagrams_for_proposal(client, proposal_id)
+    return JSONResponse({"diagrams": [_diagram_public(r) for r in rows]})
+
+
+@app.get("/v1/diagrams/{diagram_id}")
+async def get_diagram_endpoint(diagram_id: str):
+    """Fetch a single diagram by id."""
+    async with httpx.AsyncClient() as client:
+        row = await supabase_client.get_diagram(client, diagram_id)
+    if row is None:
+        return JSONResponse({"error": "diagram not found"}, status_code=404)
+    return JSONResponse(_diagram_public(row))
+
+
+@app.patch("/v1/diagrams/{diagram_id}")
+async def patch_diagram_endpoint(diagram_id: str, request: Request):
+    """Advance a diagram through the approval state machine.
+
+    Body: {"status": "needs_review|approved|rejected|draft",
+           "rejection_comment": "..." (required when rejecting)}
+
+    Transitions are validated (draft->needs_review->approved/rejected;
+    rejected->draft bumps iteration). On approval the spec is rendered with the
+    local `dot` binary and uploaded to the diagram-renders bucket (both
+    fail-soft — a missing renderer/bucket never blocks the approval)."""
+    body = await request.json()
+    target = (body.get("status") or "").strip()
+    rejection_comment = body.get("rejection_comment")
+
+    async with httpx.AsyncClient() as client:
+        row = await supabase_client.get_diagram(client, diagram_id)
+        if row is None:
+            return JSONResponse({"error": "diagram not found"}, status_code=404)
+
+        try:
+            patch = diagram_engine.apply_transition(
+                row, target, rejection_comment=rejection_comment
+            )
+        except InvalidTransition as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+
+        # On approval, stamp approved_at (approved_by stays NULL until real auth
+        # propagates a user id) and render + upload the image (fail-soft).
+        if target == "approved":
+            patch["approved_at"] = datetime.now(timezone.utc).isoformat()
+            try:
+                spec = DiagramSpec.model_validate(row.get("spec_json") or {})
+                image = diagram_engine.render_spec(spec, fmt="png")
+                if image:
+                    path = await supabase_client.upload_diagram_render(
+                        client, f"{diagram_id}.png", image, content_type="image/png"
+                    )
+                    if path:
+                        patch["rendered_svg_path"] = path
+            except Exception as e:  # noqa: BLE001 — render/upload must not block approval
+                log.error("diagram render/upload failed on approve (fail-soft): %s", e)
+
+        updated = await supabase_client.update_diagram(client, diagram_id, patch)
+    if updated is None:
+        return JSONResponse({"error": "could not update diagram"}, status_code=502)
+    return JSONResponse(_diagram_public(updated))
 
 
 @app.post("/v1/chat/completions")

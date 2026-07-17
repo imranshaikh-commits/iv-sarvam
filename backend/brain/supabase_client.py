@@ -238,3 +238,137 @@ async def insert_generated_proposal(
         log.error("insert_generated_proposal failed: %s", e)
         return None
     return rows[0]["id"] if rows else None
+
+
+# --- architecture_diagrams (Pass 4) -----------------------------------------
+# All fail-soft (log + None/empty). The core proposal flow must never break on a
+# diagram persistence hiccup. RLS is enforced at the DB layer; the service-role
+# key bypasses it here exactly as for the other tables above.
+
+DIAGRAM_BUCKET = os.environ.get("DIAGRAM_BUCKET", "diagram-renders")
+
+
+async def insert_diagram(
+    client: httpx.AsyncClient,
+    *,
+    org_id: str,
+    generated_proposal_id: str | None,
+    diagram_type: str,
+    title: str,
+    spec_json: dict,
+    status: str = "draft",
+    intake_session_id: str | None = None,
+) -> dict | None:
+    """Insert a new architecture diagram row. Fail-soft -> None.
+
+    mermaid_source is legacy but NOT NULL in the base schema, so we write an
+    empty string (the structured spec lives in spec_json; renderer='graphviz')."""
+    payload = {
+        "org_id": org_id,
+        "generated_proposal_id": generated_proposal_id,
+        "mermaid_source": "",  # legacy NOT NULL column; superseded by spec_json
+        "spec_json": spec_json,
+        "diagram_type": diagram_type,
+        "title": title,
+        "renderer": "graphviz",
+        "status": status,
+        "intake_session_id": intake_session_id,
+    }
+    try:
+        resp = await client.post(
+            _table_url("architecture_diagrams"), headers=_headers(), json=payload, timeout=30.0
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as e:  # noqa: BLE001
+        log.error("insert_diagram failed: %s", e)
+        return None
+    return rows[0] if rows else None
+
+
+async def get_diagram(client: httpx.AsyncClient, diagram_id: str) -> dict | None:
+    """Fetch a single diagram by id. Fail-soft -> None."""
+    try:
+        resp = await client.get(
+            _table_url("architecture_diagrams"),
+            headers=_headers(prefer_representation=False),
+            params={"id": f"eq.{diagram_id}", "select": "*", "limit": "1"},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as e:  # noqa: BLE001
+        log.error("get_diagram failed: %s", e)
+        return None
+    return rows[0] if rows else None
+
+
+async def list_diagrams_for_proposal(
+    client: httpx.AsyncClient, generated_proposal_id: str
+) -> list[dict]:
+    """List diagrams attached to a proposal (newest first). Fail-soft -> []."""
+    try:
+        resp = await client.get(
+            _table_url("architecture_diagrams"),
+            headers=_headers(prefer_representation=False),
+            params={
+                "generated_proposal_id": f"eq.{generated_proposal_id}",
+                "select": "*",
+                "order": "created_at.desc",
+            },
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        return resp.json() or []
+    except Exception as e:  # noqa: BLE001
+        log.error("list_diagrams_for_proposal failed: %s", e)
+        return []
+
+
+async def update_diagram(
+    client: httpx.AsyncClient, diagram_id: str, patch: dict
+) -> dict | None:
+    """Apply a column patch to a diagram row. Fail-soft -> None."""
+    body = {**patch, "updated_at": "now()"} if "updated_at" not in patch else dict(patch)
+    # architecture_diagrams has no updated_at column in the base schema; only
+    # send known columns to avoid PostgREST rejecting the write.
+    body.pop("updated_at", None)
+    try:
+        resp = await client.patch(
+            _table_url("architecture_diagrams"),
+            headers=_headers(),
+            params={"id": f"eq.{diagram_id}"},
+            json=body,
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as e:  # noqa: BLE001
+        log.error("update_diagram failed: %s", e)
+        return None
+    return rows[0] if rows else None
+
+
+async def upload_diagram_render(
+    client: httpx.AsyncClient, path: str, image_bytes: bytes, content_type: str = "image/png"
+) -> str | None:
+    """Upload a rendered diagram to the DIAGRAM_BUCKET storage bucket. Fail-soft.
+
+    Returns the storage object path on success, or None if the bucket is absent /
+    upload fails (caller must fall back to skipping the embed or documenting
+    manual setup — never crash)."""
+    url = f"{SUPABASE_URL}/storage/v1/object/{DIAGRAM_BUCKET}/{path}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": content_type,
+        "x-upsert": "true",
+    }
+    try:
+        resp = await client.post(url, headers=headers, content=image_bytes, timeout=30.0)
+        resp.raise_for_status()
+    except Exception as e:  # noqa: BLE001
+        log.error("upload_diagram_render failed (bucket '%s' missing? fail-soft): %s",
+                  DIAGRAM_BUCKET, e)
+        return None
+    return path

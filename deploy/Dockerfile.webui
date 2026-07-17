@@ -22,6 +22,16 @@ COPY assets/iv-logo-96.png  /app/backend/open_webui/static/favicon-96x96.png
 COPY assets/iv-logo-dark.png /app/backend/open_webui/static/favicon-dark.png
 COPY assets/iv-logo.ico     /app/backend/open_webui/static/favicon.ico
 
+# The compiled frontend (/app/build/static/) ships its OWN default logo assets,
+# which OWUI uses for the in-app logo (sidebar + sign-in) when /api/config emits
+# no logo URL. Overwrite those too so the IV mark renders everywhere, not just
+# the browser-tab favicon served from the backend static path above.
+COPY assets/iv-logo.png     /app/build/static/favicon.png
+COPY assets/iv-logo.png     /app/build/static/logo.png
+COPY assets/iv-logo-96.png  /app/build/static/favicon-96x96.png
+COPY assets/iv-logo-dark.png /app/build/static/favicon-dark.png
+COPY assets/iv-logo.ico     /app/build/static/favicon.ico
+
 # --- source patches --------------------------------------------------------
 COPY patch-webui.py /tmp/patch-webui.py
 RUN python3 /tmp/patch-webui.py && \

@@ -609,6 +609,11 @@ async def generate_proposal_endpoint(request: Request):
     sections = body.get("sections")
     include_compliance_matrix = bool(body.get("include_compliance_matrix", False))
     intake_session_id = (body.get("intake_session_id") or "").strip() or None
+    # Pass 3 — long-form depth tier. Absent/invalid falls back to the safe
+    # default inside generate_proposal (get_depth_tier), so existing callers that
+    # omit proposal_depth keep their current behaviour.
+    proposal_depth = body.get("proposal_depth")
+    proposal_depth = proposal_depth if isinstance(proposal_depth, str) else None
 
     # Load intake answers and backfill any core field the caller omitted.
     intake_answers: dict = {}
@@ -664,6 +669,7 @@ async def generate_proposal_endpoint(request: Request):
                 sections=sections,
                 include_compliance_matrix=include_compliance_matrix,
                 top_k=top_k,
+                proposal_depth=proposal_depth,
             )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)

@@ -2,7 +2,7 @@
 
 > **Purpose.** This document lets any new operator (human or AI agent) pick up the Sarvam build exactly where it stands today, with zero re-discovery. It was written because the build may move to a different Perplexity account when credits on the originating account run low. Read it in full before starting work; it is self-contained.
 >
-> **Last updated:** 2026-07-17 (IST). **Repo:** `imranshaikh-commits/iv-sarvam` (public fork of `creator-imran/sarvam`). **Default branch:** `main`. **Working branch:** `main` (single-branch workflow as of 2026-07-17; `sprint5-doc-engine` and `docs/readme-redesign` were deleted after full merges). Current HEAD: `main` is `5b9fab3`. **Always verify current HEAD before acting.**
+> **Last updated:** 2026-07-17 (IST). **Repo:** `imranshaikh-commits/iv-sarvam` (public fork of `creator-imran/sarvam`). **Default branch:** `main`. **Working branch:** `main` (single-branch workflow as of 2026-07-17; `sprint5-doc-engine` and `docs/readme-redesign` were deleted after full merges). Current HEAD: `main` is `cb18462`. **Always verify current HEAD before acting.**
 >
 > **Public-safe.** This file is committed to a public repository. It contains **no** secrets, API keys, EC2 IPs, or Supabase project refs. Identifiers are described by name/region so the operator can locate them; secrets live only on the EC2 host's local env file.
 
@@ -44,7 +44,7 @@ He is **not a chatbot and not a search engine**. He is a well-read junior consul
   - Pass 5 (Open WebUI integration) — queued
 - **Phase 6** (pilot, hardening, rollout) — not started.
 
-Everything through Pass 3 + the redesigned README is on `main` (`5b9fab3`, includes all docs). The live brain on EC2 runs `main` (single-branch workflow as of 2026-07-17; `sprint5-doc-engine` was deleted after a full, byte-identical merge).
+Everything through Pass 5 (diagram framework + interview gating) + the redesigned README is on `main` (`cb18462`, includes all docs). The live brain on EC2 runs `main` (single-branch workflow as of 2026-07-17; `sprint5-doc-engine` was deleted after a full, byte-identical merge).
 
 ---
 
@@ -74,8 +74,14 @@ Everything through Pass 3 + the redesigned README is on `main` (`5b9fab3`, inclu
 
 ### Branch HEADs (verified 2026-07-17)
 
-- `main`: `5b9fab3` (single branch; Pass 3 + all docs merged)
+- `main`: `cb18462` (single branch; Pass 3 + all docs merged)
 - (single-branch workflow as of 2026-07-17; `sprint5-doc-engine` deleted after full merge — trees were byte-identical, nothing lost)
+
+### Pass 4 + Pass 5 — completed 2026-07-17 (IST)
+
+- **Pass 4 (architecture diagram framework)** — `DiagramSpec` JSON from GLM 5.2 -> local Graphviz renderer (deterministic, no external data leak); approval state machine on `architecture_diagrams` (draft -> needs_review -> approved/rejected); only approved diagrams embed in the DOCX; fail-soft when graphviz or the `diagram-renders` bucket is absent. New endpoints `/v1/proposals/{id}/diagrams` + `/v1/diagrams/{id}`. 37 tests pass. Merged to `main` as `d1a8805`. **EC2 dep:** `sudo apt-get install -y graphviz`.
+- **Pass 5 (OWUI interview gating, core)** — `/v1/chat/completions` with no `intake_session_id` now starts the Stage 1 discovery interview (no RAG/drafting/network); session present -> existing RAG path; streaming + non-streaming both handled. Client-logo sourcing deferred. 42 tests pass total. Merged to `main` as `cb18462`.
+- **Branch cleanup:** temporary `pass4-diagrams` + `pass5-interview-gating` branches deleted after merge; repo remains single-branch `main`.
 
 ### New known gaps
 
@@ -134,7 +140,7 @@ The blueprint's intent (conversation-first, retrieval-grounded, human-in-loop, s
 ## 4. Repository
 
 - **URL:** https://github.com/imranshaikh-commits/iv-sarvam
-- **Branch:** `main` (HEAD `5b9fab3`, single-branch workflow as of 2026-07-17) — has everything through Pass 3 + redesigned README + all docs. EC2 pulls `main`.
+- **Branch:** `main` (HEAD `cb18462`, single-branch workflow as of 2026-07-17) — has everything through Pass 3 + redesigned README + all docs. EC2 pulls `main`.
 - (Former working branches `sprint5-doc-engine` and `docs/readme-redesign` were deleted on 2026-07-17 after full merges — trees were byte-identical, nothing lost.)
 
 ### Key files

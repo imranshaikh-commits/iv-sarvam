@@ -29,7 +29,7 @@ import httpx
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt, RGBColor
+from docx.shared import Inches, Pt, RGBColor
 
 import branding
 from proposal_templates import (
@@ -405,12 +405,54 @@ def _add_body_paragraphs(document: Document, text: str) -> None:
         para.add_run(block)
 
 
+def _add_approved_diagrams(document: Document, diagrams: Optional[list[dict]]) -> None:
+    """Embed ONLY approved, rendered architecture diagrams as images.
+
+    A diagram is embedded iff status == 'approved' and it carries usable image
+    bytes (``image_bytes``) or a readable ``image_path``. Everything else
+    (draft/needs_review/rejected, or no render) is skipped — this is the DOCX-side
+    enforcement of the approval gate. If nothing qualifies, no section is added,
+    so proposals without approved diagrams are unchanged.
+    """
+    embeddable: list[dict] = []
+    for d in diagrams or []:
+        if (d.get("status") or "").strip() != "approved":
+            continue
+        image = d.get("image_bytes")
+        path = d.get("image_path")
+        if image:
+            embeddable.append({"title": d.get("title") or "Architecture Diagram",
+                               "stream": io.BytesIO(image)})
+        elif path and os.path.exists(path):
+            embeddable.append({"title": d.get("title") or "Architecture Diagram",
+                               "stream": path})
+    if not embeddable:
+        return
+
+    document.add_page_break()
+    branding.add_section_heading(document, "Solution Architecture Diagrams")
+    intro = document.add_paragraph()
+    irun = intro.add_run(
+        "The following architecture diagrams have been reviewed and approved for inclusion. "
+        "They are draft artefacts for human review and not client-ready commitments."
+    )
+    irun.italic = True
+    irun.font.size = Pt(10)
+    for item in embeddable:
+        document.add_heading(item["title"], level=2)
+        try:
+            document.add_picture(item["stream"], width=Inches(6.0))
+        except Exception as e:  # noqa: BLE001 — a bad image must not break the doc
+            log.error("failed to embed diagram '%s' (skipping): %s", item["title"], e)
+
+
 def assemble_docx(
     metadata: dict,
     sections: list[dict],
     compliance_markdown: Optional[str] = None,
     client_logo_path: Optional[str] = None,
     include_appendices: bool = False,
+    diagrams: Optional[list[dict]] = None,
 ) -> bytes:
     """Build a professional, IV-branded Word document and return its bytes.
 
@@ -425,6 +467,12 @@ def assemble_docx(
     RACI, timeline, sizing, integration inventory and risks — as real DOCX
     tables. Where intake/retrieval data is absent, conservative
     assumption-marked placeholder rows are used (never fabricated specifics).
+
+    diagrams (Pass 4): optional list of architecture-diagram dicts. ONLY diagrams
+    whose status == 'approved' AND that carry a rendered image (``image_bytes``
+    or a readable ``image_path``) are embedded — draft/rejected/needs_review
+    diagrams are silently skipped. When no diagram qualifies, the document is
+    byte-for-byte the same as before (Pass 1-3 unchanged).
     """
     metadata = {
         **metadata,
@@ -482,6 +530,9 @@ def assemble_docx(
                 "An SME should confirm scope, dependencies, and open questions before client use.",
                 style="List Bullet",
             )
+
+    # --- Architecture Diagrams (Pass 4 — approved only) --------------------
+    _add_approved_diagrams(document, diagrams)
 
     # --- Compliance Matrix (optional) --------------------------------------
     if compliance_markdown:
@@ -718,6 +769,7 @@ async def generate_proposal(
     include_compliance_matrix: bool = False,
     top_k: int = TOP_K,
     proposal_depth: Optional[str] = None,
+    diagrams: Optional[list[dict]] = None,
 ) -> dict:
     """Orchestrate: pick template, draft sections concurrently, assemble DOCX.
 
@@ -793,6 +845,7 @@ async def generate_proposal(
     docx_bytes = assemble_docx(
         metadata, list(drafted), compliance_markdown,
         include_appendices=tier.include_appendices,
+        diagrams=diagrams,
     )
 
     safe_client = re.sub(r"[^A-Za-z0-9]+", "_", client_name).strip("_") or "Client"

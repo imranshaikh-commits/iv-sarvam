@@ -34,7 +34,7 @@
 
 ### Known gaps before pilot
 
-- **Raise `MAX_DRAFT_TOKENS` (1500 → ~3000–3500) / deeper tier** (active) — the per-call token cap is the hard ceiling on subsection length; the only way past ~50–60 pages. (NoneType bug is FIXED — merged `6290d23`; rebuild the brain to deploy.)
+- **`MAX_DRAFT_TOKENS` raised (1500 → 3500)** — merged `6da140c`; rebuild the brain to deploy. Anti-spiral guardrails (frequency_penalty, max_retries, truncation guard) preserved. (NoneType bug FIXED — merged `6290d23`.)
 - **Client-logo sourcing** (web/image search + approval-gated embedding) — deferred from Pass 5.
 - **Durable diagram spec-template store** (per vendor + diagram type) — deferred from Pass 4.
 - **`approved_by` on diagrams is NULL** — blocked on Phase 4 auth (no user identity yet).
@@ -85,7 +85,7 @@ Honest about what is not done, so no one mistakes the current state for producti
 
 - **Auth and multi-tenancy:** Supabase Auth and the Worker JWT gate are not wired. The brain is protected by network isolation (internal-only) and Open WebUI's disabled sign-ups, not by per-user identity. User identity is not yet propagated end-to-end, so generated drafts are not yet attributed to individual users (`approved_by` on diagrams is NULL). Production auth hardening is a pending milestone, not abandoned.
 - **Hard pre-draft approval gate:** the diagram framework (Pass 4) is built and live — diagrams can be created, approved, rendered, and embedded — but drafting is **not hard-blocked** on an approved architecture. A proposal generates with or without an approved diagram. The V1 "no drafting until architecture is approved" contract is not yet enforced.
-- **Per-call token cap (length ceiling):** `MAX_DRAFT_TOKENS=1500` bounds how long any single subsection can get; combined with the 3-subsection structure it caps full-depth output at ~50–60 pages. Measured: `full` produced 31 pages while the NoneType bug was active. Raising it to ~3000–3500 (and/or a deeper tier) is the only way past that ceiling — keep the anti-spiral guardrails (frequency_penalty, max_retries, truncation guard) intact. (The NoneType bug that was dropping subsections is FIXED — merged `6290d23`, rebuild the brain to deploy.)
+- **Per-call token cap (raised):** `MAX_DRAFT_TOKENS` raised 1500 → 3500 (merged `6da140c`); rebuild the brain to deploy. The cap bounds how long any single subsection can get; the 3-subsection structure + this cap set full-depth length. Measured: `full` produced 31 pages while the NoneType bug was active — re-measure after deploying both fixes. Anti-spiral guardrails (frequency_penalty, max_retries, truncation guard) preserved. (NoneType bug FIXED — merged `6290d23`.)
 - **Client-logo sourcing:** approval-gated embedding of a client logo sourced online is deferred from Pass 5; the placeholder box is used instead.
 - **Durable diagram spec-template store:** reusable DiagramSpec templates keyed by vendor and diagram type are deferred from Pass 4 (the engine regenerates from scratch for now).
 - **External research and fact-checking:** Exa/Firecrawl external research and the secondary-LLM fact-checker are deferred to post-pilot.
@@ -374,7 +374,7 @@ gantt
 | OWUI in-app logo branding (favicon env + /app/build/static override) | Done (merged); open-webui container rebuild pending on host |
 | Persistence fix (generated_proposals status draft→drafting) | Done + live-validated |
 | NoneType section-drafting bug (null LLM subsection → empty section) | Fixed — merged `6290d23` (PR #2); rebuild brain to deploy |
-| Raise `MAX_DRAFT_TOKENS` (1500 → ~3000–3500) / deeper tier | Open — active, #1 length lever (only path past ~50–60 pp) |
+| Raise `MAX_DRAFT_TOKENS` (1500 → 3500) | Done — merged `6da140c`; rebuild brain to deploy |
 | Client-logo sourcing (web/image search + approval-gated embedding) | Deferred |
 | Durable diagram spec-template store (per vendor + diagram type) | Deferred |
 | Supabase Auth / Worker / multi-tenancy (Sprint 8) | Not wired (~45% of Phase 4) |
@@ -382,7 +382,7 @@ gantt
 | Hybrid search (BM25 + vector + reciprocal rank fusion) | Deferred |
 | Pilot against 5–10 historical RFPs + hardening + team rollout | Not started |
 
-> **Status line:** Phases 0–3 complete. Phase 4 ~45% (Open WebUI + interview gating + branding done; Auth/Worker/multi-tenancy not wired). Phase 5 ~96% (all 5 passes + export pipeline done + live-validated; NoneType bug FIXED `6290d23`; remaining: raise MAX_DRAFT_TOKENS, client-logo sourcing, durable spec-template store). Phase 6 (pilot, hardening, rollout) not started. Overall ~80%.
+> **Status line:** Phases 0–3 complete. Phase 4 ~45% (Open WebUI + interview gating + branding done; Auth/Worker/multi-tenancy not wired). Phase 5 ~97% (all 5 passes + export pipeline done + live-validated; NoneType bug FIXED `6290d23`; MAX_DRAFT_TOKENS raised `6da140c` — rebuild brain to deploy; remaining: client-logo sourcing, durable spec-template store). Phase 6 (pilot, hardening, rollout) not started. Overall ~81%.
 
 ---
 

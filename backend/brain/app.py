@@ -46,6 +46,11 @@ import supabase_client
 import diagram_engine
 from diagram_engine import DiagramSpec, InvalidTransition
 
+# Sprint 5 Pass 6 — export pipeline (lite DOCX compression + PDF export). Pure
+# stdlib + Pillow, no import of app (one-way dependency), so it stays importable
+# keyless. Only used when an export flag is set on /v1/generate-proposal.
+import export_engine
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("sarvam-brain")
 
@@ -649,8 +654,14 @@ async def generate_proposal_endpoint(request: Request):
 
     Body: {"rfp_text","client_name","proposal_type":"implementation|mss",
            "iam_vendor","sections":[optional],"include_compliance_matrix":bool,
-           "top_k":int,"intake_session_id":optional}
-    Returns: a DOCX attachment, or {"error": ...} with 400 on bad input.
+           "top_k":int,"intake_session_id":optional,"proposal_depth":optional,
+           "generated_proposal_id":optional,
+           "lite":bool,"include_pdf":bool,"return_signed_urls":bool}
+    Returns:
+      * DEFAULT (no export flag): a DOCX attachment (byte-for-byte Pass 1-5).
+      * lite / include_pdf / return_signed_urls set: JSON with DOCX/PDF export
+        metadata (sizes, lite flag, warnings) and signed URLs where requested.
+      * {"error": ...} with 400 on bad input.
 
     If intake_session_id is supplied, its stored answers backfill any omitted
     core field (client_name/proposal_type/iam_vendor/rfp_text) and enrich the
@@ -671,6 +682,14 @@ async def generate_proposal_endpoint(request: Request):
     # omit proposal_depth keep their current behaviour.
     proposal_depth = body.get("proposal_depth")
     proposal_depth = proposal_depth if isinstance(proposal_depth, str) else None
+
+    # Pass 6 — opt-in export flags. When NONE are set the response is the raw DOCX
+    # binary, byte-for-byte identical to Pass 1-5. When ANY is set the endpoint
+    # returns JSON export metadata (+ signed URLs where requested) instead.
+    lite = bool(body.get("lite", False))
+    include_pdf = bool(body.get("include_pdf", False))
+    return_signed_urls = bool(body.get("return_signed_urls", False))
+    export_requested = lite or include_pdf or return_signed_urls
 
     # Load intake answers and backfill any core field the caller omitted.
     intake_answers: dict = {}
@@ -765,6 +784,7 @@ async def generate_proposal_endpoint(request: Request):
 
     # Fail-soft persistence: never let a Supabase hiccup block the download.
     draft_markdown = result.get("draft_markdown", "")
+    proposal_id = None
     try:
         async with httpx.AsyncClient() as pclient:
             proposal_id = await supabase_client.insert_generated_proposal(
@@ -783,11 +803,102 @@ async def generate_proposal_endpoint(request: Request):
     except Exception as e:  # noqa: BLE001 — persistence must never break the download
         log.error("generate-proposal persistence failed (returning DOCX anyway): %s", e)
 
-    return Response(
-        content=result["docx_bytes"],
-        media_type=DOCX_MEDIA_TYPE,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    # DEFAULT path (no export flag): return the DOCX binary byte-for-byte, exactly
+    # as Pass 1-5 did. Nothing below runs unless the caller opts in.
+    if not export_requested:
+        return Response(
+            content=result["docx_bytes"],
+            media_type=DOCX_MEDIA_TYPE,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    return await _build_export_response(
+        docx_bytes=result["docx_bytes"],
+        filename=filename,
+        proposal_id=proposal_id,
+        lite=lite,
+        include_pdf=include_pdf,
+        return_signed_urls=return_signed_urls,
     )
+
+
+async def _build_export_response(
+    *,
+    docx_bytes: bytes,
+    filename: str,
+    proposal_id: str | None,
+    lite: bool,
+    include_pdf: bool,
+    return_signed_urls: bool,
+) -> JSONResponse:
+    """Apply the opt-in export steps and return JSON export metadata.
+
+    Every step is fail-soft: lite compression that can't hit the target returns a
+    warning, PDF export with no soffice binary returns an error string, and a
+    missing storage bucket yields a manual-setup note — none of these crash the
+    request. The DOCX/PDF bytes are delivered via signed URLs when requested.
+    """
+    docx_meta: dict = {"lite": lite}
+    if lite:
+        docx_bytes, lite_meta = export_engine.compress_docx_lite(docx_bytes)
+        docx_meta.update(lite_meta)
+    docx_meta["size"] = len(docx_bytes)
+
+    pdf_bytes: bytes | None = None
+    pdf_meta: dict | None = None
+    if include_pdf:
+        pdf_bytes, pdf_error = export_engine.export_pdf(docx_bytes)
+        if pdf_bytes is not None:
+            pdf_meta = {"size": len(pdf_bytes)}
+        else:
+            pdf_meta = {"error": pdf_error}
+
+    pdf_filename = re.sub(r"\.docx$", ".pdf", filename)
+    response: dict = {
+        "filename": filename,
+        "docx": docx_meta,
+        "pdf": pdf_meta,
+        "signed_urls": {},
+        "generated_proposal_id": proposal_id,
+    }
+
+    if return_signed_urls:
+        prefix = (proposal_id or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"))
+        signed: dict = {}
+        notes: list[str] = []
+        async with httpx.AsyncClient() as sclient:
+            docx_path = f"{prefix}/{filename}"
+            if await supabase_client.upload_generated_draft(
+                sclient, docx_path, docx_bytes, DOCX_MEDIA_TYPE
+            ):
+                url = await supabase_client.create_signed_url(sclient, docx_path)
+                if url:
+                    signed["docx"] = url
+                else:
+                    notes.append("docx uploaded but signed URL creation failed")
+            else:
+                notes.append(
+                    f"could not upload DOCX to storage bucket "
+                    f"'{supabase_client.GENERATED_DRAFTS_BUCKET}' — create the bucket manually "
+                    "in Supabase Storage to enable signed-URL delivery"
+                )
+            if pdf_bytes is not None:
+                pdf_path = f"{prefix}/{pdf_filename}"
+                if await supabase_client.upload_generated_draft(
+                    sclient, pdf_path, pdf_bytes, "application/pdf"
+                ):
+                    url = await supabase_client.create_signed_url(sclient, pdf_path)
+                    if url:
+                        signed["pdf"] = url
+                    else:
+                        notes.append("pdf uploaded but signed URL creation failed")
+                else:
+                    notes.append("could not upload PDF to storage bucket")
+        response["signed_urls"] = signed
+        if notes:
+            response["storage_notes"] = notes
+
+    return JSONResponse(response)
 
 
 # =====================================================================

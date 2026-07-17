@@ -34,7 +34,7 @@
 
 ### Known gaps before pilot
 
-- **NoneType section-drafting bug** (active) — when a subsection LLM call returns `null`, that subsection comes back empty; the #1 reason proposals stay short at `full` depth. Fix is grounded and ~30 min.
+- **Raise `MAX_DRAFT_TOKENS` (1500 → ~3000–3500) / deeper tier** (active) — the per-call token cap is the hard ceiling on subsection length; the only way past ~50–60 pages. (NoneType bug is FIXED — merged `6290d23`; rebuild the brain to deploy.)
 - **Client-logo sourcing** (web/image search + approval-gated embedding) — deferred from Pass 5.
 - **Durable diagram spec-template store** (per vendor + diagram type) — deferred from Pass 4.
 - **`approved_by` on diagrams is NULL** — blocked on Phase 4 auth (no user identity yet).
@@ -85,7 +85,7 @@ Honest about what is not done, so no one mistakes the current state for producti
 
 - **Auth and multi-tenancy:** Supabase Auth and the Worker JWT gate are not wired. The brain is protected by network isolation (internal-only) and Open WebUI's disabled sign-ups, not by per-user identity. User identity is not yet propagated end-to-end, so generated drafts are not yet attributed to individual users (`approved_by` on diagrams is NULL). Production auth hardening is a pending milestone, not abandoned.
 - **Hard pre-draft approval gate:** the diagram framework (Pass 4) is built and live — diagrams can be created, approved, rendered, and embedded — but drafting is **not hard-blocked** on an approved architecture. A proposal generates with or without an approved diagram. The V1 "no drafting until architecture is approved" contract is not yet enforced.
-- **NoneType section-drafting soft-fail (active bug):** when a subsection LLM call returns `null`, `draft_section` raises `'NoneType' object has no attribute 'strip'` and drops that subsection (empty). Non-fatal (fail-soft) but is the #1 reason proposals stay short and have missing sections, especially at `proposal_depth="full"`. Confirmed firing on `technical_approach`, `integration_points`, `assumptions_open_questions`. Fix in progress.
+- **Per-call token cap (length ceiling):** `MAX_DRAFT_TOKENS=1500` bounds how long any single subsection can get; combined with the 3-subsection structure it caps full-depth output at ~50–60 pages. Measured: `full` produced 31 pages while the NoneType bug was active. Raising it to ~3000–3500 (and/or a deeper tier) is the only way past that ceiling — keep the anti-spiral guardrails (frequency_penalty, max_retries, truncation guard) intact. (The NoneType bug that was dropping subsections is FIXED — merged `6290d23`, rebuild the brain to deploy.)
 - **Client-logo sourcing:** approval-gated embedding of a client logo sourced online is deferred from Pass 5; the placeholder box is used instead.
 - **Durable diagram spec-template store:** reusable DiagramSpec templates keyed by vendor and diagram type are deferred from Pass 4 (the engine regenerates from scratch for now).
 - **External research and fact-checking:** Exa/Firecrawl external research and the secondary-LLM fact-checker are deferred to post-pilot.
@@ -373,7 +373,8 @@ gantt
 | Export pipeline — lite <5 MB DOCX + PDF (LibreOffice) + signed URLs to storage | Done + live-validated |
 | OWUI in-app logo branding (favicon env + /app/build/static override) | Done (merged); open-webui container rebuild pending on host |
 | Persistence fix (generated_proposals status draft→drafting) | Done + live-validated |
-| NoneType section-drafting bug (null LLM subsection → empty section) | Open — active fix, #1 length lever |
+| NoneType section-drafting bug (null LLM subsection → empty section) | Fixed — merged `6290d23` (PR #2); rebuild brain to deploy |
+| Raise `MAX_DRAFT_TOKENS` (1500 → ~3000–3500) / deeper tier | Open — active, #1 length lever (only path past ~50–60 pp) |
 | Client-logo sourcing (web/image search + approval-gated embedding) | Deferred |
 | Durable diagram spec-template store (per vendor + diagram type) | Deferred |
 | Supabase Auth / Worker / multi-tenancy (Sprint 8) | Not wired (~45% of Phase 4) |
@@ -381,7 +382,7 @@ gantt
 | Hybrid search (BM25 + vector + reciprocal rank fusion) | Deferred |
 | Pilot against 5–10 historical RFPs + hardening + team rollout | Not started |
 
-> **Status line:** Phases 0–3 complete. Phase 4 ~45% (Open WebUI + interview gating + branding done; Auth/Worker/multi-tenancy not wired). Phase 5 ~95% (all 5 passes + export pipeline done and live-validated; NoneType section-drafting bug + client-logo sourcing + durable spec-template store pending). Phase 6 (pilot, hardening, rollout) not started. Overall ~80%.
+> **Status line:** Phases 0–3 complete. Phase 4 ~45% (Open WebUI + interview gating + branding done; Auth/Worker/multi-tenancy not wired). Phase 5 ~96% (all 5 passes + export pipeline done + live-validated; NoneType bug FIXED `6290d23`; remaining: raise MAX_DRAFT_TOKENS, client-logo sourcing, durable spec-template store). Phase 6 (pilot, hardening, rollout) not started. Overall ~80%.
 
 ---
 

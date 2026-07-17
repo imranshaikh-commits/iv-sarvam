@@ -17,8 +17,8 @@
 
 > Quick-glance project status. Last updated: 2026-07-17 (IST).
 
-**Overall completion: ~58%**
-`███████████░░░░░░░░░`
+**Overall completion: ~68%**
+`██████████████░░░░░░`
 
 ### Phase completion (6 phases / 12 sprints)
 
@@ -28,8 +28,8 @@
 | 1 — Data foundation (ingest + Supabase + embeddings) | Done | `████████████████████` 100% |
 | 2 — Agent backend (EC2 + Docker + OpenRouter) | Done | `████████████████████` 100% |
 | 3 — Retrieval + drafting | Done | `████████████████████` 100% |
-| 4 — Conversational frontend + auth | Partial | `███████░░░░░░░░░░░░░` 35% |
-| 5 — Architecture approval gate + compression/export | In progress | `████████░░░░░░░░░░░░` 40% |
+| 4 — Conversational frontend + auth | Partial | `█████████░░░░░░░░░░░` 45% |
+| 5 — Architecture approval gate + compression/export | In progress | `█████████████░░░░░░░` 65% |
 | 6 — Pilot + hardening + rollout | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
 
 ### Phase 5 enhancement sprint (5 passes)
@@ -39,13 +39,14 @@
 | 1 | Intake + persistence | Done — `7622a4d` |
 | 2 | DOCX branding | Done — `b4d42b0` |
 | 3 | Long-form depth (`proposal_depth` tiers) | Done — `04fcd12` (merged to main `bee4264`) |
-| 4 | Architecture diagram framework | Queued |
-| 5 | Open WebUI integration (incl. interview gating) | Queued |
+| 4 | Architecture diagram framework | Done — merged `d1a8805` |
+| 5 | Open WebUI integration (interview gating) | Done (core) — merged `cb18462`; client-logo sourcing deferred |
 
 ### Known gaps before pilot
 
 - **OWUI logo branding not rendering in-app** — critical post-pilot, pre-deployment sprint; see [`docs/SPRINT_OWUI_BRANDING.md`](docs/SPRINT_OWUI_BRANDING.md).
-- **Interview gating in chat** — "Hi" returns a RAG reply instead of starting the discovery interview (Pass 5 work).
+- **Client-logo sourcing** (web/image search + approval-gated embedding) — deferred from Pass 5.
+- **Architecture diagrams need graphviz** — EC2 host runs `sudo apt-get install -y graphviz` (Dockerfile installs it in the image).
 - Lite (<5 MB) compression, PDF export, storage signed-URL delivery — not started.
 - Supabase Auth / Worker / multi-tenancy not wired (RLS + disabled sign-ups is the interim gate).
 

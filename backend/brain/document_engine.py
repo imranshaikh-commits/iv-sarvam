@@ -60,6 +60,10 @@ DOC_CONCURRENCY = int(os.environ.get("DOC_CONCURRENCY", os.environ.get("COMPLIAN
 WEAK_EVIDENCE_THRESHOLD = float(os.environ.get("DOC_WEAK_EVIDENCE", "0.55"))
 
 SME_REVIEW_MARKER = "[SME REVIEW]"
+# Marks a grounded, generic placeholder emitted when a subsection LLM call
+# returns null/empty even after one retry. Not a fabricated fact — an explicit
+# assumption that an SME must confirm/replace before client use.
+ASSUMPTION_MARKER = "[ASSUMPTION]"
 
 # Type aliases for the passed-in brain helpers.
 EmbedFn = Callable[[httpx.AsyncClient, str], Awaitable[list[float]]]
@@ -229,6 +233,60 @@ async def _retrieve_fanout(
     return merged[:cap]
 
 
+def _is_blank(text: Optional[str]) -> bool:
+    """A drafted string is unusable if it is None or whitespace-only."""
+    return text is None or not str(text).strip()
+
+
+async def _draft_with_retry(
+    client: httpx.AsyncClient,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+) -> Optional[str]:
+    """Draft one (sub)section; retry ONCE if the model returns null/empty.
+
+    Some models occasionally return a null (None) or whitespace-only message
+    content on a successful HTTP response. That is not an exception, so it slips
+    past ``draft_with_openrouter``'s error handling and used to crash the caller
+    on ``.strip()`` — a soft-fail that silently dropped the subsection. Here we
+    treat a blank body as a soft failure and retry once (which re-runs the
+    existing primary->fallback path). Returns the stripped text, or None if it is
+    still blank after the retry. Network/HTTP errors propagate to the caller.
+    """
+    content = await draft_with_openrouter(client, system_prompt, user_prompt, max_tokens=max_tokens)
+    if _is_blank(content):
+        log.warning("draft returned null/empty content; retrying once")
+        content = await draft_with_openrouter(client, system_prompt, user_prompt, max_tokens=max_tokens)
+    return content.strip() if not _is_blank(content) else None
+
+
+def _assumption_placeholder(
+    context: dict,
+    section_title: str,
+    sub_title: Optional[str] = None,
+    facet: Optional[str] = None,
+) -> str:
+    """Grounded placeholder for a (sub)section the model could not draft.
+
+    Derived ONLY from intake/context (client, proposal type, vendor, the
+    section/subsection this call was meant to cover). Deliberately generic and
+    marked ``[ASSUMPTION]`` + ``[SME REVIEW]`` — it invents no client facts,
+    metrics, versions or commitments, only states that an SME must author it.
+    """
+    client_name = context.get("client_name") or "the client"
+    ptype = context.get("proposal_type") or "implementation"
+    focus = sub_title or section_title
+    scope = f", which should cover {facet}," if facet else ""
+    return (
+        f"{ASSUMPTION_MARKER} The \"{focus}\" content{scope} could not be automatically "
+        f"drafted from the available evidence for this {ptype} engagement for "
+        f"{client_name}{_vendor_clause(context.get('iam_vendor'))}. This is a placeholder "
+        f"assumption to be validated and replaced with grounded detail by a subject-matter "
+        f"expert before any client use — no specifics have been inferred. {SME_REVIEW_MARKER}"
+    )
+
+
 async def draft_section(
     client: httpx.AsyncClient,
     section_spec: SectionSpec,
@@ -281,8 +339,8 @@ async def draft_section(
     n_sub = max(1, min(int(subsections), len(SUBSECTION_FACETS)))
     facets = SUBSECTION_FACETS[:n_sub] if n_sub > 1 else []
 
-    async def _draft_once(user_prompt: str) -> str:
-        return await draft_with_openrouter(client, system_prompt, user_prompt, max_tokens=max_tokens)
+    async def _draft_once(user_prompt: str) -> Optional[str]:
+        return await _draft_with_retry(client, system_prompt, user_prompt, max_tokens)
 
     subsection_results: list[dict] = []
     drafting_failed = False
@@ -292,7 +350,7 @@ async def draft_section(
             f"RFP / requirement context:\n{rfp_ctx}"
         )
         try:
-            content = (await _draft_once(user_prompt)).strip()
+            content = await _draft_once(user_prompt)
         except Exception as e:
             log.error("draft_section drafting failed for %s: %s", section_spec.id, e)
             content = (
@@ -300,6 +358,13 @@ async def draft_section(
                 "A subject-matter expert must author it manually."
             )
             drafting_failed = True
+        # Null/empty draft (even after the retry inside _draft_once) must not
+        # drop the section: emit a grounded placeholder instead.
+        if _is_blank(content):
+            log.warning("draft_section produced empty content for %s; using grounded placeholder",
+                        section_spec.id)
+            content = _assumption_placeholder(context, section_spec.title)
+            needs_sme_review = True
     else:
         # Independent drafting call per facet (the structured fan-out).
         parts: list[str] = []
@@ -311,7 +376,7 @@ async def draft_section(
                 f"RFP / requirement context:\n{rfp_ctx}"
             )
             try:
-                sub_content = (await _draft_once(user_prompt)).strip()
+                sub_content = await _draft_once(user_prompt)
             except Exception as e:
                 log.error("draft_section subsection %s failed for %s: %s", sub_title, section_spec.id, e)
                 sub_content = (
@@ -319,6 +384,14 @@ async def draft_section(
                     "A subject-matter expert must author it manually."
                 )
                 drafting_failed = True
+            # Null/empty subsection (even after the retry inside _draft_once) is
+            # the soft-fail that used to lose ~2/3 of full-depth content: emit a
+            # grounded placeholder rather than an empty string.
+            if _is_blank(sub_content):
+                log.warning("draft_section subsection %s empty for %s; using grounded placeholder",
+                            sub_title, section_spec.id)
+                sub_content = _assumption_placeholder(context, section_spec.title, sub_title, facet)
+                needs_sme_review = True
             subsection_results.append({"title": sub_title, "content": sub_content})
             parts.append(f"### {sub_title}\n\n{sub_content}")
         content = "\n\n".join(parts).strip()

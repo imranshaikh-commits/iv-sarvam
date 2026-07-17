@@ -12,10 +12,10 @@
 
 This is the exact state as of 2026-07-17, ~15:30 IST. If you do nothing else, read this.
 
-- **All 5 enhancement passes + the export pipeline + the persistence fix + OWUI branding are merged to `main` (`863fa26`) and deployed live on the EC2 brain.** The brain was rebuilt this session with LibreOffice + Pillow + `export_engine` (apt + pip layers ran fresh, not cached). Health: `{"status":"ok","primary_model":"z-ai/glm-5.2","fallback_model":"qwen/qwen3-235b-a22b-2507"}`. Inside the container: `import export_engine, PIL` OK; `soffice` present at `/usr/bin/soffice`.
+- **All 5 enhancement passes + the export pipeline + the persistence fix + OWUI branding are merged to `main` and deployed live on the EC2 brain. The NoneType section-drafting fix (PR #2) is now also merged to `main` (`6290d23`) but NOT yet rebuilt on the EC2 host — pull + `docker compose up -d --build sarvam-brain` to deploy it (see [§11](#11-deploy-workflow-user-runs-on-ec2) + [§14](#14-immediate-next-steps)).** The brain was rebuilt earlier this session with LibreOffice + Pillow + `export_engine` (apt + pip layers ran fresh, not cached). Health: `{"status":"ok","primary_model":"z-ai/glm-5.2","fallback_model":"qwen/qwen3-235b-a22b-2507"}`. Inside the container: `import export_engine, PIL` OK; `soffice` present at `/usr/bin/soffice`.
 - **Full end-to-end live validation PASSED this session** (13-step E2E script, all green): health/models → interview gating (0-token discovery) → intake session create/PATCH/complete → generate proposal (240 KB DOCX, persists `proposal_id`) → compliance matrix (real RAG grounding) → export pipeline (lite + 167 KB PDF via LibreOffice + signed URLs to `generated-drafts` bucket) → diagram flow (create spec → `needs_review` → `approved` with `dot` render uploaded to `diagram-renders` → re-embed in a 298 KB DOCX).
-- **One known bug is mid-investigation — the NoneType section-drafting soft-fail.** When the LLM returns `null` for a subsection draft, the code does `'NoneType' object has no attribute 'strip'` and that subsection comes back **empty** (fail-soft, so generation completes). At `proposal_depth="full"` (3 subsections/section) it fires repeatedly and is the single biggest reason proposals stay short. Confirmed firing this session on: `Considerations & Dependencies` (technical_approach), `Detailed Design` (integration_points), `Overview` + `Detailed Design` (assumptions_open_questions). **This is the #1 fix lever for length + completeness, and it is fully grounded (no hallucination cost).** See [§13](#13-known-gaps--not-pilot-ready-yet) + [§14](#14-immediate-next-steps).
-- **A `proposal_depth="full"` generation was launched right before this handover** to measure the real page count (the user needs a boss-ready 100+ page proposal; the "brief" run was 9 pages by design). The result was not captured before credits ran low — **re-run it and count the pages** (command in [§11](#11-deploy-workflow-user-runs-on-ec2) + [§14](#14-immediate-next-steps)).
+- **The NoneType section-drafting bug is FIXED + merged (PR #2 → `6290d23`; not yet rebuilt on EC2).** Root cause: `draft_section` called `.strip()` directly on the LLM result; a `null`/empty (successful HTTP) response raised `'NoneType' object has no attribute 'strip'`, the fail-soft `except` swallowed it, and the subsection came back empty — silently dropping ~2/3 of full-depth content. Fix: `_draft_with_retry` retries once via primary→fallback, then `_assumption_placeholder` emits a grounded `[ASSUMPTION] … [SME REVIEW]` sentence (derived from intake/context only — no invented facts). 60 tests pass. **Measured before the fix: a `proposal_depth="full"` run produced only 31 pages (vs 9 for brief) — the DOCX grew just ~10 KB over brief+diagram, proving most full-depth subsections were being dropped.** The next length lever is now the per-call token cap — see [§13](#13-known-gaps--not-pilot-ready-yet) + [§14](#14-immediate-next-steps).
+- **Full-depth page count is now measured: 31 pages** (PDF 421 KB; brief was 9 pages / 167 KB). The user needs a boss-ready 100+ page proposal. The NoneType fix (above) is merged; **after rebuilding the brain, re-run the full-depth probe and re-count** to see the recovered length. Even with the bug fixed, the 1500-token/call cap + 3-subsection structure bounds output around ~50–60 pages — **raising `MAX_DRAFT_TOKENS` (1500 → ~3000–3500) and/or adding a deeper tier is the only way past that** (command in [§11](#11-deploy-workflow-user-runs-on-ec2) + [§14](#14-immediate-next-steps)).
 - **OWUI in-app logo branding is merged (`3501254`) but the `open-webui` container has NOT been rebuilt** — the logo won't render until `docker compose up -d --build open-webui` is run on the EC2 host. Tab title/favicon are OK; sidebar/sign-in logo still default.
 - **Credits are low.** The user is credit-conscious (migrated across 3-4 Perplexity accounts already). Minimize tool calls; prefer `gh`/git + the Supabase connector over browser automation; do not spawn subagents for tasks you can do from context.
 
@@ -49,7 +49,7 @@ He is **not a chatbot and not a search engine**. He is a well-read junior consul
 
 - **Phases 0–3 complete** (foundation, data, agent backend, retrieval + drafting). External research (Exa/Firecrawl) deferred.
 - **Phase 4 ~45%:** Open WebUI deployed + interview gating wired + branding code merged; Supabase Auth / Worker / multi-tenancy **not wired**.
-- **Phase 5 ~95%:** all 5 enhancement passes done + live-validated; export pipeline (lite + PDF + signed URLs) done + live-validated; persistence fixed + live-validated. Remaining: NoneType section-drafting bug (the active item), client-logo sourcing, durable diagram spec-template store, `approved_by` (blocked on Phase 4 auth).
+- **Phase 5 ~96%:** all 5 enhancement passes done + live-validated; export pipeline (lite + PDF + signed URLs) done + live-validated; persistence fixed + live-validated; **NoneType section-drafting fix merged (`6290d23`)**. Remaining: raise `MAX_DRAFT_TOKENS` (1500→~3000–3500) to break the ~50–60 page ceiling (the active item), client-logo sourcing, durable diagram spec-template store, `approved_by` (blocked on Phase 4 auth).
 - **Phase 6** (pilot, hardening, rollout) — not started.
 - **Overall completion: ~80%.** The honest remaining gap to 100% is Phase 4 auth + Phase 6 pilot (both large), plus the small Phase 5 polish items.
 
@@ -237,7 +237,7 @@ From [`docs/PROJECT.md`](PROJECT.md):
 | 2 — Agent backend (EC2 + Docker + OpenRouter) | 3–4 | Done |
 | 3 — Retrieval + drafting | 5–6 | Done (RAG end-to-end, compliance matrix); external research deferred |
 | 4 — Conversational frontend + auth | 7–8 | ~45% — Open WebUI deployed + interview gating + branding code merged; Supabase Auth/Worker/multi-tenancy **not wired** |
-| 5 — Architecture approval gate + compression/export | 9–10 | ~95% — diagram framework + interview gating + lite/PDF/signed-URL export all done + live-validated; NoneType bug + client-logo sourcing + durable spec store pending; `approved_by` blocked on Phase 4 |
+| 5 — Architecture approval gate + compression/export | 9–10 | ~96% — diagram framework + interview gating + lite/PDF/signed-URL export all done + live-validated; NoneType bug FIXED (`6290d23`); remaining: raise MAX_DRAFT_TOKENS (1500→~3000–3500), client-logo sourcing, durable spec store; `approved_by` blocked on Phase 4 |
 | 6 — Pilot + hardening + rollout | 11–12 | Not started |
 
 **Post-Sprint-5 extras, not started:** Exa+Firecrawl external research, fact-checker LLM, hybrid search (BM25+vector+RRF), retrieval tuning.
@@ -262,11 +262,11 @@ Sequencing (advisor-validated): each pass tightly scoped and verified independen
 - Assets: `iv_logo.png` (1600px, ~172KB), `iv_logo_header.png` (400px, ~27KB).
 
 ### Pass 3 — Long-form depth — DONE (`bee4264`, from `04fcd123`)
-**Goal:** take drafts from ~12 pages toward 100+ page source-proposal parity.
+**Goal:** take drafts toward 100+ page source-proposal parity. Measured this session: brief = 9 pages, full = 31 pages (bug-capped). With the NoneType fix deployed + `MAX_DRAFT_TOKENS` raised to ~3000–3500, full should reach ~50–80+ pages; a deeper tier may be needed for 100+.
 - `proposal_depth` tiers: `brief` (1 subsection, 1 query, no appendices, 900 tok/call) / `standard` (1/1/none, 1500) / `full` (3 subsections — Overview + Detailed Design + Considerations & Dependencies — 3 queries, appendices on, 1500). Unknown/absent → `standard`.
 - Multi-subsection drafting per section (each facet its own LLM call, same per-call cap).
 - Appendices (full depth only): RACI, timeline, sizing, integration inventory, risks — as real DOCX tables, assumption-marked where data is absent (never fabricated).
-- **Known issue (the active bug):** when a subsection LLM call returns `null`, `draft_section` raises `'NoneType' object has no attribute 'strip'` and that subsection is silently dropped. Fail-soft (generation completes) but empties content. Most visible at `full` depth. See [§13](#13-known-gaps--not-pilot-ready-yet).
+- **NoneType bug FIXED (PR #2 → `6290d23`):** `null`/empty subsection drafts now retry once then fall back to a grounded `[ASSUMPTION] … [SME REVIEW]` placeholder instead of crashing to empty. Not yet rebuilt on the EC2 brain. See [§13](#13-known-gaps--not-pilot-ready-yet).
 
 ### Pass 4 — Architecture diagram framework — DONE (`d1a8805`)
 - GLM 5.2 emits structured `DiagramSpec` JSON (`nodes` + `edges` + `title` + `diagram_type`).
@@ -343,7 +343,7 @@ curl -s $B/v1/generate-proposal -H "Content-Type: application/json" \
 # full-depth page-count probe (THE IN-FLIGHT ONE — re-run + count pages)
 curl -s $B/v1/generate-proposal -H "Content-Type: application/json" \
   -d '{"generated_proposal_id":"<PID>","intake_session_id":"<SID>","proposal_depth":"full","include_compliance_matrix":true,"rfp_text":"...","lite":true,"include_pdf":true,"return_signed_urls":true}' | python3 -m json.tool
-# then fetch the returned PDF signed URL and count /Type /Page (the 8-page "full-depth sample" in the workspace suggests full may still be short — fix the NoneType bug first)
+# then fetch the returned PDF signed URL and count pages via pdfinfo | grep Pages (brief=9pp, full(bug-capped)=31pp; after the NoneType rebuild + a MAX_DRAFT_TOKENS raise, expect ~50-80+pp)
 ```
 
 ---
@@ -361,8 +361,11 @@ curl -s $B/v1/generate-proposal -H "Content-Type: application/json" \
 
 ## 13. Known gaps / not pilot-ready yet
 
-**Active bug (fix first):**
-- **NoneType section-drafting soft-fail.** When a subsection LLM call returns `null`, `draft_section` does `'NoneType' object has no attribute 'strip'` and drops that subsection (empty). Non-fatal (fail-soft) but is the #1 reason proposals stay short + have missing sections, especially at `proposal_depth="full"`. Confirmed firing on `Considerations & Dependencies`/technical_approach, `Detailed Design`/integration_points, `Overview`+`Detailed Design`/assumptions_open_questions. Fix: treat a `null`/empty draft as a retry (once) then a grounded `[ASSUMPTION]`-marked placeholder instead of crashing to empty. ~30 min, fully grounded.
+**Fixed this session (merged, not yet deployed on EC2):**
+- **NoneType section-drafting soft-fail — FIXED (PR #2 → `6290d23`).** `null`/empty subsection drafts now retry once (primary→fallback) then emit a grounded `[ASSUMPTION] … [SME REVIEW]` placeholder instead of crashing to empty. 60 tests pass. **Rebuild the EC2 brain (`docker compose up -d --build sarvam-brain`) to deploy, then re-run the full-depth probe to measure recovered length.**
+
+**Active item (fix next — the length ceiling):**
+- **Raise `MAX_DRAFT_TOKENS` (1500 → ~3000–3500) and/or add a deeper tier.** The per-call token cap is the hard ceiling on how long any single subsection can get; the 3-subsection-per-section structure caps total depth. This is the only way past ~50–60 pages even after the NoneType fix. Measured: full(bug-capped)=31pp. Delegate to a coding subagent; keep the anti-spiral guardrails (frequency_penalty, max_retries, truncation guard) intact — raise the cap, do not remove the guardrails. Fully grounded (RAG + citations + [ASSUMPTION] markers control hallucination, not the token cap).
 
 **Phase 5 polish (small):**
 - Client-logo sourcing (web/image search + approval-gated embedding) — deferred from Pass 5.
@@ -382,8 +385,8 @@ curl -s $B/v1/generate-proposal -H "Content-Type: application/json" \
 
 ## 14. Immediate next steps
 
-1. **Measure the full-depth page count** (in-flight). Re-run the full-depth probe in [§11](#11-deploy-workflow-user-runs-on-ec2), fetch the returned PDF signed URL, count `/Type /Page`. The honest expectation: even at `full`, output is bounded by the 1500-token/call cap + section fill rate; the 8-page prior sample suggests it may still be short. Report the real number, not a guess.
-2. **Fix the NoneType section-drafting bug** ([§13](#13-known-gaps--not-pilot-ready-yet)). Biggest lever for length + completeness; fully grounded. Delegate to a coding subagent (managed clone from the repo, single-branch `main`) per the coding skill — do not hand-edit.
+1. **Deploy the NoneType fix + re-measure full-depth.** On the EC2 host: `git pull origin main` (→ `6290d23`) → `docker compose up -d --build sarvam-brain` → re-run the full-depth probe in [§11](#11-deploy-workflow-user-runs-on-ec2) → fetch the returned PDF signed URL → `pdfinfo … | grep Pages`. Before the fix full was 31pp; report the new number.
+2. **Raise `MAX_DRAFT_TOKENS` (1500 → ~3000–3500) and/or add a deeper tier** ([§13](#13-known-gaps--not-pilot-ready-yet)). This is now the #1 length lever and the only way past ~50–60 pages. Delegate to a coding subagent (managed clone, single-branch `main`) per the coding skill — do not hand-edit. Keep the anti-spiral guardrails intact; raise the cap, do not remove them.
 3. **Rebuild `open-webui`** on the EC2 host to render the merged branding logo (`docker compose up -d --build open-webui`).
 4. **Then decide direction with the user:** close Phase 5 polish to ~100% (client-logo + durable spec store), or jump to Phase 4 auth (the bigger lever toward a real pilot) / Phase 6 pilot.
 

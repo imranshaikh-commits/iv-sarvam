@@ -36,15 +36,16 @@ He is **not a chatbot and not a search engine**. He is a well-read junior consul
 
 - **Phases 0–3 are substantially complete** (foundation, data, agent backend, retrieval + drafting). External research (Exa/Firecrawl) deferred.
 - **Phase 4 is partial:** Open WebUI is deployed; Supabase Auth / Worker / multi-tenancy is **not wired**.
-- **Phase 5 is in progress** through a 5-pass enhancement sprint:
+- **Phase 5 is ~90% complete** through a 5-pass enhancement sprint + export pipeline:
   - Pass 1 (intake + persistence) — **DONE** (`7622a4d`, migration `005` applied to live DB)
   - Pass 2 (DOCX branding) — **DONE** (`b4d42b0`)
-  - Pass 3 (long-form depth) — **DONE** (`04fcd123` on `sprint5-doc-engine`; merged to `main` as `bee4264`; verified live on EC2)
-  - Pass 4 (diagram framework) — queued
-  - Pass 5 (Open WebUI integration) — queued
+  - Pass 3 (long-form depth) — **DONE** (`04fcd123`; merged to `main` as `bee4264`; verified live on EC2)
+  - Pass 4 (diagram framework) — **DONE** (`d1a8805`; Graphviz render + approval state machine)
+  - Pass 5 (Open WebUI interview gating, core) — **DONE** (`cb18462`; client-logo sourcing deferred)
+  - Export pipeline (lite <5 MB DOCX + PDF export + signed URLs) — **DONE** (`5301bade`); OWUI branding fix `3501254`; persistence status fix (draft→drafting) included
 - **Phase 6** (pilot, hardening, rollout) — not started.
 
-Everything through Pass 5 (diagram framework + interview gating) + the redesigned README is on `main` (`cb18462`, includes all docs). The live brain on EC2 runs `main` (single-branch workflow as of 2026-07-17; `sprint5-doc-engine` was deleted after a full, byte-identical merge).
+Everything through the export pipeline + branding fix + persistence fix is on `main` (`7fd241b`, includes all docs). The live brain on EC2 runs `main` (single-branch workflow as of 2026-07-17; all feature branches deleted after merge).
 
 ---
 
@@ -94,6 +95,24 @@ Everything through Pass 5 (diagram framework + interview gating) + the redesigne
   (rules pinned to /32 stop matching when the IP rotates), NOT by AWS
   auto-changing rules. Permanent fix: AWS Systems Manager Session Manager
   (no inbound port 22, no IP rules).
+
+### Round 3 — OWUI branding + export pipeline + persistence fix — 2026-07-17 (IST)
+
+- **OWUI in-app logo branding** — fixed via `WEBUI_FAVICON_URL=/static/favicon.png` env + `Dockerfile.webui` COPY of IV logos into `/app/build/static/` (compiled frontend defaults now replaced, not just the backend static path). Merged `3501254`. Fallback if OWUI DB settings override env: OWUI Admin → Settings → Images (non-destructive).
+- **Phase 5 export pipeline** — new `export_engine.py` (Pillow lite DOCX compression <5 MB over `word/media/*`, LibreOffice-headless DOCX→PDF, all fail-soft); `supabase_client` upload + signed-URL delivery to the `generated-drafts` bucket; opt-in params `lite`/`include_pdf`/`return_signed_urls` on `/v1/generate-proposal` (no flags = legacy DOCX binary byte-for-byte; any flag = JSON with sizes + signed URLs). Dockerfile adds `libreoffice-writer` + `fonts-dejavu-core`; requirements adds `pillow`. 59 tests pass (42 + 16 new + 1 regression). Merged `5301bade`.
+- **Persistence 400 fixed** — `insert_generated_proposal` sent `status="draft"`, but DB CHECK `generated_proposals_status_check` only allows `drafting`; every insert 400-ed and `generated_proposals` stayed empty (this blocked the diagram-embed flow, which needs a persisted `proposal_id`). One-line fix `draft`→`drafting` + regression test. Merged `5301bade`.
+- **EC2 deploy (rebuild required — new APT/pip deps):**
+
+  ```
+  cd ~/iv-sarvam && git pull origin main
+  cd deploy
+  docker compose up -d --build open-webui    # branding fix
+  docker compose up -d --build sarvam-brain  # export pipeline + persistence fix
+  curl -s http://127.0.0.1:8000/health
+  ```
+
+- **Diagram live validation (pending user deploy)** — after the brain rebuild, generate a fresh proposal (`proposal_type` = `implementation` or `mss`), then: `POST /v1/proposals/{id}/diagrams` (LLM spec, ~seconds) → `PATCH /v1/diagrams/{diag_id}` `{"status":"needs_review"}` → `PATCH` `{"status":"approved"}` (renders via `dot`, uploads to `diagram-renders`) → optional `POST /v1/generate-proposal` with `generated_proposal_id` to re-embed the approved diagram (~60s LLM regen).
+- **Still open:** client-logo sourcing (Pass 5 deferred); `generated-drafts` Supabase Storage bucket must be created manually for signed-URL delivery; Supabase Auth/Worker/multi-tenancy (Phase 4) not wired; Phase 6 not started.
 
 ---
 
@@ -171,6 +190,11 @@ data/                    # raw (gitignored) + tagging templates
 
 | SHA | What |
 |---|---|
+| `7fd241b` | docs: update progress dashboard (~78%, Phase 5 ~90%) |
+| `5301bad` | Merge export-pipeline: Phase 5 lite DOCX + PDF + signed URLs + persistence status fix |
+| `c14bdef` | fix(brain): use valid 'drafting' status on generated_proposals insert |
+| `6f45522` | feat(brain): Phase 5 opt-in export pipeline (lite DOCX, PDF, signed URLs) |
+| `3501254` | Merge owui-branding-fix: OWUI in-app logo branding (favicon env + /app/build/static) |
 | `8558913` | docs: redesign README (merge into sprint5-doc-engine) |
 | `ae019ed` | docs: redesign README — actual build, master-plan status, known gaps |
 | `b4d42b0` | feat(brain): Pass 2 — DOCX branding |
@@ -252,7 +276,7 @@ From [`docs/PROJECT.md`](PROJECT.md):
 | 2 — Agent backend (EC2 + Docker + OpenRouter) | 3–4 | Done |
 | 3 — Retrieval + drafting | 5–6 | Done (RAG end-to-end, compliance matrix); external research deferred |
 | 4 — Conversational frontend + auth | 7–8 | Open WebUI deployed; Supabase Auth/Worker/multi-tenancy **not wired** |
-| 5 — Architecture approval gate + compression/export | 9–10 | In progress (DOCX export done; diagram framework + compression/lite export pending) |
+| 5 — Architecture approval gate + compression/export | 9–10 | ~90% — diagram framework + interview gating + lite/PDF/signed-URL export done; client-logo sourcing + live diagram validation pending |
 | 6 — Pilot + hardening + rollout | 11–12 | Not started |
 
 **Post-Sprint-5 extras (handover doc 05 §4-5), not started:** Exa+Firecrawl external research, fact-checker LLM, hybrid search (BM25+vector+RRF), retrieval tuning.

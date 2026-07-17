@@ -241,6 +241,26 @@ def test_create_signed_url_failure_fails_soft():
     assert url is None
 
 
+def test_insert_generated_proposal_uses_valid_status():
+    """Regression: status must be 'drafting' (a value allowed by the
+    generated_proposals_status_check CHECK constraint), never 'draft' (which 400s
+    and left generated_proposals empty)."""
+    resp = _FakeResp(json_data=[{"id": "prop-999"}])
+    client = _FakeClient(resp=resp)
+    pid = asyncio.run(
+        supabase_client.insert_generated_proposal(
+            client,
+            org_id="org-1",
+            client_name="Test Client",
+            proposal_type="implementation",
+        )
+    )
+    assert pid == "prop-999"
+    assert client.calls, "expected an insert POST"
+    payload = client.calls[0][1]["json"]
+    assert payload["status"] == "drafting"
+
+
 # --- (e)+(f) endpoint behaviour (legacy vs opt-in) --------------------------
 
 from fastapi.testclient import TestClient  # noqa: E402

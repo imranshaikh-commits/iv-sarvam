@@ -2,7 +2,7 @@
 
 **Sarvam** (सर्वम्, Sanskrit for *"all, everything, the whole"*) is Inspirit Vision's in-house Proposal Architect — a conversational, retrieval-grounded AI that turns a new RFP into a structured, client-ready proposal in hours instead of days, by drafting from IV's 100+ historical proposal bank rather than from a blank page.
 
-![Status](https://img.shields.io/badge/status-Sprint%205%20%7C%20Phase%205%20export%20done-blue)
+![Status](https://img.shields.io/badge/status-Phase%205%20~95%25%20%7C%20live--validated-blue)
 ![Brain](https://img.shields.io/badge/brain-FastAPI%20(Python)-231154)
 ![LLM](https://img.shields.io/badge/LLM-GLM%205.2%20%2B%20Qwen3%20fallback-E85A24)
 ![Retrieval](https://img.shields.io/badge/retrieval-Supabase%20pgvector-3ECF8E)
@@ -32,26 +32,15 @@
 | 5 — Architecture approval gate + compression/export | In progress | `███████████████████░░` 95% |
 | 6 — Pilot + hardening + rollout | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
 
-### Phase 5 enhancement sprint (5 passes)
-
-| Pass | Scope | Status |
-|---|---|---|
-| 1 | Intake + persistence | Done — `7622a4d` |
-| 2 | DOCX branding | Done — `b4d42b0` |
-| 3 | Long-form depth (`proposal_depth` tiers) | Done — `04fcd12` (merged to main `bee4264`) |
-| 4 | Architecture diagram framework | Done — merged `d1a8805` |
-| 5 | Open WebUI integration (interview gating) | Done (core) — merged `cb18462`; client-logo sourcing deferred |
-| 6 | Export pipeline (lite <5 MB + PDF + signed URLs) | Done + live-validated — merged `5301bade`; PDF 167 KB via LibreOffice, signed URLs to `generated-drafts` bucket, persistence fix all confirmed live |
-
 ### Known gaps before pilot
 
-- **OWUI logo branding (in-app)** — resolved via `WEBUI_FAVICON_URL` env + `/app/build/static` logo override (merged `3501254`); verify after redeploy — fallback OWUI Admin → Settings → Images if DB settings override env.
-- **Persistence status bug fixed** — `generated_proposals` inserts were 400-ing on `status="draft"` (DB CHECK only allows `drafting`); now persists, so the diagram-embed flow has a `proposal_id` (merged `5301bade`).
-- **Diagram flow live-validated (2026-07-17)** — create spec (6-node IAM architecture) → approve (rendered via `dot`, `rendered_svg_path` set) → regenerate with `generated_proposal_id` produced a 298 KB DOCX (diagram embedded).
+- **NoneType section-drafting bug** (active) — when a subsection LLM call returns `null`, that subsection comes back empty; the #1 reason proposals stay short at `full` depth. Fix is grounded and ~30 min.
 - **Client-logo sourcing** (web/image search + approval-gated embedding) — deferred from Pass 5.
-- **Architecture diagrams need graphviz** — EC2 host runs `sudo apt-get install -y graphviz` (Dockerfile installs it in the image).
-- Lite (<5 MB) DOCX compression, PDF export (LibreOffice headless), storage signed-URL delivery — done (merged `5301bade`). The `generated-drafts` Supabase Storage bucket must be created manually for signed-URL delivery (fail-soft if absent).
-- Supabase Auth / Worker / multi-tenancy not wired (RLS + disabled sign-ups is the interim gate).
+- **Durable diagram spec-template store** (per vendor + diagram type) — deferred from Pass 4.
+- **`approved_by` on diagrams is NULL** — blocked on Phase 4 auth (no user identity yet).
+- **OWUI in-app logo** — code merged (`3501254`) but the `open-webui` container has not been rebuilt on the host; rebuild with `docker compose up -d --build open-webui`.
+- **Supabase Auth / Worker / multi-tenancy** (Phase 4) — not wired (RLS + disabled sign-ups is the interim gate).
+- **Phase 6 pilot** — not started.
 
 ---
 
@@ -85,7 +74,7 @@ Sarvam is that system. He is **not a chatbot and not a search engine** — he is
 
 - **He will not invent client references or metrics.** If he does not know something, he says so, and inserts an `[SME REVIEW]` marker.
 - **He will not fill in pricing.** Commercials are always a human call. He sets up the table; the team fills in the numbers.
-- **V1 contract (lands with the diagram framework):** he will not start drafting until the architecture is approved. This is a hard gate — no shortcuts. (The gate is part of the queued diagram framework; see [Known gaps](#known-gaps--not-pilot-ready-yet).)
+- **V1 contract:** he will not start drafting until the architecture is approved. This is a hard gate — no shortcuts. (The diagram framework is built and live; the hard pre-draft gate is not yet enforced — see [Known gaps](#known-gaps--not-pilot-ready-yet).)
 - **He will not be sycophantic.** No "Great question!", no exclamation marks, no celebration emojis. He talks like a senior consultant.
 
 ---
@@ -94,14 +83,15 @@ Sarvam is that system. He is **not a chatbot and not a search engine** — he is
 
 Honest about what is not done, so no one mistakes the current state for production-ready:
 
-- **Auth and multi-tenancy:** Supabase Auth and the Worker JWT gate are not wired. The brain is protected by network isolation (internal-only) and Open WebUI's disabled sign-ups, not by per-user identity. User identity is not yet propagated end-to-end, so generated drafts are not yet attributed to individual users. Production auth hardening is a pending milestone, not abandoned.
-- **Architecture approval gate:** the diagram framework (Pass 4) is queued, not built. Until it lands, drafting is not hard-gated on an approved architecture.
-- **Long-form depth:** depth tiers (brief / standard / full) that take drafts toward 100+ pages are queued (Pass 3), not yet wired.
-- **Compression and export:** DOCX assembly works; the Lite (under 5 MB) compression pass, PDF export, and delivery to storage signed URLs are not done.
-- **External research and fact-checking:** external research and the secondary-LLM fact-checker are deferred to post-pilot.
+- **Auth and multi-tenancy:** Supabase Auth and the Worker JWT gate are not wired. The brain is protected by network isolation (internal-only) and Open WebUI's disabled sign-ups, not by per-user identity. User identity is not yet propagated end-to-end, so generated drafts are not yet attributed to individual users (`approved_by` on diagrams is NULL). Production auth hardening is a pending milestone, not abandoned.
+- **Hard pre-draft approval gate:** the diagram framework (Pass 4) is built and live — diagrams can be created, approved, rendered, and embedded — but drafting is **not hard-blocked** on an approved architecture. A proposal generates with or without an approved diagram. The V1 "no drafting until architecture is approved" contract is not yet enforced.
+- **NoneType section-drafting soft-fail (active bug):** when a subsection LLM call returns `null`, `draft_section` raises `'NoneType' object has no attribute 'strip'` and drops that subsection (empty). Non-fatal (fail-soft) but is the #1 reason proposals stay short and have missing sections, especially at `proposal_depth="full"`. Confirmed firing on `technical_approach`, `integration_points`, `assumptions_open_questions`. Fix in progress.
+- **Client-logo sourcing:** approval-gated embedding of a client logo sourced online is deferred from Pass 5; the placeholder box is used instead.
+- **Durable diagram spec-template store:** reusable DiagramSpec templates keyed by vendor and diagram type are deferred from Pass 4 (the engine regenerates from scratch for now).
+- **External research and fact-checking:** Exa/Firecrawl external research and the secondary-LLM fact-checker are deferred to post-pilot.
 - **Hybrid search:** retrieval is pure vector similarity; BM25 + reciprocal rank fusion is deferred.
 - **Pilot validation:** no end-to-end runs against historical RFPs with the scoring rubric yet.
-- **Storage buckets:** Supabase storage buckets for source proposals, generated drafts, and diagram renders are pending manual creation.
+- **OWUI branding deploy:** the in-app logo code is merged but the `open-webui` container has not been rebuilt on the host.
 
 ---
 
@@ -207,7 +197,7 @@ Sarvam grounds every draft in what IV has actually delivered, never in model mem
 
 ## Conversational Workflow
 
-Sarvam follows a four-stage conversation, with a hard human gate before any drafting begins (the gate lands with the diagram framework — see [Known gaps](#known-gaps--not-pilot-ready-yet)).
+Sarvam follows a four-stage conversation, with a hard human gate before any drafting begins (the diagram framework is built and live; the hard pre-draft gate is not yet enforced — see [Known gaps](#known-gaps--not-pilot-ready-yet)).
 
 ```mermaid
 flowchart LR
@@ -222,7 +212,7 @@ flowchart LR
 A 24-bucket structured interview collects everything needed for an accurate draft: client and engagement details, scale and volumetrics, scope, **architecture inputs (deployment model, required diagram types and count, hardware sizing, HA/DR, security architecture)**, migration, integrations (HRMS, AD/Exchange, IdP/SSO, applications), compliance and regulatory specifics, timeline, MSS-specific SLA/commercials (conditional), submission constraints, audience and win-themes, current-state systems, NFRs, delivery model, post-go-live, and reuse controls. Every answer persists to the `intake_sessions` table.
 
 ### Stage 2 — Architecture Proposal and Human-in-Loop Gate
-Sarvam retrieves the closest-matching past architecture, generates a `DiagramSpec`, renders it for preview, and presents it. The user **approves or rejects with comments**; on rejection he regenerates incorporating the feedback. **V1 contract:** drafting will be gated on an approved architecture once the diagram framework lands (Pass 4, queued). Approved diagrams are persisted and promoted into the reusable template library.
+Sarvam retrieves the closest-matching past architecture, generates a `DiagramSpec`, renders it for preview, and presents it. The user **approves or rejects with comments**; on rejection he regenerates incorporating the feedback. Approved diagrams are persisted and embedded in the DOCX. **V1 contract:** drafting will be hard-gated on an approved architecture; the diagram framework is built and live, but the hard pre-draft gate and the reusable template library are not yet enforced/built (see [Known gaps](#known-gaps--not-pilot-ready-yet)).
 
 ### Stage 3 — Full Proposal Assembly
 Static sections (Company Profile, Why-Vendor, Methodology) are pulled near-verbatim from the RAG bank. Dynamic sections (Executive Summary, Sizing, RACI, Timeline, Solution Architecture) are generated fresh, grounded in retrieved chunks. A compliance matrix is classified per requirement. The document is assembled into a branded DOCX with a refreshable TOC, citation appendix, and SME-review markers.
@@ -245,15 +235,16 @@ The engine is what turns a chat thread into a deliverable document.
 - **SME-review markers:** inserted where evidence is weak or a gap is detected, so human review is fast and targeted.
 - **Branded DOCX (Pass 2, done):** IV logo on the title page, navy (`#231154`) and orange (`#E85A24`) accents, running header/footer with page numbers, section dividers, and a client-logo placeholder (with a hook for embedding a supplied client logo).
 
-### Queued for current enhancement
+### Built now (continued — enhancement passes)
 
-- **Long-form depth (Pass 3):** `brief` / `standard` / `full` tiers controlled by the number of subsections drafted and the retrieval fan-out — the path to 100+ page output. Adds RACI, timeline, sizing, integration inventory, and risk appendices.
-- **Diagram framework (Pass 4):** GLM emits a constrained `DiagramSpec` JSON → local Graphviz renders PNG/SVG → user approves → only approved diagrams are embedded. Reusable specs stored as templates keyed by vendor and diagram type.
+- **Long-form depth (Pass 3, done):** `brief` / `standard` / `full` tiers control the number of subsections drafted (Overview / Detailed Design / Considerations & Dependencies) and the retrieval fan-out — the path to long output. `full` adds RACI, timeline, sizing, integration inventory, and risk appendices as real DOCX tables.
+- **Diagram framework (Pass 4, done + live-validated):** GLM emits a constrained `DiagramSpec` JSON → local Graphviz renders PNG → user approves → only approved diagrams are embedded. Approval state machine (draft → needs_review → approved/rejected).
+- **Export pipeline (Round 3, done + live-validated):** lite (<5 MB) DOCX compression via Pillow, PDF export via LibreOffice headless, and delivery to storage signed URLs (`generated-drafts` bucket, 1-hour TTL). Opt-in via `lite` / `include_pdf` / `return_signed_urls` on `/v1/generate-proposal`.
+
+### Deferred
+
 - **Client-logo sourcing:** approval-gated embedding of a client logo sourced online when one is not provided.
-
-### Queued for later phases
-
-- **Lite compression** (under 5 MB), **PDF export**, and delivery to storage signed URLs.
+- **Durable diagram spec-template store:** reusable specs keyed by vendor and diagram type (the engine regenerates from scratch for now).
 
 ---
 
@@ -290,7 +281,11 @@ The brain exposes an OpenAI-compatible interface plus proposal-production endpoi
 | POST | `/v1/intake-sessions` | Create a discovery session |
 | PATCH | `/v1/intake-sessions/{id}` | Merge partial answers |
 | POST | `/v1/intake-sessions/{id}/complete` | Validate required answers, mark complete |
-| POST | `/v1/generate-proposal` | Generate a branded DOCX; accepts `intake_session_id` to backfill and persist |
+| POST | `/v1/generate-proposal` | Generate a branded DOCX; accepts `intake_session_id`, `generated_proposal_id` (embeds approved diagrams), `proposal_depth` (`brief`/`standard`/`full`), and export flags `lite` / `include_pdf` / `return_signed_urls` |
+| POST | `/v1/proposals/{id}/diagrams` | Create a diagram spec (LLM-generated `DiagramSpec`, persisted as draft) |
+| GET | `/v1/proposals/{id}/diagrams` | List diagrams for a proposal |
+| PATCH | `/v1/diagrams/{id}` | Advance diagram status (draft → needs_review → approved/rejected; approved renders via Graphviz + uploads) |
+| GET | `/v1/diagrams/{id}` | Fetch a single diagram (status, spec, rendered path) |
 
 Persistence is fail-soft: if a Supabase write fails, the generated DOCX is still returned — generation never blocks on storage.
 
@@ -336,7 +331,7 @@ The original plan in [`docs/PROJECT.md`](docs/PROJECT.md) is a 6-phase, 12-sprin
 ```mermaid
 gantt
     dateFormat  YYYY-MM-DD
-    title Sarvam build — phases and current enhancement pass
+    title Sarvam build — phases and enhancement passes (all passes done)
     section Phase 0 — Foundation
     Accounts, repo, credentials                 :done, p0, 2026-07-08, 2d
     section Phase 1 — Data Foundation
@@ -348,12 +343,16 @@ gantt
     section Sprint 5 — Document Engine
     Templates + DOCX assembly + TOC + citations :done, s5a, 2026-07-15, 2d
     Compliance fix + GLM/Qwen swap              :done, s5b, 2026-07-16, 1d
-    section Phase 5 Enhancement (current)
+    section Phase 5 Enhancement (done + live-validated)
     Pass 1 intake + persistence                 :done, e1, 2026-07-16, 1d
     Pass 2 DOCX branding                        :done, e2, 2026-07-16, 1d
-    Pass 3 long-form depth                      :e3, 2026-07-17, 4d
-    Pass 4 diagram framework                    :e4, 2026-07-21, 4d
-    Pass 5 Open WebUI integration               :e5, 2026-07-25, 3d
+    Pass 3 long-form depth                      :done, e3, 2026-07-17, 1d
+    Pass 4 diagram framework                   :done, e4, 2026-07-17, 1d
+    Pass 5 OWUI interview gating                :done, e5, 2026-07-17, 1d
+    Export pipeline (lite + PDF + signed URLs)  :done, e6, 2026-07-17, 1d
+    section Phase 4 — Frontend & Auth (partial)
+    OWUI branding + interview gating            :done, f4a, 2026-07-17, 1d
+    Supabase Auth / Worker / multi-tenancy      :f4b, 2026-07-21, 5d
     section Phase 6 — Pilot & Rollout
     Pilot vs historical RFPs + hardening         :p6, 2026-07-28, 10d
 ```
@@ -366,18 +365,23 @@ gantt
 | Grounded RAG chat + compliance matrix | Done |
 | Document-production engine (templates, DOCX, TOC, citations, SME markers) | Done |
 | Compliance repetition fix + model swap (DeepSeek removed) | Done |
-| Pass 1 — intake sessions + persistence foundation | Done (committed, migration applied) |
-| Pass 2 — DOCX branding (IV logo, navy/orange, header/footer, client-logo placeholder) | Done (committed) |
-| Pass 3 — long-form depth (depth tiers, multi-subsection, RACI/timeline/sizing/risk appendices) | Next |
-| Pass 4 — diagram framework (DiagramSpec → Graphviz → approval → embed approved only) | Queued |
-| Pass 5 — Open WebUI integration (brain-side interview enforcement, download button) | Queued |
-| Supabase Auth / Worker / multi-tenancy (Sprint 8) | Not wired |
-| Compression + Lite/PDF export to storage (Sprint 10) | Not done |
+| Pass 1 — intake sessions + persistence foundation | Done |
+| Pass 2 — DOCX branding (IV logo, navy/orange, header/footer, client-logo placeholder) | Done |
+| Pass 3 — long-form depth (depth tiers, multi-subsection, RACI/timeline/sizing/risk appendices) | Done |
+| Pass 4 — diagram framework (DiagramSpec → Graphviz → approval → embed approved only) | Done + live-validated |
+| Pass 5 — Open WebUI interview gating (no session → discovery interview) | Done |
+| Export pipeline — lite <5 MB DOCX + PDF (LibreOffice) + signed URLs to storage | Done + live-validated |
+| OWUI in-app logo branding (favicon env + /app/build/static override) | Done (merged); open-webui container rebuild pending on host |
+| Persistence fix (generated_proposals status draft→drafting) | Done + live-validated |
+| NoneType section-drafting bug (null LLM subsection → empty section) | Open — active fix, #1 length lever |
+| Client-logo sourcing (web/image search + approval-gated embedding) | Deferred |
+| Durable diagram spec-template store (per vendor + diagram type) | Deferred |
+| Supabase Auth / Worker / multi-tenancy (Sprint 8) | Not wired (~45% of Phase 4) |
 | External research + fact-checker | Deferred (post-pilot) |
 | Hybrid search (BM25 + vector + reciprocal rank fusion) | Deferred |
 | Pilot against 5–10 historical RFPs + hardening + team rollout | Not started |
 
-> **Status line:** Phases 0–3 are substantially complete, with external research deferred. Phase 4 is partially complete through Open WebUI, but Auth/Worker multi-tenancy is not wired. Phase 5 is in progress through the current enhancement passes (Pass 1 and Pass 2 done; Pass 3 next). Phase 6 pilot, hardening, rollout, fact-checking, and hybrid search remain pending.
+> **Status line:** Phases 0–3 complete. Phase 4 ~45% (Open WebUI + interview gating + branding done; Auth/Worker/multi-tenancy not wired). Phase 5 ~95% (all 5 passes + export pipeline done and live-validated; NoneType section-drafting bug + client-logo sourcing + durable spec-template store pending). Phase 6 (pilot, hardening, rollout) not started. Overall ~80%.
 
 ---
 

@@ -2,7 +2,7 @@
 
 > **Purpose.** This document lets any new operator (human or AI agent) pick up the Sarvam build exactly where it stands today, with zero re-discovery. It was written because the build may move to a different Perplexity account when credits on the originating account run low. Read it in full before starting work; it is self-contained.
 >
-> **Last updated:** 2026-07-16 (IST). **Repo:** `imranshaikh-commits/iv-sarvam` (public fork of `creator-imran/sarvam`). **Default branch:** `main`. **Working branch:** `sprint5-doc-engine`. Baseline before this handover commit: `main` was `644cc7e`, `sprint5-doc-engine` was `8558913`. **Always verify current HEADs before acting.**
+> **Last updated:** 2026-07-17 (IST). **Repo:** `imranshaikh-commits/iv-sarvam` (public fork of `creator-imran/sarvam`). **Default branch:** `main`. **Working branch:** `sprint5-doc-engine`. Current HEADs: `main` is `bee4264`, `sprint5-doc-engine` is `04fcd12`. **Always verify current HEADs before acting.**
 >
 > **Public-safe.** This file is committed to a public repository. It contains **no** secrets, API keys, EC2 IPs, or Supabase project refs. Identifiers are described by name/region so the operator can locate them; secrets live only on the EC2 host's local env file.
 
@@ -39,12 +39,55 @@ He is **not a chatbot and not a search engine**. He is a well-read junior consul
 - **Phase 5 is in progress** through a 5-pass enhancement sprint:
   - Pass 1 (intake + persistence) — **DONE** (`7622a4d`, migration `005` applied to live DB)
   - Pass 2 (DOCX branding) — **DONE** (`b4d42b0`)
-  - Pass 3 (long-form depth) — **NEXT** (not started)
+  - Pass 3 (long-form depth) — **DONE** (`04fcd123` on `sprint5-doc-engine`; merged to `main` as `bee4264`; verified live on EC2)
   - Pass 4 (diagram framework) — queued
   - Pass 5 (Open WebUI integration) — queued
 - **Phase 6** (pilot, hardening, rollout) — not started.
 
-Everything in Pass 1 + Pass 2 + the redesigned README is merged to `main` (`644cc7e`). The live brain on EC2 runs `sprint5-doc-engine`.
+Everything through Pass 3 + the redesigned README is merged to `main` (`bee4264`). The live brain on EC2 runs `sprint5-doc-engine` (`04fcd12`).
+
+---
+
+## Status update — 2026-07-17 (IST)
+
+### Completed this session
+
+- **Pass 3 (long-form depth)** implemented, tested (18/18 keyless tests pass),
+  sample DOCX visually inspected (title page, TOC, body subsections, all 5
+  appendix tables clean). Commit `04fcd123` on `sprint5-doc-engine`; merged to
+  `main` as merge commit `bee4264` (no force, no rewrite).
+- **Pass 3 deployed live** to the EC2 brain (sprint5-doc-engine pull +
+  sarvam-brain rebuild). Verified live: `/health` OK; `/v1/models` OK (only
+  sarvam-architect); `/v1/intake-template` OK (24 buckets); intake session
+  create/PATCH/complete + validation OK; `/v1/compliance-matrix` OK;
+  `/v1/generate-proposal` returns a valid branded DOCX (HTTP 200, ~50s for
+  brief, ~240 KB, content-type
+  `application/vnd.openxmlformats-officedocument.wordprocessingml.document`).
+- **Daily Supabase keep-alive** scheduled task recreated on this account
+  (cron ~09:00 UTC, background; pings `SELECT count(*) FROM organizations;`,
+  auto-restores the project and notifies the user only on failure).
+- **Connectors** (GitHub, Supabase, AWS) reconnected on this account.
+- **Live state verified** against the handover — exact match: 8 tables
+  (RLS enabled on all), 11 proposals, 1,413 chunks, 5 migrations
+  (sarvam_001..sarvam_005), 1 organization. No data/schema/context lost across
+  the 3-4 account migrations.
+
+### Branch HEADs (verified 2026-07-17)
+
+- `main`: `bee4264` (merge of Pass 3 into main)
+- `sprint5-doc-engine`: `04fcd12` (Pass 3)
+
+### New known gaps
+
+- **OWUI logo branding not rendering in-app** — tab title + tab favicon are OK;
+  sidebar + sign-in logo still default. Critical post-pilot / pre-deployment
+  sprint — see `docs/SPRINT_OWUI_BRANDING.md`.
+- **Interview gating not wired** in `/v1/chat/completions` — "Hi" returns a RAG
+  reply, not the discovery interview. This is Pass 5 work (not started).
+- **Recurring SSH access breaks** are caused by a dynamic client public IP
+  (rules pinned to /32 stop matching when the IP rotates), NOT by AWS
+  auto-changing rules. Permanent fix: AWS Systems Manager Session Manager
+  (no inbound port 22, no IP rules).
 
 ---
 
@@ -232,7 +275,7 @@ This is the current active work — Phase 5 catch-up + enhancement, triggered by
 - Dockerfile COPYs `branding.py` + `assets/`.
 - Verified: py_compile OK, keyless smoke test pass, sample rendered to PDF→PNG, visually confirmed no overflow/wrapping/contrast.
 
-### Pass 3 — Long-form depth — NEXT (not started)
+### Pass 3 — Long-form depth — DONE (`04fcd123`, merged to `main` `bee4264`, verified live)
 **Goal:** take drafts from ~12 pages toward 100+ page source-proposal parity.
 - `proposal_depth` tiers: `brief` / `standard` / `full` (control via number of subsections drafted + retrieval fan-out, not by inflating a single giant call).
 - Multi-subsection drafting per section.
@@ -327,10 +370,10 @@ URL-mangling note: chat clients auto-linkify URLs in code blocks. When giving th
 
 ## 14. Immediate next steps
 
-1. **Start Pass 3 (long-form depth).** Scope is in [§9](#9-the-enhancement-sprint-pass-15-detailed). Delegate to a coding subagent with `metadata='{"repo_url": "https://github.com/imranshaikh-commits/iv-sarvam"}'`, branch from `sprint5-doc-engine`. Keep per-call token caps + frequency penalty.
-2. After Pass 3: Pass 4 (diagram framework), then Pass 5 (OWUI integration).
-3. Then: client-logo sourcing, weak-evidence threshold tuning.
-4. Then: Phase 6 pilot (5–10 historical RFPs, scoring rubric, hardening, rollout).
+1. Pass 4 (architecture diagram framework) — or prioritize interview-gating
+   (Pass 5) for the biggest user-visible win.
+2. OWUI branding fix (`docs/SPRINT_OWUI_BRANDING.md`) — post-pilot, pre-deploy.
+3. Phase 6 pilot (5-10 historical RFPs, scoring rubric, hardening, rollout).
 
 **Before each pass:** verify live state (branch HEAD, DB counts) with `gh api` and the Supabase connector; do not trust stale memory.
 

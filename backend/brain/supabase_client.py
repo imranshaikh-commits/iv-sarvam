@@ -216,7 +216,12 @@ async def insert_generated_proposal(
 
     created_by is intentionally omitted (NULL). The DB column was made nullable
     in sarvam_005 and the service-role key bypasses the RLS INSERT policy, so a
-    NULL created_by insert succeeds. Restore once real auth is wired."""
+    NULL created_by insert succeeds. Restore once real auth is wired.
+
+    status MUST be one of the values allowed by the generated_proposals_status_check
+    CHECK constraint (discovery, architecture_review, architecture_approved,
+    drafting, review, final, abandoned). We use 'drafting' for a freshly generated
+    draft — 'draft' is NOT a valid value and makes the insert 400."""
     payload = {
         "org_id": org_id,
         "client_name": client_name,
@@ -225,7 +230,7 @@ async def insert_generated_proposal(
         "discovery_answers": discovery_answers or {},
         "draft_markdown": draft_markdown or "",
         "retrieval_trace": retrieval_trace or [],
-        "status": "draft",
+        "status": "drafting",
         "intake_session_id": intake_session_id,
     }
     try:

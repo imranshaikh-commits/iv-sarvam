@@ -216,7 +216,12 @@ async def insert_generated_proposal(
 
     created_by is intentionally omitted (NULL). The DB column was made nullable
     in sarvam_005 and the service-role key bypasses the RLS INSERT policy, so a
-    NULL created_by insert succeeds. Restore once real auth is wired."""
+    NULL created_by insert succeeds. Restore once real auth is wired.
+
+    status MUST be one of the values allowed by the generated_proposals_status_check
+    CHECK constraint (discovery, architecture_review, architecture_approved,
+    drafting, review, final, abandoned). We use 'drafting' for a freshly generated
+    draft — 'draft' is NOT a valid value and makes the insert 400."""
     payload = {
         "org_id": org_id,
         "client_name": client_name,
@@ -225,7 +230,7 @@ async def insert_generated_proposal(
         "discovery_answers": discovery_answers or {},
         "draft_markdown": draft_markdown or "",
         "retrieval_trace": retrieval_trace or [],
-        "status": "draft",
+        "status": "drafting",
         "intake_session_id": intake_session_id,
     }
     try:
@@ -372,3 +377,67 @@ async def upload_diagram_render(
                   DIAGRAM_BUCKET, e)
         return None
     return path
+
+
+# --- generated-drafts storage (Pass 6 — export pipeline) --------------------
+# Signed-URL delivery of the exported DOCX/PDF. Both helpers are fail-soft: if the
+# bucket is absent or storage errors, they log and return None so the export
+# endpoint can surface a clear manual-setup note instead of crashing. RLS is
+# enforced at the DB layer; the service-role key bypasses it here as elsewhere.
+
+GENERATED_DRAFTS_BUCKET = os.environ.get("GENERATED_DRAFTS_BUCKET", "generated-drafts")
+
+
+async def upload_generated_draft(
+    client: httpx.AsyncClient,
+    path: str,
+    data: bytes,
+    content_type: str,
+) -> str | None:
+    """Upload an exported draft (DOCX/PDF) to the GENERATED_DRAFTS_BUCKET. Fail-soft.
+
+    Returns the storage object path on success, or None if the bucket is missing /
+    the upload fails (caller documents manual setup — never crashes the request)."""
+    url = f"{SUPABASE_URL}/storage/v1/object/{GENERATED_DRAFTS_BUCKET}/{path}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": content_type,
+        "x-upsert": "true",
+    }
+    try:
+        resp = await client.post(url, headers=headers, content=data, timeout=60.0)
+        resp.raise_for_status()
+    except Exception as e:  # noqa: BLE001
+        log.error("upload_generated_draft failed (bucket '%s' missing? fail-soft): %s",
+                  GENERATED_DRAFTS_BUCKET, e)
+        return None
+    return path
+
+
+async def create_signed_url(
+    client: httpx.AsyncClient, path: str, expires_in: int = 3600
+) -> str | None:
+    """Create a time-limited signed URL for a GENERATED_DRAFTS_BUCKET object. Fail-soft.
+
+    Returns a fully-qualified URL, or None on failure. Supabase returns a relative
+    ``signedURL`` (``/object/sign/<bucket>/<path>?token=...``) which we join onto
+    the storage base so the caller gets a directly usable link."""
+    url = f"{SUPABASE_URL}/storage/v1/object/sign/{GENERATED_DRAFTS_BUCKET}/{path}"
+    try:
+        resp = await client.post(
+            url, headers=_headers(prefer_representation=False),
+            json={"expiresIn": expires_in}, timeout=30.0,
+        )
+        resp.raise_for_status()
+        data = resp.json() or {}
+    except Exception as e:  # noqa: BLE001
+        log.error("create_signed_url failed (bucket '%s' missing? fail-soft): %s",
+                  GENERATED_DRAFTS_BUCKET, e)
+        return None
+    signed = data.get("signedURL") or data.get("signedUrl")
+    if not signed:
+        return None
+    if signed.startswith("/"):
+        return f"{SUPABASE_URL}/storage/v1{signed}"
+    return signed

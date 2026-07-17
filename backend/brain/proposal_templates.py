@@ -187,8 +187,10 @@ def get_template(proposal_type: str) -> list[SectionSpec]:
 # Depth is controlled by (a) how many independent drafting calls run per section
 # (subsections) and (b) how many retrieval queries run per section (fan-out) —
 # NOT by inflating a single call's token cap. ``per_call_max_tokens`` stays at or
-# below the module's existing 1500 hard cap so no single call runs away.
-_PER_CALL_TOKEN_HARD_CAP = 1500
+# below the module's hard cap so no single call runs away. Cap raised 1500->3500
+# to let full-depth subsections run longer toward 100+ pp; anti-spiral guardrails
+# (frequency_penalty, max_retries, truncation guard) remain intact.
+_PER_CALL_TOKEN_HARD_CAP = 3500
 
 
 @dataclass(frozen=True)
@@ -233,7 +235,7 @@ DEPTH_TIERS: dict[str, DepthTier] = {
                           include_appendices=False, per_call_max_tokens=1500),
     # full: multi-subsection drafting + wider retrieval fan-out + appendix pack.
     "full": DepthTier("full", subsections_per_section=3, retrieval_fanout=3,
-                      include_appendices=True, per_call_max_tokens=1500),
+                      include_appendices=True, per_call_max_tokens=3500),
 }
 
 DEFAULT_DEPTH = "standard"

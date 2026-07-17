@@ -179,3 +179,72 @@ def get_template(proposal_type: str) -> list[SectionSpec]:
             f"unknown proposal_type {proposal_type!r}; expected one of {sorted(VALID_PROPOSAL_TYPES)}"
         )
     return _TEMPLATES[key]
+
+
+# ---------------------------------------------------------------------------
+# Pass 3 — proposal-depth tiers (long-form depth via STRUCTURED fan-out)
+# ---------------------------------------------------------------------------
+# Depth is controlled by (a) how many independent drafting calls run per section
+# (subsections) and (b) how many retrieval queries run per section (fan-out) —
+# NOT by inflating a single call's token cap. ``per_call_max_tokens`` stays at or
+# below the module's existing 1500 hard cap so no single call runs away.
+_PER_CALL_TOKEN_HARD_CAP = 1500
+
+
+@dataclass(frozen=True)
+class DepthTier:
+    """A proposal-depth tier plan.
+
+    subsections_per_section : independent drafting LLM calls per section
+    retrieval_fanout        : retrieval queries issued per section (merged/deduped)
+    include_appendices      : whether the DOCX gets the appendix pack
+    per_call_max_tokens     : per-call token budget (never above the hard cap)
+    """
+
+    name: str
+    subsections_per_section: int
+    retrieval_fanout: int
+    include_appendices: bool
+    per_call_max_tokens: int
+
+    def __post_init__(self) -> None:
+        # Enforce the hard cap defensively — depth must never raise per-call
+        # token budgets irresponsibly (a Pass 3 hard constraint).
+        if self.per_call_max_tokens > _PER_CALL_TOKEN_HARD_CAP:
+            object.__setattr__(self, "per_call_max_tokens", _PER_CALL_TOKEN_HARD_CAP)
+
+
+# Facets used to split a section into independent, focused drafting calls when a
+# tier requests multiple subsections. Each facet is drafted by its own LLM call
+# (same per-call token cap) then assembled under an H2 subheading.
+SUBSECTION_FACETS: list[tuple[str, str]] = [
+    ("Overview", "a high-level overview: objectives, scope and the value delivered"),
+    ("Detailed Design", "the detailed technical design: components, connectors, workflows and configuration specifics"),
+    ("Considerations & Dependencies", "operational considerations, dependencies, assumptions and risks to manage"),
+]
+
+
+DEPTH_TIERS: dict[str, DepthTier] = {
+    # brief: leaner than default — single call, single query, tighter budget.
+    "brief": DepthTier("brief", subsections_per_section=1, retrieval_fanout=1,
+                       include_appendices=False, per_call_max_tokens=900),
+    # standard: preserves existing Pass 1/2 behaviour exactly (the safe default).
+    "standard": DepthTier("standard", subsections_per_section=1, retrieval_fanout=1,
+                          include_appendices=False, per_call_max_tokens=1500),
+    # full: multi-subsection drafting + wider retrieval fan-out + appendix pack.
+    "full": DepthTier("full", subsections_per_section=3, retrieval_fanout=3,
+                      include_appendices=True, per_call_max_tokens=1500),
+}
+
+DEFAULT_DEPTH = "standard"
+VALID_DEPTHS = frozenset(DEPTH_TIERS.keys())
+
+
+def get_depth_tier(proposal_depth: str | None) -> DepthTier:
+    """Resolve a depth name to its plan, falling back to the safe default.
+
+    Unknown/missing values return the ``standard`` tier so existing callers that
+    omit ``proposal_depth`` keep their current behaviour.
+    """
+    key = (proposal_depth or "").strip().lower()
+    return DEPTH_TIERS.get(key, DEPTH_TIERS[DEFAULT_DEPTH])

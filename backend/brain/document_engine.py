@@ -34,7 +34,10 @@ from docx.shared import Pt, RGBColor
 import branding
 from proposal_templates import (
     COMPLIANCE_SECTION_ID,
+    SUBSECTION_FACETS,
+    DepthTier,
     SectionSpec,
+    get_depth_tier,
     get_template,
 )
 
@@ -84,8 +87,15 @@ def _vendor_clause(iam_vendor: Optional[str]) -> str:
     return f" using {iam_vendor}" if iam_vendor else ""
 
 
+# Hard ceiling on any single draft call's token budget. Pass 3 depth tiers vary
+# the budget DOWN for leaner tiers but must never raise a call above this — depth
+# comes from more (fanned-out) calls, not from one runaway call.
+MAX_DRAFT_TOKENS = 1500
+
+
 def _draft_payload(model: str, system_prompt: str, user_prompt: str,
-                   include_frequency_penalty: bool = True) -> dict:
+                   include_frequency_penalty: bool = True,
+                   max_tokens: int = MAX_DRAFT_TOKENS) -> dict:
     payload = {
         "model": model,
         "messages": [
@@ -96,7 +106,8 @@ def _draft_payload(model: str, system_prompt: str, user_prompt: str,
         "temperature": 0.4,
         # Cap runaway generation (same repetition-spiral risk as the compliance
         # classifier). LOW frequency_penalty preserves grounded citation/vendor terms.
-        "max_tokens": 1500,
+        # Clamp to the hard ceiling so a bad depth config can never inflate a call.
+        "max_tokens": min(int(max_tokens), MAX_DRAFT_TOKENS),
     }
     if include_frequency_penalty:
         payload["frequency_penalty"] = 0.2
@@ -121,17 +132,22 @@ async def draft_with_openrouter(
     client: httpx.AsyncClient,
     system_prompt: str,
     user_prompt: str,
+    max_tokens: int = MAX_DRAFT_TOKENS,
 ) -> str:
     """Isolated OpenRouter chat call with primary->fallback. Monkeypatched by the smoke test.
 
     Tries PRIMARY_LLM_MODEL, then FALLBACK_LLM_MODEL on HTTP/network/timeout
     error. Defensive: a 400 caused by an unsupported param (frequency_penalty)
     triggers a same-model retry WITHOUT frequency_penalty before falling back.
+
+    ``max_tokens`` is the per-call budget from the active depth tier; it is
+    clamped to MAX_DRAFT_TOKENS inside ``_draft_payload``.
     """
     last_exc: Exception | None = None
     for model in (PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL):
         try:
-            content = await _post_draft(client, _draft_payload(model, system_prompt, user_prompt))
+            content = await _post_draft(
+                client, _draft_payload(model, system_prompt, user_prompt, max_tokens=max_tokens))
             log.info("OpenRouter draft model=%s", model)
             return content
         except httpx.HTTPStatusError as e:
@@ -142,7 +158,8 @@ async def draft_with_openrouter(
                 try:
                     content = await _post_draft(
                         client, _draft_payload(model, system_prompt, user_prompt,
-                                               include_frequency_penalty=False))
+                                               include_frequency_penalty=False,
+                                               max_tokens=max_tokens))
                     log.info("OpenRouter draft model=%s (no frequency_penalty)", model)
                     return content
                 except (httpx.HTTPStatusError, httpx.RequestError) as e2:
@@ -160,6 +177,58 @@ async def draft_with_openrouter(
     raise last_exc  # pragma: no cover
 
 
+def _fanout_queries(section_spec: SectionSpec, context: dict, fanout: int) -> list[str]:
+    """Build up to ``fanout`` distinct retrieval queries for a section.
+
+    Query 0 is the section's base query. Extra queries append a subsection facet
+    keyword so retrieval surfaces evidence for different aspects of the section.
+    """
+    base = section_spec.render_query(context)
+    if fanout <= 1:
+        return [base]
+    queries = [base]
+    for _title, facet in SUBSECTION_FACETS[: max(0, fanout - 1)]:
+        queries.append(f"{base} — {facet}")
+    return queries[:fanout]
+
+
+async def _retrieve_fanout(
+    client: httpx.AsyncClient,
+    section_spec: SectionSpec,
+    context: dict,
+    *,
+    embed_fn: EmbedFn,
+    retrieve_fn: RetrieveFn,
+    top_k: int,
+    fanout: int,
+) -> list[dict]:
+    """Run fanned-out retrieval, then merge + dedupe chunks by text.
+
+    Deduped set is sorted by similarity (desc) and capped so wider fan-out gives
+    richer evidence without an unbounded evidence block.
+    """
+    seen: set[str] = set()
+    merged: list[dict] = []
+    for query in _fanout_queries(section_spec, context, fanout):
+        try:
+            embedding = await embed_fn(client, query)
+            chunks = await retrieve_fn(client, embedding, query, k=top_k)
+        except Exception as e:  # fail soft: one failed query must not sink the section
+            log.error("draft_section retrieval failed for %s: %s", section_spec.id, e)
+            chunks = []
+        for c in chunks:
+            key = (c.get("chunk_text") or c.get("heading") or "")[:160]
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            merged.append(c)
+    merged.sort(key=lambda c: float(c.get("similarity") or 0.0), reverse=True)
+    # Cap evidence to keep prompts bounded: base top_k, plus headroom per extra query.
+    cap = top_k * max(1, fanout)
+    return merged[:cap]
+
+
 async def draft_section(
     client: httpx.AsyncClient,
     section_spec: SectionSpec,
@@ -169,18 +238,26 @@ async def draft_section(
     retrieve_fn: RetrieveFn,
     build_grounded_system_fn: BuildSystemFn,
     top_k: int = TOP_K,
+    fanout: int = 1,
+    subsections: int = 1,
+    max_tokens: int = MAX_DRAFT_TOKENS,
 ) -> dict:
     """Draft one proposal section, grounded in retrieved corpus evidence.
 
-    Returns: {"id", "title", "content", "citations", "max_similarity", "needs_sme_review"}.
+    Depth controls (Pass 3):
+      fanout      : number of retrieval queries merged for this section's evidence.
+      subsections : number of INDEPENDENT drafting calls. >1 splits the section
+                    into focused facets (Overview / Detailed Design / ...), each
+                    its own LLM call with the per-call ``max_tokens`` budget — so
+                    depth grows via more calls, never a bigger single call.
+
+    Returns: {"id","title","content","subsections","citations","max_similarity",
+              "needs_sme_review"}.
     """
-    query = section_spec.render_query(context)
-    try:
-        embedding = await embed_fn(client, query)
-        chunks = await retrieve_fn(client, embedding, query, k=top_k)
-    except Exception as e:  # fail soft: produce an SME-review stub, not a 500
-        log.error("draft_section retrieval failed for %s: %s", section_spec.id, e)
-        chunks = []
+    chunks = await _retrieve_fanout(
+        client, section_spec, context,
+        embed_fn=embed_fn, retrieve_fn=retrieve_fn, top_k=top_k, fanout=fanout,
+    )
 
     max_similarity = max((float(c.get("similarity") or 0.0) for c in chunks), default=0.0)
     needs_sme_review = (not chunks) or (max_similarity < WEAK_EVIDENCE_THRESHOLD)
@@ -197,19 +274,56 @@ async def draft_section(
         marker=SME_REVIEW_MARKER,
         evidence=evidence_block,
     )
-    user_prompt = (
-        f"Draft the \"{section_spec.title}\" section now, grounded in the EVIDENCE and citing inline as [N].\n\n"
-        f"RFP / requirement context:\n{(context.get('rfp_text') or '')[:4000]}"
-    )
+    rfp_ctx = (context.get("rfp_text") or "")[:4000]
 
-    try:
-        content = await draft_with_openrouter(client, system_prompt, user_prompt)
-    except Exception as e:
-        log.error("draft_section drafting failed for %s: %s", section_spec.id, e)
-        content = (
-            f"{SME_REVIEW_MARKER}: drafting failed for this section ({e}). "
-            "A subject-matter expert must author it manually."
+    # Plan the subsection facets. subsections<=1 keeps the original single-call
+    # behaviour (facet list empty -> one whole-section draft).
+    n_sub = max(1, min(int(subsections), len(SUBSECTION_FACETS)))
+    facets = SUBSECTION_FACETS[:n_sub] if n_sub > 1 else []
+
+    async def _draft_once(user_prompt: str) -> str:
+        return await draft_with_openrouter(client, system_prompt, user_prompt, max_tokens=max_tokens)
+
+    subsection_results: list[dict] = []
+    drafting_failed = False
+    if not facets:
+        user_prompt = (
+            f"Draft the \"{section_spec.title}\" section now, grounded in the EVIDENCE and citing inline as [N].\n\n"
+            f"RFP / requirement context:\n{rfp_ctx}"
         )
+        try:
+            content = (await _draft_once(user_prompt)).strip()
+        except Exception as e:
+            log.error("draft_section drafting failed for %s: %s", section_spec.id, e)
+            content = (
+                f"{SME_REVIEW_MARKER}: drafting failed for this section ({e}). "
+                "A subject-matter expert must author it manually."
+            )
+            drafting_failed = True
+    else:
+        # Independent drafting call per facet (the structured fan-out).
+        parts: list[str] = []
+        for sub_title, facet in facets:
+            user_prompt = (
+                f"Draft the \"{sub_title}\" subsection of the \"{section_spec.title}\" section, "
+                f"focusing specifically on {facet}. Ground every claim in the EVIDENCE and cite "
+                f"inline as [N]. Do not repeat content that belongs in other subsections.\n\n"
+                f"RFP / requirement context:\n{rfp_ctx}"
+            )
+            try:
+                sub_content = (await _draft_once(user_prompt)).strip()
+            except Exception as e:
+                log.error("draft_section subsection %s failed for %s: %s", sub_title, section_spec.id, e)
+                sub_content = (
+                    f"{SME_REVIEW_MARKER}: drafting failed for this subsection ({e}). "
+                    "A subject-matter expert must author it manually."
+                )
+                drafting_failed = True
+            subsection_results.append({"title": sub_title, "content": sub_content})
+            parts.append(f"### {sub_title}\n\n{sub_content}")
+        content = "\n\n".join(parts).strip()
+
+    if drafting_failed:
         needs_sme_review = True
 
     content = (content or "").strip()
@@ -225,6 +339,7 @@ async def draft_section(
         "id": section_spec.id,
         "title": section_spec.title,
         "content": content,
+        "subsections": subsection_results,
         "citations": chunks,
         "max_similarity": max_similarity,
         "needs_sme_review": needs_sme_review,
@@ -295,6 +410,7 @@ def assemble_docx(
     sections: list[dict],
     compliance_markdown: Optional[str] = None,
     client_logo_path: Optional[str] = None,
+    include_appendices: bool = False,
 ) -> bytes:
     """Build a professional, IV-branded Word document and return its bytes.
 
@@ -304,6 +420,11 @@ def assemble_docx(
     client_logo_path: optional path to a client logo image embedded in the
     title-page box. When None (default) a bordered "Client Logo" placeholder is
     drawn instead. Logos are never sourced online in this pass.
+
+    include_appendices: when True (full depth) appends the appendix pack —
+    RACI, timeline, sizing, integration inventory and risks — as real DOCX
+    tables. Where intake/retrieval data is absent, conservative
+    assumption-marked placeholder rows are used (never fabricated specifics).
     """
     metadata = {
         **metadata,
@@ -332,7 +453,14 @@ def assemble_docx(
             flag = heading.add_run("   [SME REVIEW REQUIRED]")
             flag.font.size = Pt(10)
             flag.font.color.rgb = _DRAFT_COLOR
-        _add_body_paragraphs(document, sec.get("content", ""))
+        subs = sec.get("subsections") or []
+        if subs:
+            # Multi-subsection (full depth): render each facet under an H2 heading.
+            for sub in subs:
+                document.add_heading(sub.get("title", "Untitled"), level=2)
+                _add_body_paragraphs(document, sub.get("content", ""))
+        else:
+            _add_body_paragraphs(document, sec.get("content", ""))
 
         # Opportunistically collect assumption-ish lines for the aggregate section.
         if "assumption" not in (sec.get("id") or "").lower():
@@ -394,6 +522,10 @@ def assemble_docx(
             "No corpus citations were available for this draft — all content requires SME sourcing."
         )
 
+    # --- Appendices (full depth only) --------------------------------------
+    if include_appendices:
+        _add_appendices(document, metadata)
+
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
@@ -448,6 +580,125 @@ def _add_markdown_ish(document: Document, text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Appendices (Pass 3 — full depth). Deterministic, no LLM calls, no fabrication.
+# Missing intake/retrieval data yields conservative assumption-marked rows.
+# ---------------------------------------------------------------------------
+
+_APPENDIX_ASSUMPTION = "[ASSUMPTION]"
+
+
+def _appendix_note(document: Document, text: str) -> None:
+    note = document.add_paragraph()
+    run = note.add_run(text)
+    run.italic = True
+    run.font.size = Pt(10)
+
+
+def _appendix_table(document: Document, headers: list[str], rows: list[list[str]]) -> None:
+    """Render a native Word table with a bold header row."""
+    table = document.add_table(rows=1, cols=len(headers))
+    table.style = "Light Grid Accent 1"
+    for j, h in enumerate(headers):
+        run = table.rows[0].cells[j].paragraphs[0].add_run(h)
+        run.bold = True
+    for row in rows:
+        cells = table.add_row().cells
+        for j in range(len(headers)):
+            cells[j].text = row[j] if j < len(row) else ""
+
+
+def _add_appendices(document: Document, metadata: dict) -> None:
+    """Append the full-depth appendix pack as real DOCX sections/tables.
+
+    Every row is either grounded in supplied metadata or an explicit
+    ``[ASSUMPTION]`` placeholder — SMEs must confirm before client use. No
+    specific figures, dates or SLAs are fabricated.
+    """
+    vendor = (metadata.get("iam_vendor") or "the selected IAM platform").strip() or "the selected IAM platform"
+    ptype = (metadata.get("proposal_type") or "implementation").strip().lower()
+
+    document.add_page_break()
+    branding.add_section_heading(document, "Appendices")
+    _appendix_note(
+        document,
+        "The following appendices are structured planning artefacts. Rows marked "
+        f"{_APPENDIX_ASSUMPTION} are conservative placeholders to be confirmed with the "
+        "client and an SME during discovery — they are not commitments.",
+    )
+
+    # A. RACI matrix
+    branding.add_section_heading(document, "Appendix A — RACI Matrix")
+    _appendix_table(
+        document,
+        ["Activity / Workstream", "InspiritVision", "Client", "Vendor"],
+        [
+            ["Solution design & architecture", "R/A", "C", "C"],
+            ["Environment provisioning", "C", "R/A", "C"],
+            ["Configuration & build", "R/A", "C", "I"],
+            ["Integration & connector setup", "R/A", "C", "C"],
+            ["Testing & UAT", "R", "A", "I"],
+            ["Go-live & cutover", "R/A", "C", "I"],
+            ["Knowledge transfer & handover", "R/A", "C", "I"],
+            [f"{_APPENDIX_ASSUMPTION} Additional workstreams", "TBC", "TBC", "TBC"],
+        ],
+    )
+    _appendix_note(document, "R = Responsible, A = Accountable, C = Consulted, I = Informed.")
+
+    # B. Timeline / phasing
+    branding.add_section_heading(document, "Appendix B — Indicative Timeline")
+    _appendix_table(
+        document,
+        ["Phase", "Key Activities", "Indicative Duration"],
+        [
+            ["Discovery & Design", "Requirements, current-state review, target design", f"{_APPENDIX_ASSUMPTION} TBC"],
+            ["Build & Configure", "Platform config, connectors, workflows", f"{_APPENDIX_ASSUMPTION} TBC"],
+            ["Test & Validate", "SIT, UAT, remediation", f"{_APPENDIX_ASSUMPTION} TBC"],
+            ["Deploy & Stabilise", "Cutover, hypercare, handover", f"{_APPENDIX_ASSUMPTION} TBC"],
+        ],
+    )
+    _appendix_note(document, "Durations are confirmed once scope and volumetrics are baselined in discovery.")
+
+    # C. Sizing
+    branding.add_section_heading(document, "Appendix C — Sizing & Volumetrics")
+    _appendix_table(
+        document,
+        ["Dimension", "Value", "Source"],
+        [
+            ["Identities / users", f"{_APPENDIX_ASSUMPTION} TBC", "Client to confirm"],
+            ["Target applications", f"{_APPENDIX_ASSUMPTION} TBC", "Client to confirm"],
+            ["Environments", f"{_APPENDIX_ASSUMPTION} TBC", "Client to confirm"],
+            ["Peak transaction volume", f"{_APPENDIX_ASSUMPTION} TBC", "Client to confirm"],
+        ],
+    )
+
+    # D. Integration inventory
+    branding.add_section_heading(document, "Appendix D — Integration Inventory")
+    _appendix_table(
+        document,
+        ["System / Application", "Integration Type", f"{vendor} Connector", "Notes"],
+        [
+            ["Directory / HR source", "Authoritative source", f"{_APPENDIX_ASSUMPTION} TBC", "System of record for identities"],
+            ["Core business applications", "Provisioning target", f"{_APPENDIX_ASSUMPTION} TBC", "Confirm inventory in discovery"],
+            ["Downstream / custom apps", f"{_APPENDIX_ASSUMPTION} TBC", f"{_APPENDIX_ASSUMPTION} TBC", "May require custom connector"],
+        ],
+    )
+
+    # E. Risks
+    branding.add_section_heading(document, "Appendix E — Risk Register")
+    _appendix_table(
+        document,
+        ["Risk", "Likelihood", "Impact", "Mitigation"],
+        [
+            ["Scope / requirements change", "Medium", "High", "Change control, phased delivery"],
+            ["Application onboarding delays", "Medium", "Medium", "Early inventory, prioritised backlog"],
+            ["Data quality in source systems", "Medium", "High", "Data-quality assessment in discovery"],
+            ["Resource / SME availability", "Medium", "Medium", "Agreed RACI and governance cadence"],
+            [f"{_APPENDIX_ASSUMPTION} {ptype}-specific risks", "TBC", "TBC", "To be assessed with client"],
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -466,13 +717,20 @@ async def generate_proposal(
     sections: Optional[list[str]] = None,
     include_compliance_matrix: bool = False,
     top_k: int = TOP_K,
+    proposal_depth: Optional[str] = None,
 ) -> dict:
     """Orchestrate: pick template, draft sections concurrently, assemble DOCX.
 
     The brain helpers are injected so this module never imports app.py.
-    Returns {"docx_bytes", "sections_meta", "filename"}.
+
+    ``proposal_depth`` (brief|standard|full) controls long-form depth via
+    STRUCTURED fan-out — retrieval queries + independent drafting calls per
+    section, plus (full) an appendix pack. Unknown/absent values fall back to the
+    safe ``standard`` tier, preserving existing behaviour.
+    Returns {"docx_bytes", "sections_meta", "filename", ...}.
     """
     template = get_template(proposal_type)  # raises ValueError on bad type
+    tier: DepthTier = get_depth_tier(proposal_depth)
 
     # Choose which sections to draft. Compliance is opt-in and handled separately.
     if sections:
@@ -502,6 +760,9 @@ async def generate_proposal(
                 retrieve_fn=retrieve_fn,
                 build_grounded_system_fn=build_grounded_system_fn,
                 top_k=top_k,
+                fanout=tier.retrieval_fanout,
+                subsections=tier.subsections_per_section,
+                max_tokens=tier.per_call_max_tokens,
             )
 
     drafted = await asyncio.gather(*[_draft(s) for s in draft_specs])
@@ -529,7 +790,10 @@ async def generate_proposal(
         "iam_vendor": iam_vendor,
         "generated_at": generated_at,
     }
-    docx_bytes = assemble_docx(metadata, list(drafted), compliance_markdown)
+    docx_bytes = assemble_docx(
+        metadata, list(drafted), compliance_markdown,
+        include_appendices=tier.include_appendices,
+    )
 
     safe_client = re.sub(r"[^A-Za-z0-9]+", "_", client_name).strip("_") or "Client"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -555,4 +819,6 @@ async def generate_proposal(
         "draft_markdown": draft_markdown,
         "filename": filename,
         "included_compliance_matrix": compliance_markdown is not None,
+        "proposal_depth": tier.name,
+        "included_appendices": tier.include_appendices,
     }

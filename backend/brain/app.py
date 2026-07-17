@@ -196,6 +196,57 @@ def last_user_text(messages: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Interview gating (Sprint 5 Pass 5)
+# When Open WebUI sends a chat with no active intake session, start the Stage 1
+# discovery interview instead of a generic RAG reply.
+# ---------------------------------------------------------------------------
+
+# OWUI's OpenAI-compatible chat request has no first-class field for our intake
+# id, so we accept it in the places a caller can realistically thread it through:
+#   * top-level body           — direct API callers / an OWUI pipe that injects it
+#   * body["metadata"]         — OWUI forwards a per-request metadata dict
+#   * body["extra_body"]       — the OpenAI python client's passthrough convention
+# The value is the id returned by POST /v1/intake-sessions. First non-empty wins.
+def parse_intake_session_id(body: dict) -> str | None:
+    for container in (body, body.get("metadata"), body.get("extra_body")):
+        if isinstance(container, dict):
+            val = container.get("intake_session_id")
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return None
+
+
+INTERVIEW_INTRO = (
+    "Hi, I'm **Sarvam**, InspiritVision's proposal assistant. Before I draft "
+    "anything, I run a short **Stage 1 discovery interview** so the proposal is "
+    "grounded in your specifics rather than generic boilerplate."
+)
+
+
+def build_interview_start_message(proposal_type: str | None = None) -> str:
+    """First question(s) of the 24-bucket discovery interview, framed as the start
+    of the Stage 1 discovery interview. Deterministic (no LLM / retrieval) so the
+    no-session path never touches OpenRouter or Supabase."""
+    template = get_intake_template(proposal_type)
+    buckets = template["buckets"]
+    lines = [INTERVIEW_INTRO, "", "Let's start with the basics:"]
+    if buckets:
+        first = buckets[0]
+        lines.append("")
+        lines.append(f"**{first['title']}**")
+        for q in first["questions"]:
+            req = " (required)" if q.get("required") else ""
+            lines.append(f"- {q['label']}{req}")
+    lines.append("")
+    lines.append(
+        f"Reply here with these details and I'll walk you through the remaining "
+        f"discovery areas ({len(buckets)} in total). Once discovery is complete "
+        "I'll draft your proposal grounded in IV's past work."
+    )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Compliance matrix (Sprint 4 Phase 2)
 # Paste RFP text -> structured requirement extraction (Instructor) ->
 # per-requirement coverage check against the proposal corpus.
@@ -461,9 +512,9 @@ def render_matrix_markdown(matrix: ComplianceMatrix) -> str:
     return "\n".join(out)
 
 
-def _sse_chunk(content: str) -> str:
+def _sse_chunk(content: str, resp_id: str = "chatcmpl-sarvam-compliance") -> str:
     return "data: " + json.dumps({
-        "id": "chatcmpl-sarvam-compliance",
+        "id": resp_id,
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": MODEL_ID,
@@ -471,9 +522,9 @@ def _sse_chunk(content: str) -> str:
     }) + "\n\n"
 
 
-def _chat_completion_json(content: str) -> dict:
+def _chat_completion_json(content: str, resp_id: str = "chatcmpl-sarvam-compliance") -> dict:
     return {
-        "id": "chatcmpl-sarvam-compliance",
+        "id": resp_id,
         "object": "chat.completion",
         "created": int(time.time()),
         "model": MODEL_ID,
@@ -917,6 +968,20 @@ async def chat_completions(request: Request):
         async with httpx.AsyncClient() as cm_client:
             matrix = await run_compliance_matrix(cm_client, rfp_text, None)
         return JSONResponse(_chat_completion_json(render_matrix_markdown(matrix)))
+
+    # Interview gating: with no active intake session, start the Stage 1 discovery
+    # interview instead of a generic RAG reply. Deterministic — no retrieval or
+    # proposal drafting on this path. The explicit compliance-matrix command above
+    # is handled before this, so it stays usable without a session.
+    if not parse_intake_session_id(body):
+        content = build_interview_start_message()
+        if stream:
+            async def interview_sse():
+                for i in range(0, len(content), 3000):
+                    yield _sse_chunk(content[i:i + 3000], resp_id="chatcmpl-sarvam-interview")
+                yield "data: [DONE]\n\n"
+            return StreamingResponse(interview_sse(), media_type="text/event-stream")
+        return JSONResponse(_chat_completion_json(content, resp_id="chatcmpl-sarvam-interview"))
 
     async with httpx.AsyncClient() as client:
         # 1-2. Embed + retrieve (fail soft: draft without evidence rather than 500)

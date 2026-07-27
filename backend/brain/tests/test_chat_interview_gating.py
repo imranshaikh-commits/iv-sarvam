@@ -12,6 +12,7 @@ Strategy:
 Run directly (`python tests/test_chat_interview_gating.py`) or via pytest.
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -638,6 +639,142 @@ def test_keepalive_reports_unreachable_database(monkeypatch):
     r = client.get("/v1/keepalive")
     assert r.status_code == 503
     assert r.json()["database"] == "unreachable"
+
+
+# --- deterministic parser (zero-LLM fast path) ------------------------------
+def _bucket(i):
+    return app.get_intake_template(None)["buckets"][i]
+
+
+def test_parser_handles_bare_positional_lists():
+    """REGRESSION: 'AWS, Tech, India' silently failed to map on two live runs."""
+    got = app.parse_bucket_answers(_bucket(0), "AWS, Tech, India")
+    assert got == {"client_name": "AWS", "industry": "Tech", "country": "India"}
+
+
+def test_parser_handles_labelled_answers():
+    got = app.parse_bucket_answers(
+        _bucket(1),
+        "primary IAM vendor: PingIdentity. proposal type: implementation. "
+        "deal size: enterprise. engagement year: 2026.")
+    assert got["iam_vendor"] == "PingIdentity"
+    assert got["proposal_type"] == "implementation"
+
+
+def test_parser_refuses_prose_so_the_llm_gets_it():
+    """A paragraph must NEVER be chopped into fake answers by comma-splitting."""
+    for prose in (
+        "we have a lot of legacy applications and the helpdesk is overwhelmed, so we "
+        "want to consolidate everything onto one platform this year",
+        "the estate is fragmented across two forests and nothing is centralised today",
+    ):
+        assert app.parse_bucket_answers(_bucket(3), prose) == {}, prose
+
+
+def test_resolver_prefers_the_parser_and_skips_the_llm(monkeypatch):
+    called = {"llm": False}
+
+    async def fake_extract(bucket, reply):
+        called["llm"] = True
+        return {}
+
+    monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
+    got = asyncio.get_event_loop().run_until_complete(
+        app.resolve_bucket_answers(_bucket(0), "AWS, Tech, India"))
+    assert got["client_name"] == "AWS"
+    assert called["llm"] is False, "parser succeeded but the LLM was still called"
+
+
+def test_resolver_falls_back_to_the_llm_for_prose(monkeypatch):
+    async def fake_extract(bucket, reply):
+        return {"business_objectives": "consolidate"}
+
+    monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
+    got = asyncio.get_event_loop().run_until_complete(
+        app.resolve_bucket_answers(
+            _bucket(3), "the estate is fragmented and nothing is centralised today"))
+    assert got == {"business_objectives": "consolidate"}
+
+
+# --- gap-fill recovery loop -------------------------------------------------
+def test_gap_fill_bucket_contains_only_the_missing_questions():
+    gap = app.gap_fill_bucket(["client_name", "industry", "iam_vendor", "proposal_type"])
+    assert [q["id"] for q in gap["questions"]] == [
+        "client_name", "industry", "iam_vendor", "proposal_type"]
+
+
+def test_gap_fill_accepts_answers_and_reaches_the_architecture_gate(monkeypatch):
+    """REGRESSION: answering the 'still missing' prompt used to be discarded and
+    dumped the user into vault mode, skipping the approval gate entirely."""
+    saved = {}
+
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": {"business_objectives": "x", "proposal_depth": "full"}}
+
+    async def fake_patch(c, sid, answers):
+        saved.update(answers)
+        return {"id": sid}
+
+    async def fake_complete(c, sid):
+        return {"complete": True, "missing": []}
+
+    async def fake_propose(session_id, proposal_id, *, feedback=None):
+        return ("## Proposed Architecture — for your approval", "prop-9")
+
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+    monkeypatch.setattr(app.supabase_client, "complete_intake_session", fake_complete)
+    monkeypatch.setattr(app, "propose_architecture", fake_propose)
+
+    total = cs.bucket_count(app.get_intake_template(None))
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "missing " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1", bucket=total))},
+            {"role": "user", "content":
+                "client_name: AWS. industry: Tech. iam_vendor: PingIdentity. "
+                "proposal_type: implementation"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert saved.get("client_name") == "AWS", f"gap answers not saved: {saved}"
+    assert saved.get("proposal_type") == "implementation"
+    state = cs.decode_marker(content)
+    assert state.mode == cs.MODE_ARCHITECTURE, f"expected the gate, got {state.mode}"
+    assert state.proposal == "prop-9"
+
+
+def test_gap_fill_reprompts_when_still_incomplete(monkeypatch):
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": {}}
+
+    async def fake_patch(c, sid, answers):
+        return {"id": sid}
+
+    called = {"proposed": False}
+
+    async def fake_propose(session_id, proposal_id, *, feedback=None):
+        called["proposed"] = True
+        return ("arch", "p")
+
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+    monkeypatch.setattr(app, "propose_architecture", fake_propose)
+
+    total = cs.bucket_count(app.get_intake_template(None))
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "missing " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1", bucket=total))},
+            {"role": "user", "content": "client_name: AWS"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert "still missing" in content.lower()
+    assert cs.decode_marker(content).mode == cs.MODE_INTERVIEW
+    assert called["proposed"] is False, "proposed architecture with gaps still open"
 
 
 class _MonkeyPatch:

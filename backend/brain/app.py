@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 from document_engine import generate_proposal
 
 # Sprint 5 Pass 1 — structured intake + persistence. Neither module imports app.
-from intake_template import get_intake_template, missing_required
+from intake_template import get_intake_template, iter_questions, missing_required
 import supabase_client
 import chat_state
 
@@ -398,6 +398,104 @@ async def extract_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str
         if qid in valid_ids and val:
             out[qid] = val
     return out
+
+
+def _norm_label(text: str) -> str:
+    """Loose key for matching a user's label against a question label/id."""
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def parse_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
+    """Map a reply onto question ids WITHOUT an LLM call.
+
+    Handles the two shapes people actually type:
+
+      * labelled  — "primary IAM vendor: PingIdentity. proposal type: implementation"
+      * bare list — "AWS, Tech, India" (positional, in question order)
+
+    This exists because the LLM extraction was both the slowest step in the
+    interview and the least reliable — the first two areas of a live run silently
+    failed to map while later ones worked. A parser is instant and deterministic;
+    the model is now only a fallback for genuine prose.
+
+    Returns {} when it cannot parse confidently, so the caller falls back.
+    """
+    questions = bucket.get("questions") or []
+    reply = (reply_text or "").strip()
+    if not questions or not reply:
+        return {}
+
+    # Index the bucket's questions by several loose keys.
+    lookup: dict[str, str] = {}
+    for q in questions:
+        qid = q["id"]
+        lookup[_norm_label(qid)] = qid
+        lookup[_norm_label(q.get("label", ""))] = qid
+        # "HA / DR requirements" -> also try without a trailing "requirements"/"details"
+        base = re.sub(r"(requirements|details|count|name)$", "",
+                      _norm_label(q.get("label", "")))
+        if base and base not in lookup:
+            lookup[base] = qid
+
+    out: dict[str, str] = {}
+
+    # --- labelled form -----------------------------------------------------
+    # Split on sentence-ish boundaries, then on the FIRST colon of each part.
+    for part in re.split(r"(?:\.\s+|\n|;)", reply):
+        if ":" not in part:
+            continue
+        raw_label, _, raw_value = part.partition(":")
+        value = raw_value.strip().strip(".").strip()
+        if not value:
+            continue
+        key = _norm_label(raw_label)
+        qid = lookup.get(key)
+        if qid is None:
+            # Loose containment both ways, longest match wins.
+            cands = [(len(k), v) for k, v in lookup.items()
+                     if k and (k in key or key in k) and len(k) > 3]
+            qid = max(cands)[1] if cands else None
+        if qid and qid not in out:
+            out[qid] = value[:2000]
+
+    if out:
+        return out
+
+    # --- bare positional list ---------------------------------------------
+    # Only when there are no colons at all AND every comma-separated item looks
+    # like a short value rather than a clause. Character length alone is not
+    # enough: "we have a lot of legacy applications and the helpdesk is
+    # overwhelmed" is 67 chars but is obviously prose, so word count decides.
+    if ":" in reply:
+        return {}
+    values = [v.strip() for v in reply.split(",") if v.strip()]
+    looks_like_values = (
+        2 <= len(values) <= len(questions)
+        and all(len(v.split()) <= 4 and len(v) <= 40 for v in values)
+    )
+    if looks_like_values:
+        for q, value in zip(questions, values):
+            out[q["id"]] = value
+    return out
+
+
+async def resolve_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
+    """Parser first (instant), LLM only if the parser can't do it."""
+    parsed = parse_bucket_answers(bucket, reply_text)
+    if parsed:
+        return parsed
+    return await extract_bucket_answers(bucket, reply_text)
+
+
+def gap_fill_bucket(missing_ids: list[str], proposal_type: str | None = None) -> dict:
+    """Build a pseudo-bucket containing only the still-missing required questions.
+
+    Used by the recovery loop when discovery finishes with required gaps, so the
+    user's follow-up answer is mapped against exactly those fields.
+    """
+    wanted = set(missing_ids or [])
+    questions = [q for q in iter_questions(proposal_type) if q["id"] in wanted]
+    return {"id": "gap_fill", "title": "Missing details", "questions": questions}
 
 
 # ---------------------------------------------------------------------------
@@ -1603,17 +1701,67 @@ async def chat_completions(request: Request):
             total = chat_state.bucket_count(tpl)
             bucket = chat_state.get_bucket(tpl, state.bucket)
 
-            if bucket is None:  # index drifted past the end; close out.
-                return _emit_chat(
-                    chat_state.build_interview_complete_message(None) + "\n\n"
-                    + chat_state.encode_marker(chat_state.ChatState(mode=chat_state.MODE_VAULT)),
-                    stream,
-                )
+            # Past the last area — this is the gap-fill loop. Discovery finished
+            # with required fields still missing (an extraction that failed
+            # earlier, or a skipped area), so the user's reply here is mapped
+            # against exactly those fields rather than being discarded.
+            if bucket is None:
+                async def _fill_gaps() -> str:
+                    answers: dict = {}
+                    if state.session:
+                        async with httpx.AsyncClient() as sclient:
+                            row = await supabase_client.get_intake_session(
+                                sclient, state.session)
+                        answers = (row or {}).get("answers") or {}
+                    ptype = answers.get("proposal_type")
+                    missing_now = missing_required(answers, ptype)
+
+                    if not missing_now:
+                        arch, pid = await propose_architecture(state.session, state.proposal)
+                        return (arch + "\n\n" + chat_state.encode_marker(
+                            chat_state.ChatState(mode=chat_state.MODE_ARCHITECTURE,
+                                                 session=state.session, proposal=pid)))
+
+                    gap = gap_fill_bucket(missing_now, ptype)
+                    recorded = await resolve_bucket_answers(gap, q)
+                    if recorded and state.session:
+                        try:
+                            async with httpx.AsyncClient() as sclient:
+                                await supabase_client.patch_intake_answers(
+                                    sclient, state.session, recorded)
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("gap-fill patch failed for %s: %s", state.session, e)
+
+                    still = [m for m in missing_now if m not in recorded]
+                    if still:
+                        listed = ", ".join(f"`{m}`" for m in still)
+                        return (chat_state.build_recap_line(recorded) + "\n\n"
+                                + f"Still missing: {listed}. Give me those in "
+                                  "`field: value` form and I'll move on to the "
+                                  "architecture proposal.\n\n"
+                                + chat_state.encode_marker(state))
+
+                    if state.session:
+                        try:
+                            async with httpx.AsyncClient() as sclient:
+                                await supabase_client.complete_intake_session(
+                                    sclient, state.session)
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("complete_intake_session failed: %s", e)
+
+                    arch, pid = await propose_architecture(state.session, state.proposal)
+                    return (chat_state.build_recap_line(recorded) + "\n\n"
+                            + "Discovery is complete and saved.\n\n" + arch + "\n\n"
+                            + chat_state.encode_marker(chat_state.ChatState(
+                                mode=chat_state.MODE_ARCHITECTURE,
+                                session=state.session, proposal=pid)))
+
+                return await _emit_chat_lazy(_fill_gaps, stream)
 
             async def _handle_answer() -> str:
                 recorded: dict[str, str] = {}
                 if not chat_state.is_skip(q):
-                    recorded = await extract_bucket_answers(bucket, q)
+                    recorded = await resolve_bucket_answers(bucket, q)
                     payload = dict(recorded) if recorded else {f"_raw_{bucket['id']}": q[:4000]}
                     if state.session:
                         try:

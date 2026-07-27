@@ -271,17 +271,30 @@ def _emit_chat(content: str, stream: bool, resp_id: str = "chatcmpl-sarvam-chat"
     return JSONResponse(_chat_completion_json(content, resp_id=resp_id))
 
 
-async def _emit_chat_lazy(make_content, stream: bool, resp_id: str = "chatcmpl-sarvam-chat"):
+async def _emit_chat_lazy(make_content, stream: bool, resp_id: str = "chatcmpl-sarvam-chat",
+                          heartbeat: float = 10.0):
     """Like ``_emit_chat`` but for content that takes a while to produce.
 
-    On the streaming path a keep-alive comment goes out FIRST, then the work runs
-    inside the generator — so the client sees the connection is alive instead of
-    sitting on a dead spinner. Same pattern as the compliance-matrix path.
+    On the streaming path a keep-alive comment goes out FIRST and then every
+    ``heartbeat`` seconds until the work finishes — so a multi-minute proposal
+    generation doesn't look like a dead connection. Same idea as the
+    compliance-matrix path, extended to long-running work.
     """
     if stream:
         async def gen():
             yield ": working\n\n"
-            content = await make_content()
+            task = asyncio.create_task(make_content())
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=heartbeat)
+                if done:
+                    break
+                yield ": still working\n\n"
+            try:
+                content = task.result()
+            except Exception as e:  # noqa: BLE001 — report, never hang the stream
+                log.error("lazy chat content failed: %s", e)
+                content = ("Something went wrong producing that response. The details are "
+                           "in the brain logs; try again in a moment.")
             for i in range(0, len(content), 3000):
                 yield _sse_chunk(content[i:i + 3000], resp_id=resp_id)
             yield "data: [DONE]\n\n"
@@ -387,7 +400,273 @@ async def extract_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str
     return out
 
 
+# ---------------------------------------------------------------------------
+# Architecture review (chat) — the V1 human-in-loop gate
+# ---------------------------------------------------------------------------
+# Everything here reuses the Pass 4 engine: generate_diagram_spec -> insert ->
+# render -> approve. The only new part is driving it from the chat state machine
+# so a diagram actually appears without hand-calling the REST endpoints.
 
+
+def _answers_summary(answers: dict, limit: int = 2500) -> str:
+    """Flatten discovery answers into context text for spec generation."""
+    parts = []
+    for k, v in (answers or {}).items():
+        if k.startswith("_raw_") or v in (None, "", []):
+            continue
+        parts.append(f"{k}: {v}")
+    return "\n".join(parts)[:limit]
+
+
+async def _architecture_evidence(client: httpx.AsyncClient, answers: dict) -> str:
+    """Retrieve IV's own architecture write-ups to ground the spec.
+
+    IV's proposals describe architecture as an 'Architecture Flow (Text
+    Representation)' — a node/edge narrative. Grounding on those makes the
+    generated spec look like IV's house style instead of generic boxes.
+    """
+    vendor = answers.get("iam_vendor") or ""
+    query = (f"solution architecture deployment architecture text representation "
+             f"nodes components integration {vendor}").strip()
+    try:
+        emb = await embed_query(client, query)
+        chunks = await retrieve_chunks(client, emb, query, k=6)
+    except Exception as e:  # noqa: BLE001 — grounding is best-effort
+        log.warning("architecture evidence retrieval failed (fail-soft): %s", e)
+        return ""
+    return build_evidence_block(chunks)[:6000]
+
+
+async def propose_architecture(
+    session_id: str | None,
+    proposal_id: str | None,
+    *,
+    feedback: str | None = None,
+) -> tuple[str, str | None]:
+    """Generate, persist and render the proposed architecture for approval.
+
+    Returns ``(chat_message, generated_proposal_id)``. Fail-soft throughout: a
+    render or upload failure still yields a reviewable text representation,
+    because the approval gate matters more than the picture.
+    """
+    async with httpx.AsyncClient() as client:
+        answers: dict = {}
+        if session_id:
+            row = await supabase_client.get_intake_session(client, session_id)
+            answers = (row or {}).get("answers") or {}
+
+        client_name = str(answers.get("client_name") or "the client")
+        proposal_type = str(answers.get("proposal_type") or "implementation")
+        iam_vendor = answers.get("iam_vendor") or None
+
+        # One generated_proposal row carries the whole engagement. Status starts
+        # at architecture_review — the schema already models this gate.
+        if not proposal_id:
+            proposal_id = await supabase_client.insert_generated_proposal(
+                client,
+                org_id=IV_ORG_ID,
+                client_name=client_name,
+                proposal_type=proposal_type,
+                iam_vendor=iam_vendor,
+                discovery_answers=answers,
+                intake_session_id=session_id,
+                status="architecture_review",
+            )
+            if not proposal_id:
+                return ("I couldn't open a proposal record to attach the architecture to "
+                        "(the database didn't respond). Try again in a moment.", None)
+
+        evidence = await _architecture_evidence(client, answers)
+        context = _answers_summary(answers)
+        if evidence:
+            context += f"\n\nIV PAST-PROPOSAL EVIDENCE (mirror this house style):\n{evidence}"
+        if feedback:
+            context += f"\n\nREVIEWER FEEDBACK TO ADDRESS:\n{feedback[:1500]}"
+
+        rendered: list[dict] = []
+        for title, dtype in chat_state.plan_diagrams(answers):
+            try:
+                spec = await diagram_engine.generate_diagram_spec(
+                    _structured_with_fallback,
+                    title=title,
+                    diagram_type=dtype,
+                    context_text=context,
+                    client_name=client_name,
+                    iam_vendor=iam_vendor,
+                )
+            except Exception as e:  # noqa: BLE001 — skip this diagram, keep the rest
+                log.error("diagram spec generation failed for %s: %s", title, e)
+                continue
+
+            spec_json = spec.model_dump()
+            row = await supabase_client.insert_diagram(
+                client,
+                org_id=IV_ORG_ID,
+                generated_proposal_id=proposal_id,
+                diagram_type=spec.diagram_type,
+                title=spec.title,
+                spec_json=spec_json,
+                status="needs_review",   # so it can be approved in one step
+                intake_session_id=session_id,
+            )
+
+            url = None
+            if row:
+                try:
+                    image = diagram_engine.render_spec(spec, fmt="png")
+                    if image:
+                        path = await supabase_client.upload_diagram_render(
+                            client, f"{row['id']}.png", image, content_type="image/png")
+                        if path:
+                            await supabase_client.update_diagram(
+                                client, row["id"], {"rendered_svg_path": path})
+                            url = await supabase_client.create_signed_url(
+                                client, path, bucket=supabase_client.DIAGRAM_BUCKET)
+                except Exception as e:  # noqa: BLE001 — never block the gate on a render
+                    log.error("diagram render/upload failed (fail-soft) for %s: %s", title, e)
+
+            rendered.append({
+                "title": spec.title,
+                "diagram_type": spec.diagram_type,
+                "text_representation": chat_state.build_spec_text_representation(spec_json),
+                "url": url,
+            })
+
+        if not rendered:
+            return ("I couldn't generate an architecture spec just now — the model didn't "
+                    "return a usable design. Say **regenerate** to try again.", proposal_id)
+
+        iteration = 2 if feedback else 1
+        return (chat_state.build_architecture_message(rendered, iteration=iteration),
+                proposal_id)
+
+
+async def approve_architecture(proposal_id: str | None) -> tuple[bool, str]:
+    """Approve every diagram under review for this proposal.
+
+    Returns ``(approved_any, message)``. Approval IS the gate, so a DB failure is
+    reported honestly rather than silently letting drafting proceed.
+    """
+    if not proposal_id:
+        return (False, "I've lost track of which proposal this is — say **start over** "
+                       "and we'll re-run discovery.")
+    async with httpx.AsyncClient() as client:
+        rows = await supabase_client.list_diagrams_for_proposal(client, proposal_id)
+        approved = 0
+        for row in rows or []:
+            if (row.get("status") or "") != "needs_review":
+                continue
+            try:
+                patch = diagram_engine.apply_transition(row, "approved")
+            except InvalidTransition as e:
+                log.warning("cannot approve diagram %s: %s", row.get("id"), e)
+                continue
+            patch["approved_at"] = datetime.now(timezone.utc).isoformat()
+            if await supabase_client.update_diagram(client, row["id"], patch):
+                approved += 1
+
+        if approved:
+            return (True, chat_state.ARCHITECTURE_APPROVED_MESSAGE)
+    return (False, "There was nothing awaiting approval — say **regenerate** to produce "
+                   "a fresh architecture for review.")
+
+
+async def reject_architecture(proposal_id: str | None, comment: str) -> str:
+    """Record a rejection with the reviewer's comment and reopen for redraft."""
+    if not proposal_id:
+        return chat_state.ARCHITECTURE_REJECTED_MESSAGE
+    async with httpx.AsyncClient() as client:
+        rows = await supabase_client.list_diagrams_for_proposal(client, proposal_id)
+        for row in rows or []:
+            if (row.get("status") or "") != "needs_review":
+                continue
+            try:
+                patch = diagram_engine.apply_transition(
+                    row, "rejected", rejection_comment=comment or "rejected in chat")
+                await supabase_client.update_diagram(client, row["id"], patch)
+                # rejected -> draft so a regeneration is a clean new iteration
+                fresh = await supabase_client.get_diagram(client, row["id"])
+                if fresh:
+                    await supabase_client.update_diagram(
+                        client, row["id"], diagram_engine.apply_transition(fresh, "draft"))
+            except InvalidTransition as e:
+                log.warning("cannot reject diagram %s: %s", row.get("id"), e)
+    return chat_state.ARCHITECTURE_REJECTED_MESSAGE
+
+
+_SELF_BASE = os.environ.get("SARVAM_SELF_BASE", "http://127.0.0.1:8000")
+_DRAFT_TIMEOUT_S = float(os.environ.get("SARVAM_DRAFT_TIMEOUT_S", "1500"))
+
+
+async def generate_proposal_from_chat(session_id: str | None,
+                                      proposal_id: str | None) -> str:
+    """Produce the full DOCX/PDF for an approved architecture, from chat.
+
+    Deliberately calls our own /v1/generate-proposal over localhost rather than
+    duplicating that pipeline: it is long, tested, and already handles depth
+    tiers, appendices, export/compression and signed URLs. Passing
+    ``generated_proposal_id`` is what embeds the APPROVED diagrams in the DOCX.
+    """
+    if not session_id:
+        return ("I've lost the discovery session for this proposal — say **start over** "
+                "to re-run discovery.")
+
+    async with httpx.AsyncClient(timeout=_DRAFT_TIMEOUT_S) as client:
+        row = await supabase_client.get_intake_session(client, session_id)
+        answers = (row or {}).get("answers") or {}
+
+        payload = {
+            "intake_session_id": session_id,
+            "client_name": str(answers.get("client_name") or "the client"),
+            "proposal_type": str(answers.get("proposal_type") or "implementation"),
+            "iam_vendor": answers.get("iam_vendor") or None,
+            "rfp_text": str(answers.get("rfp_text") or answers.get("business_objectives") or ""),
+            "proposal_depth": str(answers.get("proposal_depth") or "full"),
+            "include_compliance_matrix": True,
+            "lite": True,
+            "include_pdf": True,
+            "return_signed_urls": True,
+        }
+        if proposal_id:
+            payload["generated_proposal_id"] = proposal_id
+
+        try:
+            resp = await client.post(f"{_SELF_BASE}/v1/generate-proposal", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:  # noqa: BLE001
+            log.error("chat-driven proposal generation failed: %s", e)
+            return ("The proposal generation didn't complete — details are in the brain "
+                    "logs. Say **generate the proposal** to retry.")
+
+    urls = (data or {}).get("signed_urls") or {}
+    docx_url, pdf_url = urls.get("docx"), urls.get("pdf")
+    depth = payload["proposal_depth"]
+    lines = [
+        f"## Proposal generated — {data.get('filename', 'draft')}",
+        "",
+        f"Depth: **{depth}**. The approved architecture diagram(s) are embedded.",
+        "",
+    ]
+    if docx_url:
+        lines.append(f"- [Download DOCX]({docx_url})")
+    if pdf_url:
+        lines.append(f"- [Download PDF]({pdf_url})")
+    if docx_url or pdf_url:
+        lines += ["", "_Links expire in 1 hour._"]
+    else:
+        lines.append("_The document was produced but no download link came back — check "
+                     "the generated-drafts bucket._")
+    lines += [
+        "",
+        "This is a **draft for human review**, not client-ready: check the "
+        "`[ASSUMPTION]` and `[SME REVIEW]` markers, and fill in commercials yourself.",
+    ]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Compliance matrix (Sprint 4 Phase 2)
 # Paste RFP text -> structured requirement extraction (Instructor) ->
 # per-requirement coverage check against the proposal corpus.
 # ---------------------------------------------------------------------------
@@ -1175,6 +1454,25 @@ async def patch_diagram_endpoint(diagram_id: str, request: Request):
     return JSONResponse(_diagram_public(updated))
 
 
+@app.get("/v1/keepalive")
+async def keepalive_endpoint():
+    """Touch Postgres so a Supabase free-tier project never idles into a pause.
+
+    Free projects pause after 7 days without activity — which already happened
+    once, silently breaking every DB-backed path. Cron this daily on the host:
+
+        54 0 * * * curl -fsS -m 30 http://127.0.0.1:8000/v1/keepalive >/dev/null
+
+    A plain /health cron is NOT enough: health touches no database.
+    """
+    async with httpx.AsyncClient() as client:
+        ok = await supabase_client.ping(client)
+    return JSONResponse(
+        {"status": "ok" if ok else "degraded", "database": "reachable" if ok else "unreachable"},
+        status_code=200 if ok else 503,
+    )
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await request.json()
@@ -1214,6 +1512,15 @@ async def chat_completions(request: Request):
         async with httpx.AsyncClient() as cm_client:
             matrix = await run_compliance_matrix(cm_client, rfp_text, None)
         return JSONResponse(_chat_completion_json(render_matrix_markdown(matrix)))
+
+    # Open WebUI fires extra completions against this same endpoint to generate
+    # the chat title, tags and follow-up suggestions — two POSTs per user turn in
+    # practice. Those payloads include the conversation history, so without this
+    # guard we would read our own state marker, treat OWUI's instruction as the
+    # user's answer, and advance a discovery bucket spuriously. Answer harmlessly
+    # and mutate nothing.
+    if chat_state.is_owui_task_prompt(q):
+        return _emit_chat("Sarvam", stream, resp_id="chatcmpl-sarvam-task")
 
     # ---- Conversation state machine -------------------------------------
     # Previously this was an unconditional gate: parse_intake_session_id(body)
@@ -1331,7 +1638,8 @@ async def chat_completions(request: Request):
                         bucket=next_index)))
                     return "\n".join(parts)
 
-                # Last area answered -> validate required fields and close discovery.
+                # Last area answered -> validate required fields, then either
+                # chase the gaps or move to the architecture approval gate.
                 missing: list[str] = []
                 if state.session:
                     try:
@@ -1343,14 +1651,80 @@ async def chat_completions(request: Request):
                         log.warning("complete_intake_session failed for %s: %s",
                                     state.session, e)
 
-                closing_state = chat_state.ChatState(
-                    mode=chat_state.MODE_INTERVIEW, session=state.session, bucket=next_index
-                ) if missing else chat_state.ChatState(mode=chat_state.MODE_VAULT)
+                if missing:
+                    return (chat_state.build_recap_line(recorded) + "\n\n"
+                            + chat_state.build_interview_complete_message(missing) + "\n\n"
+                            + chat_state.encode_marker(chat_state.ChatState(
+                                mode=chat_state.MODE_INTERVIEW, session=state.session,
+                                bucket=next_index, proposal=state.proposal)))
+
+                # Discovery complete -> propose the architecture for approval.
+                arch_msg, proposal_id = await propose_architecture(
+                    state.session, state.proposal)
                 return (chat_state.build_recap_line(recorded) + "\n\n"
-                        + chat_state.build_interview_complete_message(missing) + "\n\n"
-                        + chat_state.encode_marker(closing_state))
+                        + "Discovery is complete and saved.\n\n"
+                        + arch_msg + "\n\n"
+                        + chat_state.encode_marker(chat_state.ChatState(
+                            mode=chat_state.MODE_ARCHITECTURE, session=state.session,
+                            proposal=proposal_id)))
 
             return await _emit_chat_lazy(_handle_answer, stream)
+
+        # --- architecture review: the V1 approval gate ---
+        if state.mode == chat_state.MODE_ARCHITECTURE:
+            intent = chat_state.classify_architecture_intent(q)
+
+            if intent == chat_state.INTENT_APPROVE:
+                async def _approve() -> str:
+                    ok, msg = await approve_architecture(state.proposal)
+                    nxt = chat_state.ChatState(
+                        mode=chat_state.MODE_DRAFTING if ok else chat_state.MODE_ARCHITECTURE,
+                        session=state.session, proposal=state.proposal)
+                    return msg + "\n\n" + chat_state.encode_marker(nxt)
+                return await _emit_chat_lazy(_approve, stream)
+
+            if intent == chat_state.INTENT_REGENERATE:
+                async def _regen() -> str:
+                    msg, pid = await propose_architecture(
+                        state.session, state.proposal, feedback=None)
+                    return msg + "\n\n" + chat_state.encode_marker(chat_state.ChatState(
+                        mode=chat_state.MODE_ARCHITECTURE, session=state.session,
+                        proposal=pid or state.proposal))
+                return await _emit_chat_lazy(_regen, stream)
+
+            if intent == chat_state.INTENT_REJECT:
+                async def _reject() -> str:
+                    ack = await reject_architecture(state.proposal, q)
+                    msg, pid = await propose_architecture(
+                        state.session, state.proposal, feedback=q)
+                    return (ack + "\n\n" + msg + "\n\n"
+                            + chat_state.encode_marker(chat_state.ChatState(
+                                mode=chat_state.MODE_ARCHITECTURE, session=state.session,
+                                proposal=pid or state.proposal)))
+                return await _emit_chat_lazy(_reject, stream)
+
+            if intent == chat_state.INTENT_DRAFT:
+                return _emit_chat(
+                    "The architecture still needs sign-off before I draft anything — that's "
+                    "the V1 gate. Reply **approve** if the design above is right.\n\n"
+                    + chat_state.encode_marker(state), stream)
+
+            return _emit_chat(
+                "Let me know how to proceed: **approve** to sign off, **regenerate** for "
+                "another attempt, or tell me what to change.\n\n"
+                + chat_state.encode_marker(state), stream)
+
+        # --- drafting: architecture approved, full document can be produced ---
+        if state.mode == chat_state.MODE_DRAFTING:
+            if chat_state.classify_architecture_intent(q) != chat_state.INTENT_DRAFT:
+                return _emit_chat(
+                    chat_state.DRAFTING_PROMPT_MESSAGE + "\n\n"
+                    + chat_state.encode_marker(state), stream)
+
+            async def _draft() -> str:
+                msg = await generate_proposal_from_chat(state.session, state.proposal)
+                return msg + "\n\n" + chat_state.encode_marker(state)
+            return await _emit_chat_lazy(_draft, stream)
 
         # MODE_VAULT falls through to the retrieval path below.
 

@@ -271,6 +271,141 @@ def test_router_message_offers_all_three_paths():
     assert "past proposals" in msg.lower()
 
 
+
+
+# --- architecture / drafting modes ------------------------------------------
+def test_architecture_and_drafting_modes_round_trip():
+    for mode in (cs.MODE_ARCHITECTURE, cs.MODE_DRAFTING):
+        st = cs.ChatState(mode=mode, session="s-1", proposal="p-1")
+        d = cs.decode_marker(cs.encode_marker(st))
+        assert d.mode == mode and d.session == "s-1" and d.proposal == "p-1"
+
+
+def test_proposal_id_survives_and_stays_invisible():
+    st = cs.ChatState(mode=cs.MODE_ARCHITECTURE, session="cd986560-2dea-4c08-bda6-e3efb5e25654",
+                      proposal="7e09e870-60f8-4df9-8fc2-26f193391b1a")
+    marker = cs.encode_marker(st)
+    assert set(marker) <= {"\u200b", "\u200c", "\u200d"}
+    d = cs.decode_marker("Proposed Architecture\n\n" + marker)
+    assert d.proposal == "7e09e870-60f8-4df9-8fc2-26f193391b1a"
+
+
+def test_approval_intents():
+    for text in ("approve", "approved", "looks good", "lgtm", "go ahead", "sign off"):
+        assert cs.classify_architecture_intent(text) == cs.INTENT_APPROVE, text
+
+
+def test_regenerate_and_draft_intents():
+    assert cs.classify_architecture_intent("regenerate") == cs.INTENT_REGENERATE
+    assert cs.classify_architecture_intent("try again please") == cs.INTENT_REGENERATE
+    assert cs.classify_architecture_intent("generate the proposal") == cs.INTENT_DRAFT
+    assert cs.classify_architecture_intent("ok now draft the proposal") == cs.INTENT_DRAFT
+
+
+def test_long_feedback_is_rejection_never_accidental_approval():
+    """The gate must not be passed by a paragraph that happens to say 'good'."""
+    feedback = ("the overall shape is good but the DMZ should sit in front of the load "
+                "balancer, and PingDirectory needs to be in the secure zone rather than "
+                "alongside the reverse proxy, also add the SuccessFactors feed")
+    assert cs.classify_architecture_intent(feedback) == cs.INTENT_REJECT
+
+
+def test_ambiguous_review_reply_is_not_approval():
+    for text in ("hmm", "ok?", "", "   ", "what do you think"):
+        assert cs.classify_architecture_intent(text) != cs.INTENT_APPROVE
+
+
+# --- OWUI task-prompt guard -------------------------------------------------
+def test_owui_task_prompts_are_detected():
+    for text in (
+        "### Task:\nCreate a concise, 3-5 word title summarizing the chat history.",
+        "### Task:\nGenerate 1-3 broad tags categorizing the main themes.",
+        "JSON format: { \"title\": \"...\" }",
+        "Chat History:\n<chat_history>\nUSER: hi\n</chat_history>",
+        "Suggest 3-5 relevant follow-up questions",
+    ):
+        assert cs.is_owui_task_prompt(text), text
+
+
+def test_real_consultant_answers_are_not_task_prompts():
+    """No false positives — these must reach the interview handler."""
+    for text in (
+        "AWS, Tech, India",
+        "deployment model: hybrid. required diagram types: solution/reference, deployment",
+        "pain points: password reset volume overwhelming the helpdesk",
+        "the task is to migrate 200 apps to PingFederate",
+        "generate the proposal",
+        "approve",
+    ):
+        assert not cs.is_owui_task_prompt(text), text
+
+
+# --- diagram planning ------------------------------------------------------
+def test_plan_diagrams_maps_iv_vocabulary_to_engine_types():
+    planned = cs.plan_diagrams({
+        "required_diagram_types": "solution/reference, deployment, integration/joiner flow"})
+    types = [t for _, t in planned]
+    assert "architecture" in types and "flow" in types
+    assert len(planned) <= cs.MAX_DIAGRAMS_PER_ROUND
+
+
+def test_plan_diagrams_accepts_list_and_caps_count():
+    planned = cs.plan_diagrams({"required_diagram_types": [
+        "solution/reference", "deployment", "security", "auth/customer journey",
+        "migration phases"]})
+    assert len(planned) == cs.MAX_DIAGRAMS_PER_ROUND
+
+
+def test_plan_diagrams_always_returns_something_reviewable():
+    for answers in ({}, {"required_diagram_types": ""}, {"required_diagram_types": "gibberish"}):
+        planned = cs.plan_diagrams(answers)
+        assert planned and planned[0][1] in ("architecture",)
+
+
+def test_engine_types_are_valid():
+    """Every mapped type must be one diagram_engine actually renders."""
+    from diagram_engine import DIAGRAM_TYPES
+    for engine_type in set(cs.DIAGRAM_TYPE_MAP.values()):
+        assert engine_type in DIAGRAM_TYPES, engine_type
+
+
+# --- text representation ---------------------------------------------------
+def test_text_representation_renders_nodes_and_edges():
+    spec = {
+        "nodes": [{"id": "u", "label": "End Users"}, {"id": "gtm", "label": "Global Traffic Manager"},
+                  {"id": "kc", "label": "Keycloak", "group": "Secure Zone"}],
+        "edges": [{"source": "u", "target": "gtm"},
+                  {"source": "gtm", "target": "kc", "label": "OIDC"}],
+    }
+    out = cs.build_spec_text_representation(spec)
+    assert "End Users" in out and "Global Traffic Manager" in out
+    assert "→" in out and "OIDC" in out
+    assert "Secure Zone" in out
+
+
+def test_text_representation_handles_empty_spec():
+    assert cs.build_spec_text_representation({}) == "_(empty spec)_"
+
+
+def test_architecture_message_states_the_gate_and_lists_diagrams():
+    msg = cs.build_architecture_message([
+        {"title": "Solution Architecture", "diagram_type": "architecture",
+         "text_representation": "- **A**", "url": "https://example.invalid/x.png"},
+    ])
+    assert "approval" in msg.lower()
+    assert "Solution Architecture" in msg
+    assert "https://example.invalid/x.png" in msg
+    assert "approve" in msg.lower()
+
+
+def test_architecture_message_survives_missing_render():
+    msg = cs.build_architecture_message([
+        {"title": "Deployment", "diagram_type": "architecture",
+         "text_representation": "- **B**", "url": None}])
+    assert "render unavailable" in msg.lower()
+    assert "- **B**" in msg
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:

@@ -115,14 +115,14 @@ async def _generate(depth):
 
 # --- depth-tier resolution --------------------------------------------------
 def test_valid_depth_values_resolve():
-    assert VALID_DEPTHS == {"brief", "standard", "full"}
-    for name in ("brief", "standard", "full"):
+    assert VALID_DEPTHS == {"brief", "standard", "full", "deep"}
+    for name in ("brief", "standard", "full", "deep"):
         assert get_depth_tier(name).name == name
         assert get_depth_tier(name.upper()).name == name  # case-insensitive
 
 
 def test_invalid_and_missing_depth_fall_back_to_default():
-    for bad in (None, "", "   ", "deep", "ultra", "123", "STANDARDX"):
+    for bad in (None, "", "   ", "ultra", "extreme", "123", "STANDARDX"):
         assert get_depth_tier(bad).name == DEFAULT_DEPTH == "standard"
 
 
@@ -138,6 +138,25 @@ def test_full_tier_plan_is_richer_than_standard():
     assert full.subsections_per_section > standard.subsections_per_section
     assert full.retrieval_fanout > standard.retrieval_fanout
     assert full.include_appendices and not standard.include_appendices
+
+
+def test_deep_tier_plan_is_richer_than_full():
+    deep = get_depth_tier("deep")
+    full = get_depth_tier("full")
+    assert deep.subsections_per_section > full.subsections_per_section
+    assert deep.include_appendices and full.include_appendices
+    # per-call cap must never exceed the hard ceiling even at the deepest tier.
+    assert deep.per_call_max_tokens <= document_engine.MAX_DRAFT_TOKENS
+
+
+def test_full_tier_unchanged_by_deep_tier_addition():
+    # Regression guard: adding "deep" must not alter "full"'s existing plan —
+    # existing callers/tests must see byte-identical behaviour.
+    full = get_depth_tier("full")
+    assert full.subsections_per_section == 3
+    assert full.retrieval_fanout == 3
+    assert full.per_call_max_tokens == 3500
+    assert full.include_appendices is True
 
 
 # --- generation: no-depth / standard still works ---------------------------
@@ -186,6 +205,36 @@ def test_full_mode_draft_markdown_has_subsections():
     assert "### Overview" in result["draft_markdown"]
 
 
+# --- deep mode: all 6 facets + appendices -----------------------------------
+def test_deep_mode_adds_all_facets_and_appendices():
+    result = asyncio.run(_generate("deep"))
+    assert result["proposal_depth"] == "deep"
+    assert result["included_appendices"] is True
+    text = _extract_text(result["docx_bytes"])
+
+    # All 6 subsection facets appear (the 3 from "full" plus the 3 new ones).
+    for facet_title in (
+        "Overview",
+        "Detailed Design",
+        "Considerations & Dependencies",
+        "Security & Compliance Considerations",
+        "Testing, Validation & Quality Assurance",
+        "Change Management, Training & Adoption",
+    ):
+        assert facet_title in text, f"missing facet subheading: {facet_title}"
+
+    # Appendix pack still present at deep depth.
+    for h in APPENDIX_HEADINGS:
+        assert h in text, f"missing appendix heading: {h}"
+    assert "[ASSUMPTION]" in text  # conservative placeholders, not fabricated specifics
+
+
+def test_deep_mode_draft_markdown_has_all_subsections():
+    result = asyncio.run(_generate("deep"))
+    assert "### Overview" in result["draft_markdown"]
+    assert "### Change Management, Training & Adoption" in result["draft_markdown"]
+
+
 def test_appendices_render_directly():
     docx_bytes = assemble_docx(
         {"client_name": CLIENT_NAME, "proposal_type": "implementation", "iam_vendor": "SailPoint"},
@@ -204,9 +253,13 @@ if __name__ == "__main__":
     test_invalid_and_missing_depth_fall_back_to_default()
     test_per_call_token_caps_never_exceed_hard_ceiling()
     test_full_tier_plan_is_richer_than_standard()
+    test_deep_tier_plan_is_richer_than_full()
+    test_full_tier_unchanged_by_deep_tier_addition()
     test_no_depth_generate_proposal_succeeds()
     test_invalid_depth_generate_falls_back()
     test_full_mode_adds_subsections_and_appendices()
     test_full_mode_draft_markdown_has_subsections()
+    test_deep_mode_adds_all_facets_and_appendices()
+    test_deep_mode_draft_markdown_has_all_subsections()
     test_appendices_render_directly()
     print("ALL PASS 3 CHECKS PASSED")

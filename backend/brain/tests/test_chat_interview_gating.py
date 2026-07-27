@@ -400,6 +400,246 @@ def test_compliance_command_bypasses_interview_gate(monkeypatch):
     assert "discovery interview" not in content.lower()
 
 
+# --- OWUI task-prompt guard (handler level) ---------------------------------
+def test_owui_task_prompt_does_not_mutate_state():
+    """OWUI fires a title/tag request per turn carrying the history. It must NOT
+    be read as an interview answer and must NOT advance the bucket."""
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "q3 " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1", bucket=3))},
+            {"role": "user", "content":
+                "### Task:\nCreate a concise, 3-5 word title summarizing the chat history.\n"
+                "### Output:\nJSON format: { \"title\": \"...\" }"},
+        ],
+        "stream": False,
+    })
+    assert resp.status_code == 200
+    content = resp.json()["choices"][0]["message"]["content"]
+    # No state marker emitted at all -> nothing was advanced or overwritten.
+    assert cs.decode_marker(content) is None
+    assert "area" not in content.lower()
+
+
+# --- architecture gate ------------------------------------------------------
+def test_discovery_completion_enters_architecture_mode(monkeypatch):
+    async def fake_extract(bucket, reply):
+        return {"case_studies_include": "x"}
+
+    async def fake_patch(c, sid, answers):
+        return {"id": sid}
+
+    async def fake_complete(c, sid):
+        return {"session_id": sid, "status": "complete", "complete": True, "missing": []}
+
+    async def fake_propose(session_id, proposal_id, *, feedback=None):
+        return ("## Proposed Architecture — for your approval\n(diagram here)", "prop-1")
+
+    monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+    monkeypatch.setattr(app.supabase_client, "complete_intake_session", fake_complete)
+    monkeypatch.setattr(app, "propose_architecture", fake_propose)
+
+    total = cs.bucket_count(app.get_intake_template(None))
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "last " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1", bucket=total - 1))},
+            {"role": "user", "content": "case studies to include: PingIdentity deployments"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    state = cs.decode_marker(content)
+    assert state.mode == cs.MODE_ARCHITECTURE, f"expected architecture mode, got {state.mode}"
+    assert state.proposal == "prop-1"
+    assert "approval" in content.lower()
+
+
+def test_missing_required_keeps_interview_mode(monkeypatch):
+    async def fake_extract(bucket, reply):
+        return {}
+
+    async def fake_patch(c, sid, answers):
+        return {"id": sid}
+
+    async def fake_complete(c, sid):
+        return {"complete": False, "missing": ["client_name"]}
+
+    called = {"proposed": False}
+
+    async def fake_propose(session_id, proposal_id, *, feedback=None):
+        called["proposed"] = True
+        return ("arch", "prop-1")
+
+    monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+    monkeypatch.setattr(app.supabase_client, "complete_intake_session", fake_complete)
+    monkeypatch.setattr(app, "propose_architecture", fake_propose)
+
+    total = cs.bucket_count(app.get_intake_template(None))
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "last " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1", bucket=total - 1))},
+            {"role": "user", "content": "something"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert cs.decode_marker(content).mode == cs.MODE_INTERVIEW
+    assert "client_name" in content
+    assert called["proposed"] is False, "must not propose architecture with gaps open"
+
+
+def test_approval_unlocks_drafting(monkeypatch):
+    async def fake_approve(pid):
+        assert pid == "prop-1"
+        return (True, cs.ARCHITECTURE_APPROVED_MESSAGE)
+
+    monkeypatch.setattr(app, "approve_architecture", fake_approve)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "arch " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_ARCHITECTURE, session="s1", proposal="prop-1"))},
+            {"role": "user", "content": "approve"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert cs.decode_marker(content).mode == cs.MODE_DRAFTING
+    assert "approved" in content.lower()
+
+
+def test_failed_approval_stays_at_the_gate(monkeypatch):
+    async def fake_approve(pid):
+        return (False, "nothing awaiting approval")
+
+    monkeypatch.setattr(app, "approve_architecture", fake_approve)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "arch " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_ARCHITECTURE, session="s1", proposal="prop-1"))},
+            {"role": "user", "content": "approve"},
+        ],
+        "stream": False,
+    })
+    assert cs.decode_marker(
+        resp.json()["choices"][0]["message"]["content"]).mode == cs.MODE_ARCHITECTURE
+
+
+def test_drafting_is_blocked_before_approval(monkeypatch):
+    """THE V1 CONTRACT: no drafting until the architecture is approved."""
+    called = {"drafted": False}
+
+    async def fake_draft(sid, pid):
+        called["drafted"] = True
+        return "document"
+
+    monkeypatch.setattr(app, "generate_proposal_from_chat", fake_draft)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "arch " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_ARCHITECTURE, session="s1", proposal="prop-1"))},
+            {"role": "user", "content": "generate the proposal"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert called["drafted"] is False, "drafting ran without architecture approval"
+    assert "sign-off" in content.lower() or "gate" in content.lower()
+    assert cs.decode_marker(content).mode == cs.MODE_ARCHITECTURE
+
+
+def test_rejection_regenerates_with_feedback(monkeypatch):
+    seen = {}
+
+    async def fake_reject(pid, comment):
+        seen["comment"] = comment
+        return "logged rejection"
+
+    async def fake_propose(session_id, proposal_id, *, feedback=None):
+        seen["feedback"] = feedback
+        return ("new architecture", proposal_id)
+
+    monkeypatch.setattr(app, "reject_architecture", fake_reject)
+    monkeypatch.setattr(app, "propose_architecture", fake_propose)
+
+    fb = ("the DMZ should sit in front of the load balancer and PingDirectory belongs in "
+          "the secure zone, please also add the SuccessFactors feed to the diagram")
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "arch " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_ARCHITECTURE, session="s1", proposal="prop-1"))},
+            {"role": "user", "content": fb},
+        ],
+        "stream": False,
+    })
+    assert seen.get("feedback") == fb, "feedback not passed to regeneration"
+    assert "DMZ" in seen.get("comment", "")
+    assert cs.decode_marker(
+        resp.json()["choices"][0]["message"]["content"]).mode == cs.MODE_ARCHITECTURE
+
+
+def test_drafting_mode_generates_the_document(monkeypatch):
+    async def fake_draft(sid, pid):
+        assert sid == "s1" and pid == "prop-1"
+        return "## Proposal generated\n- [Download DOCX](https://example.invalid/d.docx)"
+
+    monkeypatch.setattr(app, "generate_proposal_from_chat", fake_draft)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "ok " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_DRAFTING, session="s1", proposal="prop-1"))},
+            {"role": "user", "content": "generate the proposal"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert "Download DOCX" in content
+    assert cs.decode_marker(content).mode == cs.MODE_DRAFTING
+
+
+def test_drafting_mode_ignores_unrelated_chatter(monkeypatch):
+    called = {"drafted": False}
+
+    async def fake_draft(sid, pid):
+        called["drafted"] = True
+        return "doc"
+
+    monkeypatch.setattr(app, "generate_proposal_from_chat", fake_draft)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "ok " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_DRAFTING, session="s1", proposal="prop-1"))},
+            {"role": "user", "content": "thanks"},
+        ],
+        "stream": False,
+    })
+    assert called["drafted"] is False
+    assert cs.decode_marker(
+        resp.json()["choices"][0]["message"]["content"]).mode == cs.MODE_DRAFTING
+
+
+# --- keepalive --------------------------------------------------------------
+def test_keepalive_ok(monkeypatch):
+    async def fake_ping(c):
+        return True
+    monkeypatch.setattr(app.supabase_client, "ping", fake_ping)
+    r = client.get("/v1/keepalive")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+
+
+def test_keepalive_reports_unreachable_database(monkeypatch):
+    async def fake_ping(c):
+        return False
+    monkeypatch.setattr(app.supabase_client, "ping", fake_ping)
+    r = client.get("/v1/keepalive")
+    assert r.status_code == 503
+    assert r.json()["database"] == "unreachable"
+
+
 class _MonkeyPatch:
     """Minimal setattr-only monkeypatch for bare (non-pytest) execution."""
 

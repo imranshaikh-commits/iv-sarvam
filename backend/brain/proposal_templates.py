@@ -223,6 +223,9 @@ SUBSECTION_FACETS: list[tuple[str, str]] = [
     ("Overview", "a high-level overview: objectives, scope and the value delivered"),
     ("Detailed Design", "the detailed technical design: components, connectors, workflows and configuration specifics"),
     ("Considerations & Dependencies", "operational considerations, dependencies, assumptions and risks to manage"),
+    ("Security & Compliance Considerations", "security architecture, data protection, and regulatory/compliance considerations specific to this facet"),
+    ("Testing, Validation & Quality Assurance", "the testing approach, validation criteria, and acceptance/quality-assurance activities relevant to this facet"),
+    ("Change Management, Training & Adoption", "change management, end-user training, communication, and adoption support relevant to this facet"),
 ]
 
 
@@ -234,7 +237,19 @@ DEPTH_TIERS: dict[str, DepthTier] = {
     "standard": DepthTier("standard", subsections_per_section=1, retrieval_fanout=1,
                           include_appendices=False, per_call_max_tokens=1500),
     # full: multi-subsection drafting + wider retrieval fan-out + appendix pack.
+    # UNCHANGED from before this patch — existing callers keep the same output.
     "full": DepthTier("full", subsections_per_section=3, retrieval_fanout=3,
+                      include_appendices=True, per_call_max_tokens=3500),
+    # deep: NEW — the #1 remaining length lever toward 100+ pp. Uses all 6
+    # SUBSECTION_FACETS (was clamped to 3 by len(SUBSECTION_FACETS) before this
+    # patch — adding facets was required, raising subsections_per_section alone
+    # would have been another no-op, same trap as the earlier token-cap gotcha).
+    # retrieval_fanout kept at 4 (not 6) to bound embed+retrieve calls/cost;
+    # the 6 subsection drafts all read from the same merged evidence set.
+    # per_call_max_tokens stays at the hard cap — depth grows via more calls,
+    # never a bigger single call. Opt-in via proposal_depth="deep"; measure
+    # page count and iterate (more facets / higher fanout) if still short of 100+.
+    "deep": DepthTier("deep", subsections_per_section=6, retrieval_fanout=4,
                       include_appendices=True, per_call_max_tokens=3500),
 }
 

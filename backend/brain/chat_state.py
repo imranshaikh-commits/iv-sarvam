@@ -33,16 +33,24 @@ import re
 from dataclasses import dataclass, replace
 
 # --- modes ------------------------------------------------------------------
-# router    : we have asked what the user wants to do; awaiting their choice.
-# interview : walking the discovery buckets; ``bucket`` is the index awaiting an
-#             answer, ``session`` is the intake session id.
-# vault     : free-form Q&A grounded in the proposal corpus (the existing RAG
-#             path). Sticky, so follow-up questions stay in RAG mode.
+# router       : we have asked what the user wants to do; awaiting their choice.
+# interview    : walking the discovery buckets; ``bucket`` is the index awaiting an
+#                answer, ``session`` is the intake session id.
+# architecture : discovery is done; a diagram has been proposed and we are waiting
+#                for the user to approve or reject it. This is the V1 human-in-loop
+#                gate — drafting must not start until it is passed.
+# drafting     : architecture approved; the full proposal can now be generated.
+# vault        : free-form Q&A grounded in the proposal corpus (the existing RAG
+#                path). Sticky, so follow-up questions stay in RAG mode.
 MODE_ROUTER = "router"
 MODE_INTERVIEW = "interview"
+MODE_ARCHITECTURE = "architecture"
+MODE_DRAFTING = "drafting"
 MODE_VAULT = "vault"
 
-VALID_MODES = frozenset({MODE_ROUTER, MODE_INTERVIEW, MODE_VAULT})
+VALID_MODES = frozenset({
+    MODE_ROUTER, MODE_INTERVIEW, MODE_ARCHITECTURE, MODE_DRAFTING, MODE_VAULT,
+})
 
 # Router choices.
 CHOICE_NEW_PROPOSAL = "new_proposal"
@@ -97,20 +105,29 @@ def _parse_fields(raw: str) -> "ChatState | None":
     if mode not in VALID_MODES:
         return None
     session = fields.get("session") or None
+    proposal = fields.get("proposal") or None
     try:
         bucket = int(fields.get("bucket", "0"))
     except ValueError:
         bucket = 0
-    return ChatState(mode=mode, session=session, bucket=max(0, bucket))
+    return ChatState(mode=mode, session=session, bucket=max(0, bucket), proposal=proposal)
 
 
 @dataclass(frozen=True)
 class ChatState:
-    """Recovered conversation state. ``bucket`` is meaningful only in interview mode."""
+    """Recovered conversation state.
+
+    ``bucket``   is meaningful only in interview mode.
+    ``session``  is the intake_sessions id (survives into later modes so the
+                 answers stay reachable).
+    ``proposal`` is the generated_proposals id, set once discovery completes and
+                 carried through architecture review and drafting.
+    """
 
     mode: str = MODE_ROUTER
     session: str | None = None
     bucket: int = 0
+    proposal: str | None = None
 
     def advanced(self) -> "ChatState":
         """Same state, pointing at the next interview bucket."""
@@ -128,6 +145,8 @@ def encode_marker(state: ChatState) -> str:
     parts = [f"mode={state.mode}"]
     if state.session:
         parts.append(f"session={state.session}")
+    if state.proposal:
+        parts.append(f"proposal={state.proposal}")
     if state.mode == MODE_INTERVIEW:
         parts.append(f"bucket={state.bucket}")
     return _zw_encode(f"{MARKER_VERSION};{';'.join(parts)}")
@@ -273,6 +292,246 @@ def wants_restart(text: str) -> bool:
 
 
 ROUTER_REPROMPT = """I didn't catch which of those you meant. Reply **1** to start a new proposal, **2** to search past proposals, or **3** for anything else."""
+
+
+# --- Open WebUI internal task prompts ---------------------------------------
+# OWUI issues extra completions against the SAME endpoint to auto-generate a
+# chat title, tags and follow-up suggestions — observed live as two POSTs per
+# user turn. Those payloads carry the conversation history, so without this
+# guard the handler would read our own state marker, treat OWUI's instruction as
+# the user's answer, and advance a discovery bucket spuriously.
+#
+# Matching is ANCHORED on OWUI's own template scaffolding rather than loose
+# keywords: these strings come from OWUI's task templates, not from anything a
+# consultant would plausibly type mid-interview.
+_OWUI_TASK_MARKERS = (
+    "### task:",
+    "### guidelines:",
+    "### output:",
+    "json format:",
+    "generate a concise",
+    "create a concise, 3-5 word title",
+    "generate 1-3 broad tags",
+    "categorizing the main themes",
+    "chat history:\n<chat_history>",
+    "<chat_history>",
+    "### chat history:",
+    "suggest 3-5 relevant follow-up questions",
+)
+
+
+def is_owui_task_prompt(text: str) -> bool:
+    """True when a message is Open WebUI's own title/tag/follow-up scaffolding.
+
+    Such a turn must be answered harmlessly WITHOUT mutating conversation state.
+    """
+    low = (text or "").lower()
+    return any(marker in low for marker in _OWUI_TASK_MARKERS)
+
+
+# --- architecture review ----------------------------------------------------
+INTENT_APPROVE = "approve"
+INTENT_REJECT = "reject"
+INTENT_REGENERATE = "regenerate"
+INTENT_DRAFT = "draft"
+
+_APPROVE_HINTS = (
+    "approve", "approved", "looks good", "lgtm", "go ahead", "sign off",
+    "signed off", "accept", "accepted", "yes proceed", "proceed", "ship it",
+)
+_REJECT_HINTS = ("reject", "not right", "wrong", "change", "revise", "fix", "no ")
+_REGEN_HINTS = ("regenerate", "try again", "redo", "another version", "different diagram")
+_DRAFT_HINTS = (
+    "generate the proposal", "draft the proposal", "generate proposal",
+    "draft proposal", "build the proposal", "write the proposal",
+    "full proposal", "generate the document", "make the document",
+)
+
+# Same anchoring lesson as wants_restart: a long paragraph that happens to
+# contain "change" is feedback, not a command. Commands are short.
+_INTENT_MAX_WORDS = 12
+
+
+def classify_architecture_intent(text: str) -> str | None:
+    """Map a reply during architecture review to an intent. None if unclear.
+
+    Approval is deliberately the strictest: it is the V1 human-in-loop gate, so
+    an ambiguous reply must never be read as sign-off.
+    """
+    norm = _normalise(text)
+    words = norm.split()
+    if not words:
+        return None
+    padded = f" {norm} "
+
+    # Drafting can be requested in a longer sentence — it is explicit either way.
+    if any(h in padded for h in _DRAFT_HINTS):
+        return INTENT_DRAFT
+    if any(h in padded for h in _REGEN_HINTS):
+        return INTENT_REGENERATE
+
+    if len(words) <= _INTENT_MAX_WORDS and any(h in padded for h in _APPROVE_HINTS):
+        return INTENT_APPROVE
+
+    # Anything that reads as corrective feedback is a rejection, and long free
+    # text during review is feedback by default rather than an approval.
+    if any(h in padded for h in _REJECT_HINTS) or len(words) > _INTENT_MAX_WORDS:
+        return INTENT_REJECT
+    return None
+
+
+# Maps the intake template's diagram-type vocabulary onto diagram_engine's
+# DIAGRAM_TYPES. IV's sample proposals use the left-hand names; the renderer
+# only understands the right-hand ones.
+DIAGRAM_TYPE_MAP: dict[str, str] = {
+    "solution/reference": "architecture",
+    "solution": "architecture",
+    "reference": "architecture",
+    "target_reference": "architecture",
+    "deployment": "architecture",
+    "tenant": "architecture",
+    "security": "network",
+    "network": "network",
+    "integration/joiner flow": "flow",
+    "integration": "component",
+    "joiner flow": "flow",
+    "migration phases": "flow",
+    "auth/customer journey": "sequence",
+    "customer journey": "sequence",
+    "user journey": "sequence",
+    "authentication journey": "sequence",
+}
+
+# Cap how many diagrams one review round generates — each is an LLM call plus a
+# render, and the reviewer only needs enough to judge the architecture.
+MAX_DIAGRAMS_PER_ROUND = 3
+
+
+def plan_diagrams(answers: dict) -> list[tuple[str, str]]:
+    """Decide which diagrams to generate from the discovery answers.
+
+    Returns a list of ``(title, engine_diagram_type)``. Falls back to a single
+    solution-architecture diagram when the answers say nothing useful, so the
+    approval gate always has something concrete to review.
+    """
+    raw = answers.get("required_diagram_types") or ""
+    if isinstance(raw, (list, tuple)):
+        requested = [str(x) for x in raw]
+    else:
+        requested = [p.strip() for p in re.split(r"[,;]", str(raw)) if p.strip()]
+
+    planned: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in requested:
+        key = item.strip().lower()
+        engine_type = DIAGRAM_TYPE_MAP.get(key)
+        if engine_type is None:
+            # Try a loose contains match against the known vocabulary.
+            engine_type = next(
+                (v for k, v in DIAGRAM_TYPE_MAP.items() if k in key or key in k), None
+            )
+        if engine_type is None:
+            continue
+        title = item.strip().title().replace("/", " / ")
+        pair = (title, engine_type)
+        if pair not in seen:
+            seen.add(pair)
+            planned.append(pair)
+        if len(planned) >= MAX_DIAGRAMS_PER_ROUND:
+            break
+
+    if not planned:
+        planned = [("Solution Architecture", "architecture")]
+    return planned
+
+
+def build_architecture_message(rendered: list[dict], *, iteration: int = 1) -> str:
+    """Present the proposed architecture for approval.
+
+    ``rendered`` items: {"title", "diagram_type", "text_representation", "url"}.
+    """
+    lines = [
+        "## Proposed Architecture — for your approval",
+        "",
+        "This is the **V1 approval gate**: I won't draft the proposal until you sign "
+        "off on the architecture below.",
+        "",
+    ]
+    if iteration > 1:
+        lines += [f"_Revision {iteration}._", ""]
+
+    for i, d in enumerate(rendered, 1):
+        lines.append(f"### {i}. {d.get('title')} ({d.get('diagram_type')})")
+        lines.append("")
+        if d.get("url"):
+            lines.append(f"![{d.get('title')}]({d['url']})")
+            lines.append("")
+            lines.append(f"[Open diagram]({d['url']}) — link expires in 1 hour.")
+            lines.append("")
+        else:
+            lines.append("_(render unavailable — the text representation below is "
+                         "the authoritative spec.)_")
+            lines.append("")
+        if d.get("text_representation"):
+            lines.append("**Architecture Flow (Text Representation)**")
+            lines.append("")
+            lines.append(d["text_representation"])
+            lines.append("")
+
+    lines += [
+        "---",
+        "",
+        "Reply **approve** to sign off and unlock drafting, **regenerate** for another "
+        "attempt, or just tell me what to change.",
+    ]
+    return "\n".join(lines)
+
+
+def build_spec_text_representation(spec_json: dict) -> str:
+    """Render a DiagramSpec as IV's house 'Architecture Flow (Text Representation)'.
+
+    IV's own proposals describe architecture as a node/edge narrative, so the
+    reviewer sees it in the format they already use rather than raw JSON.
+    """
+    nodes = spec_json.get("nodes") or []
+    edges = spec_json.get("edges") or []
+    by_id = {n.get("id"): n for n in nodes if isinstance(n, dict)}
+
+    lines: list[str] = []
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        label = n.get("label") or n.get("id") or "component"
+        group = n.get("group") or n.get("cluster")
+        suffix = f" — _{group}_" if group else ""
+        outgoing = [e for e in edges
+                    if isinstance(e, dict) and e.get("source") == n.get("id")]
+        lines.append(f"- **{label}**{suffix}")
+        for e in outgoing:
+            tgt = by_id.get(e.get("target"), {})
+            tgt_label = tgt.get("label") or e.get("target") or "?"
+            via = f" ({e['label']})" if e.get("label") else ""
+            lines.append(f"  → {tgt_label}{via}")
+    return "\n".join(lines) if lines else "_(empty spec)_"
+
+
+ARCHITECTURE_APPROVED_MESSAGE = (
+    "Architecture approved and recorded. The approval gate is now passed, so I can "
+    "draft the full proposal grounded in IV's past work — the approved diagram(s) "
+    "will be embedded in the document.\n\n"
+    "Say **generate the proposal** when you're ready."
+)
+
+ARCHITECTURE_REJECTED_MESSAGE = (
+    "Noted — I've logged that as a rejection with your comments, so the architecture "
+    "is back in draft. Say **regenerate** and I'll produce a fresh version taking "
+    "your feedback into account."
+)
+
+DRAFTING_PROMPT_MESSAGE = (
+    "Architecture is approved. Say **generate the proposal** and I'll produce the "
+    "full document — it takes a few minutes at full depth."
+)
 
 
 # --- interview --------------------------------------------------------------

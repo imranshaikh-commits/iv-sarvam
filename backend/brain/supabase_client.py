@@ -211,6 +211,7 @@ async def insert_generated_proposal(
     draft_markdown: str | None = None,
     retrieval_trace: list | dict | None = None,
     intake_session_id: str | None = None,
+    status: str = "drafting",
 ) -> str | None:
     """Persist a generated proposal draft. Fail-soft -> None.
 
@@ -230,7 +231,7 @@ async def insert_generated_proposal(
         "discovery_answers": discovery_answers or {},
         "draft_markdown": draft_markdown or "",
         "retrieval_trace": retrieval_trace or [],
-        "status": "drafting",
+        "status": status,
         "intake_session_id": intake_session_id,
     }
     try:
@@ -416,14 +417,16 @@ async def upload_generated_draft(
 
 
 async def create_signed_url(
-    client: httpx.AsyncClient, path: str, expires_in: int = 3600
+    client: httpx.AsyncClient, path: str, expires_in: int = 3600,
+    bucket: str | None = None,
 ) -> str | None:
     """Create a time-limited signed URL for a GENERATED_DRAFTS_BUCKET object. Fail-soft.
 
     Returns a fully-qualified URL, or None on failure. Supabase returns a relative
     ``signedURL`` (``/object/sign/<bucket>/<path>?token=...``) which we join onto
     the storage base so the caller gets a directly usable link."""
-    url = f"{SUPABASE_URL}/storage/v1/object/sign/{GENERATED_DRAFTS_BUCKET}/{path}"
+    bucket = bucket or GENERATED_DRAFTS_BUCKET
+    url = f"{SUPABASE_URL}/storage/v1/object/sign/{bucket}/{path}"
     try:
         resp = await client.post(
             url, headers=_headers(prefer_representation=False),
@@ -433,7 +436,7 @@ async def create_signed_url(
         data = resp.json() or {}
     except Exception as e:  # noqa: BLE001
         log.error("create_signed_url failed (bucket '%s' missing? fail-soft): %s",
-                  GENERATED_DRAFTS_BUCKET, e)
+                  bucket, e)
         return None
     signed = data.get("signedURL") or data.get("signedUrl")
     if not signed:
@@ -441,3 +444,26 @@ async def create_signed_url(
     if signed.startswith("/"):
         return f"{SUPABASE_URL}/storage/v1{signed}"
     return signed
+
+
+# --- keep-alive -------------------------------------------------------------
+
+async def ping(client: httpx.AsyncClient) -> bool:
+    """Cheapest possible authenticated read, used by /v1/keepalive.
+
+    Supabase free-tier projects pause after 7 days with no activity, which is
+    exactly what happened once already. A daily hit on this keeps Postgres warm.
+    Returns True on success; never raises.
+    """
+    try:
+        resp = await client.get(
+            _table_url("organizations"),
+            headers={**_headers(prefer_representation=False), "Range": "0-0"},
+            params={"select": "id"},
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.error("supabase ping failed: %s", e)
+        return False

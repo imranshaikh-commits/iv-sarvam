@@ -271,6 +271,24 @@ def _emit_chat(content: str, stream: bool, resp_id: str = "chatcmpl-sarvam-chat"
     return JSONResponse(_chat_completion_json(content, resp_id=resp_id))
 
 
+async def _emit_chat_lazy(make_content, stream: bool, resp_id: str = "chatcmpl-sarvam-chat"):
+    """Like ``_emit_chat`` but for content that takes a while to produce.
+
+    On the streaming path a keep-alive comment goes out FIRST, then the work runs
+    inside the generator — so the client sees the connection is alive instead of
+    sitting on a dead spinner. Same pattern as the compliance-matrix path.
+    """
+    if stream:
+        async def gen():
+            yield ": working\n\n"
+            content = await make_content()
+            for i in range(0, len(content), 3000):
+                yield _sse_chunk(content[i:i + 3000], resp_id=resp_id)
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(gen(), media_type="text/event-stream")
+    return JSONResponse(_chat_completion_json(await make_content(), resp_id=resp_id))
+
+
 class _AnswerPair(BaseModel):
     question_id: str
     value: str
@@ -310,12 +328,19 @@ def _clean_answer_value(raw: str) -> str:
     return val.lstrip(":").strip()
 
 
+# Extraction is a CONVENIENCE — it maps prose onto question ids. The interview
+# must advance whether or not it succeeds, so it gets a hard wall-clock budget.
+# Without this the OpenAI SDK's 600s default applies and one slow OpenRouter call
+# hangs the whole conversation for ten minutes.
+_EXTRACT_TIMEOUT_S = 25.0
+
+
 async def extract_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
     """Map one free-text reply onto this bucket's question ids.
 
-    Fail-soft by design: on any extraction failure the caller still advances the
-    interview and preserves the raw reply, because a dropped LLM call must never
-    wedge the conversation (the failure mode this whole change exists to fix).
+    Fail-soft AND fail-fast by design: on timeout or any extraction failure the
+    caller still advances the interview and preserves the raw reply, because a
+    slow or broken LLM call must never wedge the conversation.
     """
     questions = bucket.get("questions") or []
     if not questions or not reply_text.strip():
@@ -330,18 +355,25 @@ async def extract_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str
         schema_lines.append("".join(bits))
 
     try:
-        resp: _ExtractedAnswers = await _structured_with_fallback(
-            _ExtractedAnswers,
-            messages=[
-                {"role": "system", "content": _BUCKET_EXTRACT_PROMPT},
-                {"role": "user", "content": (
-                    f"QUESTIONS:\n" + "\n".join(schema_lines)
-                    + f"\n\nCONSULTANT'S REPLY:\n{reply_text[:4000]}"
-                )},
-            ],
-            temperature=0,
-            max_retries=1,
+        resp: _ExtractedAnswers = await asyncio.wait_for(
+            _structured_with_fallback(
+                _ExtractedAnswers,
+                messages=[
+                    {"role": "system", "content": _BUCKET_EXTRACT_PROMPT},
+                    {"role": "user", "content": (
+                        f"QUESTIONS:\n" + "\n".join(schema_lines)
+                        + f"\n\nCONSULTANT'S REPLY:\n{reply_text[:4000]}"
+                    )},
+                ],
+                temperature=0,
+                max_retries=1,
+            ),
+            timeout=_EXTRACT_TIMEOUT_S,
         )
+    except asyncio.TimeoutError:
+        log.warning("bucket answer extraction timed out after %ss for %s — advancing anyway",
+                    _EXTRACT_TIMEOUT_S, bucket.get("id"))
+        return {}
     except Exception as e:  # noqa: BLE001 — fail soft, never wedge the chat
         log.warning("bucket answer extraction failed for %s: %s", bucket.get("id"), e)
         return {}
@@ -1271,50 +1303,54 @@ async def chat_completions(request: Request):
                     stream,
                 )
 
-            recorded: dict[str, str] = {}
-            if not chat_state.is_skip(q):
-                recorded = await extract_bucket_answers(bucket, q)
-                payload = dict(recorded) if recorded else {f"_raw_{bucket['id']}": q[:4000]}
+            async def _handle_answer() -> str:
+                recorded: dict[str, str] = {}
+                if not chat_state.is_skip(q):
+                    recorded = await extract_bucket_answers(bucket, q)
+                    payload = dict(recorded) if recorded else {f"_raw_{bucket['id']}": q[:4000]}
+                    if state.session:
+                        try:
+                            async with httpx.AsyncClient() as sclient:
+                                await supabase_client.patch_intake_answers(
+                                    sclient, state.session, payload)
+                        except Exception as e:  # noqa: BLE001 — never wedge the chat
+                            log.warning("patch_intake_answers failed for %s: %s",
+                                        state.session, e)
+
+                next_index = state.bucket + 1
+
+                # More areas to walk.
+                if next_index < total:
+                    parts = ([chat_state.build_recap_line(recorded)]
+                             if not chat_state.is_skip(q) else [])
+                    parts.append("")
+                    parts.append(chat_state.build_bucket_message(tpl, next_index))
+                    parts.append("")
+                    parts.append(chat_state.encode_marker(chat_state.ChatState(
+                        mode=chat_state.MODE_INTERVIEW, session=state.session,
+                        bucket=next_index)))
+                    return "\n".join(parts)
+
+                # Last area answered -> validate required fields and close discovery.
+                missing: list[str] = []
                 if state.session:
                     try:
                         async with httpx.AsyncClient() as sclient:
-                            await supabase_client.patch_intake_answers(
-                                sclient, state.session, payload)
-                    except Exception as e:  # noqa: BLE001 — never wedge the chat
-                        log.warning("patch_intake_answers failed for %s: %s", state.session, e)
+                            result = await supabase_client.complete_intake_session(
+                                sclient, state.session)
+                        missing = list(result.get("missing") or [])
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("complete_intake_session failed for %s: %s",
+                                    state.session, e)
 
-            next_index = state.bucket + 1
+                closing_state = chat_state.ChatState(
+                    mode=chat_state.MODE_INTERVIEW, session=state.session, bucket=next_index
+                ) if missing else chat_state.ChatState(mode=chat_state.MODE_VAULT)
+                return (chat_state.build_recap_line(recorded) + "\n\n"
+                        + chat_state.build_interview_complete_message(missing) + "\n\n"
+                        + chat_state.encode_marker(closing_state))
 
-            # More areas to walk.
-            if next_index < total:
-                parts = [chat_state.build_recap_line(recorded)] if not chat_state.is_skip(q) else []
-                parts.append("")
-                parts.append(chat_state.build_bucket_message(tpl, next_index))
-                parts.append("")
-                parts.append(chat_state.encode_marker(chat_state.ChatState(
-                    mode=chat_state.MODE_INTERVIEW, session=state.session, bucket=next_index)))
-                return _emit_chat("\n".join(parts), stream)
-
-            # Last area answered -> validate required fields and close discovery.
-            missing: list[str] = []
-            if state.session:
-                try:
-                    async with httpx.AsyncClient() as sclient:
-                        result = await supabase_client.complete_intake_session(
-                            sclient, state.session)
-                    missing = list(result.get("missing") or [])
-                except Exception as e:  # noqa: BLE001
-                    log.warning("complete_intake_session failed for %s: %s", state.session, e)
-
-            closing_state = chat_state.ChatState(
-                mode=chat_state.MODE_INTERVIEW, session=state.session, bucket=next_index
-            ) if missing else chat_state.ChatState(mode=chat_state.MODE_VAULT)
-            return _emit_chat(
-                chat_state.build_recap_line(recorded) + "\n\n"
-                + chat_state.build_interview_complete_message(missing) + "\n\n"
-                + chat_state.encode_marker(closing_state),
-                stream,
-            )
+            return await _emit_chat_lazy(_handle_answer, stream)
 
         # MODE_VAULT falls through to the retrieval path below.
 

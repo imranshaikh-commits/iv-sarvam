@@ -215,6 +215,65 @@ def test_long_answer_containing_reset_does_not_restart_interview(monkeypatch):
     assert "What would you like to do?" not in content
 
 
+def test_extraction_timeout_still_advances_the_interview(monkeypatch):
+    """A slow or wedged LLM call must never hang the chat. It advances, keeping
+    the raw reply, rather than blocking for the SDK's 600s default."""
+    import asyncio as _asyncio
+
+    async def hang(*a, **kw):
+        await _asyncio.sleep(60)  # far longer than the extraction budget
+
+    saved = {}
+
+    async def fake_patch(c, sid, answers):
+        saved.update(answers)
+        return {"id": sid}
+
+    monkeypatch.setattr(app, "_structured_with_fallback", hang)
+    monkeypatch.setattr(app, "_EXTRACT_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "q0 " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1", bucket=0))},
+            {"role": "user", "content": "AWS, Tech, India"},
+        ],
+        "stream": False,
+    })
+    assert resp.status_code == 200
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert cs.decode_marker(content).bucket == 1, "did not advance past a timed-out extraction"
+    # The raw reply is preserved so nothing the user typed is lost.
+    assert any("AWS" in str(v) for v in saved.values()), f"raw reply not saved: {saved}"
+
+
+def test_streaming_interview_answer_sends_keepalive_first(monkeypatch):
+    async def fake_extract(bucket, reply):
+        return {"client_name": "AWS"}
+
+    async def fake_patch(c, sid, answers):
+        return {"id": sid}
+
+    monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+
+    with client.stream("POST", "/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "q0 " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1", bucket=0))},
+            {"role": "user", "content": "AWS, Tech, India"},
+        ],
+        "stream": True,
+    }) as resp:
+        assert resp.status_code == 200
+        body = "".join(resp.iter_text())
+
+    assert body.startswith(": "), "no keep-alive comment before the slow work"
+    assert body.strip().endswith("data: [DONE]")
+    assert "area 2 of" in body
+
+
 def test_restart_returns_to_router_from_mid_interview():
     resp = client.post("/v1/chat/completions", json={
         "messages": [

@@ -33,9 +33,39 @@ def test_marker_round_trip_all_modes():
             assert decoded.bucket == state.bucket
 
 
-def test_marker_is_an_html_comment_so_it_renders_invisible():
-    marker = cs.encode_marker(cs.ChatState(mode=cs.MODE_VAULT))
-    assert marker.startswith("<!--") and marker.endswith("-->")
+def test_marker_contains_only_invisible_characters():
+    """The whole point: nothing the user can see. OWUI escapes HTML comments, so
+    the marker must not rely on the renderer hiding anything."""
+    marker = cs.encode_marker(cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1", bucket=4))
+    assert marker, "marker must not be empty"
+    invisible = {"\u200b", "\u200c", "\u200d"}
+    assert set(marker) <= invisible, f"marker leaked visible characters: {set(marker) - invisible!r}"
+    # No angle brackets / HTML that a renderer could echo as text.
+    for ch in "<>!-{}[]()#;=":
+        assert ch not in marker
+
+
+def test_marker_is_invisible_when_appended_to_prose():
+    body = "**Client** - area 1 of 22"
+    full = body + "\n\n" + cs.encode_marker(cs.ChatState(mode=cs.MODE_ROUTER))
+    # Stripping the marker leaves the prose byte-identical.
+    assert cs.strip_markers(full).strip() == body
+
+
+def test_legacy_html_comment_markers_still_decode():
+    """Threads started before the zero-width fix must keep advancing."""
+    legacy = "questions <!--sarvam:v1;mode=interview;session=old-1;bucket=6-->"
+    state = cs.decode_marker(legacy)
+    assert state is not None
+    assert state.mode == cs.MODE_INTERVIEW
+    assert state.session == "old-1"
+    assert state.bucket == 6
+    assert "sarvam" not in cs.strip_markers(legacy)
+
+
+def test_legacy_markers_are_no_longer_emitted():
+    marker = cs.encode_marker(cs.ChatState(mode=cs.MODE_ROUTER))
+    assert "<!--" not in marker and "sarvam" not in marker
 
 
 def test_marker_embedded_in_prose_is_recoverable_and_strippable():
@@ -44,8 +74,14 @@ def test_marker_embedded_in_prose_is_recoverable_and_strippable():
     full = body + "\n" + marker
     state = cs.decode_marker(full)
     assert state.mode == cs.MODE_INTERVIEW and state.session == "s1" and state.bucket == 2
-    assert "sarvam" not in cs.strip_markers(full)
     assert "Here are the questions" in cs.strip_markers(full)
+
+
+def test_uuid_session_round_trips():
+    uid = "cd986560-2dea-4c08-bda6-e3efb5e25654"
+    state = cs.decode_marker(cs.encode_marker(
+        cs.ChatState(mode=cs.MODE_INTERVIEW, session=uid, bucket=21)))
+    assert state.session == uid and state.bucket == 21
 
 
 def test_decode_rejects_junk_and_unknown_modes():
@@ -53,6 +89,8 @@ def test_decode_rejects_junk_and_unknown_modes():
     assert cs.decode_marker("no marker here") is None
     assert cs.decode_marker("<!--sarvam:v1;mode=bogus-->") is None
     assert cs.decode_marker("<!--something:else-->") is None
+    assert cs.decode_marker(cs._zw_encode("v1;mode=bogus")) is None
+    assert cs.decode_marker("\u200d\u200d") is None  # empty payload
 
 
 def test_decode_tolerates_bad_bucket_value():

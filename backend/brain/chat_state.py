@@ -50,7 +50,58 @@ CHOICE_VAULT = "vault"
 CHOICE_DISCUSS = "discuss"
 
 MARKER_VERSION = "v1"
-_MARKER_RE = re.compile(r"<!--\s*sarvam:v1;([^>]*?)-->", re.IGNORECASE | re.DOTALL)
+
+# Legacy marker form (v1, shipped in 63170cd): an HTML comment. Open WebUI does
+# NOT strip HTML comments — it escapes them, so users saw the raw marker text in
+# the chat. Kept in the decoder only, so threads started before the fix keep
+# working; never emitted any more.
+_LEGACY_MARKER_RE = re.compile(r"<!--\s*sarvam:v1;([^>]*?)-->", re.IGNORECASE | re.DOTALL)
+
+# Current marker form: the payload is encoded as zero-width characters, which
+# every renderer treats as invisible whitespace, so nothing is displayed while
+# the bytes still survive the OWUI messages round-trip.
+_ZW_ZERO = "\u200b"      # ZERO WIDTH SPACE          -> bit 0
+_ZW_ONE = "\u200c"       # ZERO WIDTH NON-JOINER     -> bit 1
+_ZW_FENCE = "\u200d"     # ZERO WIDTH JOINER         -> payload delimiter
+_ZW_RE = re.compile(f"{_ZW_FENCE}([{_ZW_ZERO}{_ZW_ONE}]*){_ZW_FENCE}")
+_ZW_ANY = re.compile(f"{_ZW_FENCE}[{_ZW_ZERO}{_ZW_ONE}]*{_ZW_FENCE}")
+
+
+def _zw_encode(payload: str) -> str:
+    bits = "".join(f"{byte:08b}" for byte in payload.encode("utf-8"))
+    body = "".join(_ZW_ONE if b == "1" else _ZW_ZERO for b in bits)
+    return f"{_ZW_FENCE}{body}{_ZW_FENCE}"
+
+
+def _zw_decode(text: str) -> str | None:
+    matches = _ZW_RE.findall(text or "")
+    if not matches:
+        return None
+    bits = "".join("1" if ch == _ZW_ONE else "0" for ch in matches[-1])
+    if not bits or len(bits) % 8:
+        return None
+    try:
+        return bytes(int(bits[i:i + 8], 2) for i in range(0, len(bits), 8)).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def _parse_fields(raw: str) -> "ChatState | None":
+    fields: dict[str, str] = {}
+    for pair in raw.split(";"):
+        if "=" in pair:
+            k, _, v = pair.partition("=")
+            fields[k.strip().lower()] = v.strip()
+
+    mode = fields.get("mode", "")
+    if mode not in VALID_MODES:
+        return None
+    session = fields.get("session") or None
+    try:
+        bucket = int(fields.get("bucket", "0"))
+    except ValueError:
+        bucket = 0
+    return ChatState(mode=mode, session=session, bucket=max(0, bucket))
 
 
 @dataclass(frozen=True)
@@ -70,44 +121,43 @@ class ChatState:
 def encode_marker(state: ChatState) -> str:
     """Render an invisible state marker to append to an assistant message.
 
-    HTML comments are not displayed by markdown renderers, so this is invisible
-    to the user but survives the OWUI round-trip in the messages array.
+    Encoded as zero-width characters so the user sees nothing at all. (The first
+    implementation used an HTML comment; OWUI escapes those and displayed the
+    raw marker in the chat.)
     """
     parts = [f"mode={state.mode}"]
     if state.session:
         parts.append(f"session={state.session}")
     if state.mode == MODE_INTERVIEW:
         parts.append(f"bucket={state.bucket}")
-    return f"<!--sarvam:{MARKER_VERSION};{';'.join(parts)}-->"
+    return _zw_encode(f"{MARKER_VERSION};{';'.join(parts)}")
 
 
 def decode_marker(text: str) -> ChatState | None:
-    """Parse the LAST state marker in ``text``; None if absent/unparseable."""
+    """Parse the last state marker in ``text``; None if absent/unparseable.
+
+    Accepts the current zero-width form and the legacy HTML-comment form, so
+    threads started before the fix continue to advance.
+    """
     if not text:
         return None
-    matches = _MARKER_RE.findall(text)
-    if not matches:
-        return None
-    fields: dict[str, str] = {}
-    for pair in matches[-1].split(";"):
-        if "=" in pair:
-            k, _, v = pair.partition("=")
-            fields[k.strip().lower()] = v.strip()
 
-    mode = fields.get("mode", "")
-    if mode not in VALID_MODES:
-        return None
-    session = fields.get("session") or None
-    try:
-        bucket = int(fields.get("bucket", "0"))
-    except ValueError:
-        bucket = 0
-    return ChatState(mode=mode, session=session, bucket=max(0, bucket))
+    payload = _zw_decode(text)
+    if payload:
+        raw = payload.split(";", 1)[1] if payload.startswith(f"{MARKER_VERSION};") else payload
+        state = _parse_fields(raw)
+        if state is not None:
+            return state
+
+    legacy = _LEGACY_MARKER_RE.findall(text)
+    if legacy:
+        return _parse_fields(legacy[-1])
+    return None
 
 
 def strip_markers(text: str) -> str:
-    """Remove state markers from text (for logging/tests/echoing user-visible copy)."""
-    return _MARKER_RE.sub("", text or "")
+    """Remove state markers of either form (for logging/tests)."""
+    return _ZW_ANY.sub("", _LEGACY_MARKER_RE.sub("", text or ""))
 
 
 def find_chat_state(messages: list[dict]) -> ChatState | None:

@@ -210,7 +210,14 @@ _DISCUSS_HINTS = (
 _RESTART_HINTS = (
     "start over", "restart", "reset", "scrap that", "start again",
     "new proposal instead", "go back to the start", "back to the menu", "main menu",
+    "start from scratch", "cancel that", "abort",
 )
+
+# A restart request is always SHORT. Without this cap, substring matching turns
+# any long answer containing an incidental hint word into an accidental reset —
+# e.g. "password reset volume overwhelming the helpdesk" (a normal IAM pain
+# point) matched "reset" and silently threw away a 15-area interview.
+_RESTART_MAX_WORDS = 8
 
 
 def _normalise(text: str) -> str:
@@ -251,8 +258,17 @@ def classify_router_choice(text: str) -> str | None:
 
 
 def wants_restart(text: str) -> bool:
-    """True when the user asks to abandon the current flow and start over."""
-    padded = f" {_normalise(text)} "
+    """True when the user asks to abandon the current flow and start over.
+
+    Only ever matches a SHORT message. A long answer that happens to contain a
+    hint word (a "password reset" pain point, a "restart the service" runbook
+    note) is an answer, not a command — see ``_RESTART_MAX_WORDS``.
+    """
+    norm = _normalise(text)
+    words = norm.split()
+    if not words or len(words) > _RESTART_MAX_WORDS:
+        return False
+    padded = f" {norm} "
     return any(h in padded for h in _RESTART_HINTS)
 
 

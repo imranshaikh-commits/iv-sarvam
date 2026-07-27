@@ -285,8 +285,29 @@ _BUCKET_EXTRACT_PROMPT = (
     "Return ONLY answers you can support from the reply. Never invent a value, never "
     "guess, and never restate the question as the answer. Omit any question the reply "
     "does not address. Use only the exact question_id values provided. For select/"
-    "multiselect questions prefer one of the listed options; for booleans use true/false."
+    "multiselect questions prefer one of the listed options; for booleans use true/false.\n"
+    "If the reply is a bare list with no labels (e.g. 'Acme, Banking, India'), map the "
+    "values positionally to the questions in the order they are listed.\n"
+    "Each 'value' must be the plain answer text only — never JSON, never a wrapper "
+    "object, never a leading colon or the question label repeated back."
 )
+
+# Sometimes the model returns the whole pair object, or JSON, as the *value*
+# ("{\"question_id\": \"diagram_count\", \"value\": \"4\"}"), or leaves a stray
+# leading colon (": 2026"). Both showed up in live testing and leaked into the
+# user-visible recap line, so values are normalised before they are stored.
+def _clean_answer_value(raw: str) -> str:
+    val = (raw or "").strip()
+    if val.startswith("{") and "value" in val:
+        try:
+            parsed = json.loads(val)
+            if isinstance(parsed, dict) and "value" in parsed:
+                val = str(parsed["value"]).strip()
+        except (ValueError, TypeError):
+            m = re.search(r'"value"\s*:\s*"([^"]*)"', val)
+            if m:
+                val = m.group(1).strip()
+    return val.lstrip(":").strip()
 
 
 async def extract_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
@@ -328,7 +349,7 @@ async def extract_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str
     out: dict[str, str] = {}
     for pair in resp.answers:
         qid = (pair.question_id or "").strip()
-        val = (pair.value or "").strip()
+        val = _clean_answer_value(pair.value)
         if qid in valid_ids and val:
             out[qid] = val
     return out

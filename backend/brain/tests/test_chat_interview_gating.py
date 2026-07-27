@@ -176,6 +176,45 @@ def test_interview_skip_advances_without_recording(monkeypatch):
     assert called["patched"] is False
 
 
+def test_value_sanitiser_unwraps_json_and_strips_stray_colons():
+    """Both artifacts were observed live and leaked into the visible recap line."""
+    assert app._clean_answer_value('{"question_id": "diagram_count", "value": "4"}') == "4"
+    assert app._clean_answer_value("{'question_id': 'x', \"value\": \"7\"}") == "7"
+    assert app._clean_answer_value(": 2026") == "2026"
+    assert app._clean_answer_value("  hybrid  ") == "hybrid"
+    assert app._clean_answer_value("") == ""
+
+
+def test_long_answer_containing_reset_does_not_restart_interview(monkeypatch):
+    """REGRESSION at the handler level: the area-15 answer must advance to 16."""
+    async def fake_extract(bucket, reply):
+        return {"pain_points": "password reset volume"}
+
+    async def fake_patch(c, sid, answers):
+        return {"id": sid}
+
+    monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "q14 " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1", bucket=14))},
+            {"role": "user", "content":
+                "pain points: password reset volume overwhelming the helpdesk, no single "
+                "view of user access, audit findings on orphaned accounts, slow app "
+                "onboarding. decision criteria: technical depth, delivery certainty."},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    state = cs.decode_marker(content)
+    assert state is not None, "state lost - fell back to router"
+    assert state.mode == cs.MODE_INTERVIEW, f"dropped out of interview into {state.mode}"
+    assert state.bucket == 15, f"expected bucket 15, got {state.bucket}"
+    assert "What would you like to do?" not in content
+
+
 def test_restart_returns_to_router_from_mid_interview():
     resp = client.post("/v1/chat/completions", json={
         "messages": [

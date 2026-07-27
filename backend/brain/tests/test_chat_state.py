@@ -178,7 +178,31 @@ def test_restart_detection():
     assert cs.wants_restart("start over")
     assert cs.wants_restart("actually, let's restart")
     assert cs.wants_restart("back to the menu")
+    assert cs.wants_restart("reset")
     assert not cs.wants_restart("Acme Financial Services")
+
+
+def test_long_answers_never_trigger_restart():
+    """REGRESSION: a 15-area interview was silently thrown away because a normal
+    IAM pain point contained the word 'reset'. Long answers are answers."""
+    real_answers = [
+        "pain points: password reset volume overwhelming the helpdesk, no single view of "
+        "user access, audit findings on orphaned accounts, slow app onboarding. decision "
+        "criteria: technical depth, delivery certainty, local India presence, total cost.",
+        "self-service password reset and account unlock are in scope for phase 2",
+        "the runbook covers how to restart the PingFederate cluster nodes one at a time",
+        "we need to reset all service account credentials as part of the cutover",
+        "start again from the design phase if UAT sign-off fails, per the governance model",
+        "monitoring: alert if the connector resets its session more than twice an hour",
+    ]
+    for text in real_answers:
+        assert not cs.wants_restart(text), f"false restart on: {text[:60]}..."
+
+
+def test_short_restart_phrases_still_work():
+    for text in ("start over", "restart please", "reset", "scrap that",
+                 "ok let's start again", "main menu", "cancel that", "abort"):
+        assert cs.wants_restart(text), f"missed restart: {text}"
 
 
 def test_skip_detection():

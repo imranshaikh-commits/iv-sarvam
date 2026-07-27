@@ -14,7 +14,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py proposal_templates.py document_engine.py intake_template.py supabase_client.py branding.py diagram_engine.py export_engine.py .
+COPY app.py proposal_templates.py document_engine.py intake_template.py supabase_client.py branding.py diagram_engine.py export_engine.py chat_state.py .
 COPY assets/ ./assets/
 EXPOSE 8000
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

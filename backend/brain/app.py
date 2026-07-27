@@ -40,6 +40,7 @@ from document_engine import generate_proposal
 # Sprint 5 Pass 1 — structured intake + persistence. Neither module imports app.
 from intake_template import get_intake_template, missing_required
 import supabase_client
+import chat_state
 
 # Sprint 5 Pass 4 — architecture diagrams. diagram_engine does NOT import app
 # (the structured LLM helper is injected), so this stays a one-way dependency.
@@ -252,7 +253,88 @@ def build_interview_start_message(proposal_type: str | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Compliance matrix (Sprint 4 Phase 2)
+# Chat state machine helpers (OWUI unblock)
+# ---------------------------------------------------------------------------
+
+def _emit_chat(content: str, stream: bool, resp_id: str = "chatcmpl-sarvam-chat"):
+    """Return ``content`` as either an SSE stream or a single chat completion.
+
+    Both shapes are needed because OWUI streams by default while direct API
+    callers and the tests use non-streaming.
+    """
+    if stream:
+        async def gen():
+            for i in range(0, len(content), 3000):
+                yield _sse_chunk(content[i:i + 3000], resp_id=resp_id)
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(gen(), media_type="text/event-stream")
+    return JSONResponse(_chat_completion_json(content, resp_id=resp_id))
+
+
+class _AnswerPair(BaseModel):
+    question_id: str
+    value: str
+
+
+class _ExtractedAnswers(BaseModel):
+    answers: list[_AnswerPair] = Field(default_factory=list)
+
+
+_BUCKET_EXTRACT_PROMPT = (
+    "You map a consultant's free-text reply onto a fixed set of discovery questions.\n"
+    "Return ONLY answers you can support from the reply. Never invent a value, never "
+    "guess, and never restate the question as the answer. Omit any question the reply "
+    "does not address. Use only the exact question_id values provided. For select/"
+    "multiselect questions prefer one of the listed options; for booleans use true/false."
+)
+
+
+async def extract_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
+    """Map one free-text reply onto this bucket's question ids.
+
+    Fail-soft by design: on any extraction failure the caller still advances the
+    interview and preserves the raw reply, because a dropped LLM call must never
+    wedge the conversation (the failure mode this whole change exists to fix).
+    """
+    questions = bucket.get("questions") or []
+    if not questions or not reply_text.strip():
+        return {}
+    valid_ids = {q["id"] for q in questions}
+
+    schema_lines = []
+    for q in questions:
+        bits = [f"- question_id: {q['id']} | label: {q['label']} | type: {q.get('type')}"]
+        if q.get("options"):
+            bits.append(f" | options: {', '.join(str(o) for o in q['options'])}")
+        schema_lines.append("".join(bits))
+
+    try:
+        resp: _ExtractedAnswers = await _structured_with_fallback(
+            _ExtractedAnswers,
+            messages=[
+                {"role": "system", "content": _BUCKET_EXTRACT_PROMPT},
+                {"role": "user", "content": (
+                    f"QUESTIONS:\n" + "\n".join(schema_lines)
+                    + f"\n\nCONSULTANT'S REPLY:\n{reply_text[:4000]}"
+                )},
+            ],
+            temperature=0,
+            max_retries=1,
+        )
+    except Exception as e:  # noqa: BLE001 — fail soft, never wedge the chat
+        log.warning("bucket answer extraction failed for %s: %s", bucket.get("id"), e)
+        return {}
+
+    out: dict[str, str] = {}
+    for pair in resp.answers:
+        qid = (pair.question_id or "").strip()
+        val = (pair.value or "").strip()
+        if qid in valid_ids and val:
+            out[qid] = val
+    return out
+
+
+
 # Paste RFP text -> structured requirement extraction (Instructor) ->
 # per-requirement coverage check against the proposal corpus.
 # ---------------------------------------------------------------------------
@@ -1080,19 +1162,140 @@ async def chat_completions(request: Request):
             matrix = await run_compliance_matrix(cm_client, rfp_text, None)
         return JSONResponse(_chat_completion_json(render_matrix_markdown(matrix)))
 
-    # Interview gating: with no active intake session, start the Stage 1 discovery
-    # interview instead of a generic RAG reply. Deterministic — no retrieval or
-    # proposal drafting on this path. The explicit compliance-matrix command above
-    # is handled before this, so it stays usable without a session.
-    if not parse_intake_session_id(body):
-        content = build_interview_start_message()
-        if stream:
-            async def interview_sse():
-                for i in range(0, len(content), 3000):
-                    yield _sse_chunk(content[i:i + 3000], resp_id="chatcmpl-sarvam-interview")
-                yield "data: [DONE]\n\n"
-            return StreamingResponse(interview_sse(), media_type="text/event-stream")
-        return JSONResponse(_chat_completion_json(content, resp_id="chatcmpl-sarvam-interview"))
+    # ---- Conversation state machine -------------------------------------
+    # Previously this was an unconditional gate: parse_intake_session_id(body)
+    # is ALWAYS None for Open WebUI (it has no field to carry our id, and the
+    # "OWUI pipe" the old comment assumed was never built), so the handler
+    # returned the same Stage-1 opener on every turn and the retrieval path
+    # below was unreachable from the UI. State now travels in an invisible
+    # marker inside our own assistant replies, which OWUI echoes back to us.
+    #
+    # An explicit intake_session_id in the body still short-circuits straight to
+    # RAG, preserving the documented contract for direct API callers.
+    explicit_session = parse_intake_session_id(body)
+    if not explicit_session:
+        state = chat_state.find_chat_state(messages)
+
+        # Fresh thread, or an explicit request to start over -> show the router.
+        if state is None or chat_state.wants_restart(q):
+            return _emit_chat(
+                chat_state.ROUTER_MESSAGE + "\n\n"
+                + chat_state.encode_marker(chat_state.ChatState(mode=chat_state.MODE_ROUTER)),
+                stream,
+            )
+
+        # --- awaiting a router choice ---
+        if state.mode == chat_state.MODE_ROUTER:
+            choice = chat_state.classify_router_choice(q)
+
+            if choice is None:
+                return _emit_chat(
+                    chat_state.ROUTER_REPROMPT + "\n\n"
+                    + chat_state.encode_marker(chat_state.ChatState(mode=chat_state.MODE_ROUTER)),
+                    stream,
+                )
+
+            if choice == chat_state.CHOICE_NEW_PROPOSAL:
+                # Create the intake session up front so every subsequent answer
+                # has somewhere durable to land.
+                try:
+                    async with httpx.AsyncClient() as sclient:
+                        session_id = await supabase_client.create_intake_session(
+                            sclient, org_id=IV_ORG_ID, proposal_type=None,
+                            client_name=None, iam_vendor=None, answers={},
+                        )
+                except supabase_client.SupabaseError as e:
+                    log.error("could not create intake session from chat: %s", e)
+                    return _emit_chat(
+                        "I couldn't open a new discovery session just now (the database "
+                        "didn't respond). Try again in a moment, or say **2** to search "
+                        "past proposals instead.\n\n"
+                        + chat_state.encode_marker(chat_state.ChatState(mode=chat_state.MODE_ROUTER)),
+                        stream,
+                    )
+                tpl = get_intake_template(None)
+                return _emit_chat(
+                    chat_state.build_bucket_message(tpl, 0, first=True) + "\n\n"
+                    + chat_state.encode_marker(chat_state.ChatState(
+                        mode=chat_state.MODE_INTERVIEW, session=session_id, bucket=0)),
+                    stream,
+                )
+
+            # Vault lookup or open discussion: acknowledge and switch to the RAG
+            # path for the NEXT turn. The marker persists via the backward scan,
+            # so follow-ups stay grounded without re-asking.
+            ack = (
+                "Sure — what would you like to know? I'll answer from the proposals "
+                "already in the vault and cite what I'm drawing on."
+                if choice == chat_state.CHOICE_VAULT else
+                "Go ahead — what's on your mind? I'll pull on IV's past proposals "
+                "where they're relevant."
+            )
+            return _emit_chat(
+                ack + "\n\n"
+                + chat_state.encode_marker(chat_state.ChatState(mode=chat_state.MODE_VAULT)),
+                stream,
+            )
+
+        # --- interview in progress ---
+        if state.mode == chat_state.MODE_INTERVIEW:
+            tpl = get_intake_template(None)
+            total = chat_state.bucket_count(tpl)
+            bucket = chat_state.get_bucket(tpl, state.bucket)
+
+            if bucket is None:  # index drifted past the end; close out.
+                return _emit_chat(
+                    chat_state.build_interview_complete_message(None) + "\n\n"
+                    + chat_state.encode_marker(chat_state.ChatState(mode=chat_state.MODE_VAULT)),
+                    stream,
+                )
+
+            recorded: dict[str, str] = {}
+            if not chat_state.is_skip(q):
+                recorded = await extract_bucket_answers(bucket, q)
+                payload = dict(recorded) if recorded else {f"_raw_{bucket['id']}": q[:4000]}
+                if state.session:
+                    try:
+                        async with httpx.AsyncClient() as sclient:
+                            await supabase_client.patch_intake_answers(
+                                sclient, state.session, payload)
+                    except Exception as e:  # noqa: BLE001 — never wedge the chat
+                        log.warning("patch_intake_answers failed for %s: %s", state.session, e)
+
+            next_index = state.bucket + 1
+
+            # More areas to walk.
+            if next_index < total:
+                parts = [chat_state.build_recap_line(recorded)] if not chat_state.is_skip(q) else []
+                parts.append("")
+                parts.append(chat_state.build_bucket_message(tpl, next_index))
+                parts.append("")
+                parts.append(chat_state.encode_marker(chat_state.ChatState(
+                    mode=chat_state.MODE_INTERVIEW, session=state.session, bucket=next_index)))
+                return _emit_chat("\n".join(parts), stream)
+
+            # Last area answered -> validate required fields and close discovery.
+            missing: list[str] = []
+            if state.session:
+                try:
+                    async with httpx.AsyncClient() as sclient:
+                        result = await supabase_client.complete_intake_session(
+                            sclient, state.session)
+                    missing = list(result.get("missing") or [])
+                except Exception as e:  # noqa: BLE001
+                    log.warning("complete_intake_session failed for %s: %s", state.session, e)
+
+            closing_state = chat_state.ChatState(
+                mode=chat_state.MODE_INTERVIEW, session=state.session, bucket=next_index
+            ) if missing else chat_state.ChatState(mode=chat_state.MODE_VAULT)
+            return _emit_chat(
+                chat_state.build_recap_line(recorded) + "\n\n"
+                + chat_state.build_interview_complete_message(missing) + "\n\n"
+                + chat_state.encode_marker(closing_state),
+                stream,
+            )
+
+        # MODE_VAULT falls through to the retrieval path below.
 
     async with httpx.AsyncClient() as client:
         # 1-2. Embed + retrieve (fail soft: draft without evidence rather than 500)

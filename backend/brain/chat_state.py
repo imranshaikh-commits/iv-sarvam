@@ -1,0 +1,291 @@
+"""
+Chat conversation state for the OWUI-facing /v1/chat/completions endpoint.
+
+WHY THIS EXISTS
+---------------
+Open WebUI speaks the OpenAI chat-completions protocol, which is stateless: it
+has no field for our ``intake_session_id`` and no server-side session handle.
+The original gate assumed an "OWUI pipe" would inject that id; no such pipe was
+ever built, so ``parse_intake_session_id()`` returned None on EVERY request from
+the UI. The gate therefore fired unconditionally and replied with the same
+deterministic Stage-1 opener forever — the interview could never advance and the
+retrieval/drafting path below the gate was unreachable from the chat UI.
+
+THE FIX
+-------
+OWUI *does* echo the full prior ``messages`` array back on every request. That is
+our state channel — free, and already in the payload. We encode a compact state
+marker into each assistant reply as an HTML comment (invisible once the markdown
+is rendered) and recover it by scanning the message history backwards.
+
+    <!--sarvam:v1;mode=interview;session=<uuid>;bucket=3-->
+
+No OWUI plugin, no schema change, no migration.
+
+This module is PURE: data + pure functions, no network, no secrets, no import of
+app.py — so it is fully unit-testable offline (same contract as
+``intake_template.py`` and ``proposal_templates.py``).
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, replace
+
+# --- modes ------------------------------------------------------------------
+# router    : we have asked what the user wants to do; awaiting their choice.
+# interview : walking the discovery buckets; ``bucket`` is the index awaiting an
+#             answer, ``session`` is the intake session id.
+# vault     : free-form Q&A grounded in the proposal corpus (the existing RAG
+#             path). Sticky, so follow-up questions stay in RAG mode.
+MODE_ROUTER = "router"
+MODE_INTERVIEW = "interview"
+MODE_VAULT = "vault"
+
+VALID_MODES = frozenset({MODE_ROUTER, MODE_INTERVIEW, MODE_VAULT})
+
+# Router choices.
+CHOICE_NEW_PROPOSAL = "new_proposal"
+CHOICE_VAULT = "vault"
+CHOICE_DISCUSS = "discuss"
+
+MARKER_VERSION = "v1"
+_MARKER_RE = re.compile(r"<!--\s*sarvam:v1;([^>]*?)-->", re.IGNORECASE | re.DOTALL)
+
+
+@dataclass(frozen=True)
+class ChatState:
+    """Recovered conversation state. ``bucket`` is meaningful only in interview mode."""
+
+    mode: str = MODE_ROUTER
+    session: str | None = None
+    bucket: int = 0
+
+    def advanced(self) -> "ChatState":
+        """Same state, pointing at the next interview bucket."""
+        return replace(self, bucket=self.bucket + 1)
+
+
+# --- marker encode / decode -------------------------------------------------
+def encode_marker(state: ChatState) -> str:
+    """Render an invisible state marker to append to an assistant message.
+
+    HTML comments are not displayed by markdown renderers, so this is invisible
+    to the user but survives the OWUI round-trip in the messages array.
+    """
+    parts = [f"mode={state.mode}"]
+    if state.session:
+        parts.append(f"session={state.session}")
+    if state.mode == MODE_INTERVIEW:
+        parts.append(f"bucket={state.bucket}")
+    return f"<!--sarvam:{MARKER_VERSION};{';'.join(parts)}-->"
+
+
+def decode_marker(text: str) -> ChatState | None:
+    """Parse the LAST state marker in ``text``; None if absent/unparseable."""
+    if not text:
+        return None
+    matches = _MARKER_RE.findall(text)
+    if not matches:
+        return None
+    fields: dict[str, str] = {}
+    for pair in matches[-1].split(";"):
+        if "=" in pair:
+            k, _, v = pair.partition("=")
+            fields[k.strip().lower()] = v.strip()
+
+    mode = fields.get("mode", "")
+    if mode not in VALID_MODES:
+        return None
+    session = fields.get("session") or None
+    try:
+        bucket = int(fields.get("bucket", "0"))
+    except ValueError:
+        bucket = 0
+    return ChatState(mode=mode, session=session, bucket=max(0, bucket))
+
+
+def strip_markers(text: str) -> str:
+    """Remove state markers from text (for logging/tests/echoing user-visible copy)."""
+    return _MARKER_RE.sub("", text or "")
+
+
+def find_chat_state(messages: list[dict]) -> ChatState | None:
+    """Recover the most recent state marker from assistant turns.
+
+    Scans backwards so the newest marker wins. Returns None for a fresh thread,
+    which the caller treats as "show the router".
+    """
+    for m in reversed(messages or []):
+        if m.get("role") != "assistant":
+            continue
+        content = m.get("content", "")
+        if isinstance(content, list):  # multimodal shape
+            content = " ".join(
+                p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+            )
+        state = decode_marker(str(content))
+        if state is not None:
+            return state
+    return None
+
+
+# --- router -----------------------------------------------------------------
+ROUTER_MESSAGE = """Hi, I'm **Sarvam**, Inspirit Vision's proposal architect. What would you like to do?
+
+**1. Start a new proposal / RFP** — I'll run a short discovery interview, propose an architecture for your approval, then draft the full document grounded in IV's past work.
+
+**2. Search past proposals** — ask me anything about the proposals already in the vault (clients, vendors, architectures, scope, how we've positioned something before) and I'll answer with citations.
+
+**3. Something else** — a question, a second opinion, or just thinking out loud.
+
+Reply with **1**, **2**, or **3** — or just tell me in your own words."""
+
+
+_NEW_PROPOSAL_HINTS = (
+    "new proposal", "new rfp", "start a proposal", "start new", "draft a proposal",
+    "draft proposal", "new deal", "new bid", "respond to an rfp", "respond to rfp",
+    "write a proposal", "create a proposal", "build a proposal",
+)
+_VAULT_HINTS = (
+    "vault", "past proposal", "previous proposal", "prior proposal", "old proposal",
+    "search", "retrieve", "look up", "lookup", "past work", "previous work",
+    "history", "archive", "already done", "have we", "did we", "what did we",
+)
+_DISCUSS_HINTS = (
+    "something else", "discuss", "just talk", "question", "second opinion",
+    "thinking out loud", "brainstorm", "advice", "chat",
+)
+
+_RESTART_HINTS = (
+    "start over", "restart", "reset", "scrap that", "start again",
+    "new proposal instead", "go back to the start", "back to the menu", "main menu",
+)
+
+
+def _normalise(text: str) -> str:
+    return re.sub(r"[^a-z0-9\s]", " ", (text or "").strip().lower())
+
+
+def classify_router_choice(text: str) -> str | None:
+    """Map a router reply to a choice. None when genuinely ambiguous.
+
+    Deliberately deterministic and conservative — no LLM call, and no guessing.
+    An unrecognised reply re-prompts rather than silently picking a branch and
+    dragging the user into the wrong flow (the failure mode we just fixed).
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+
+    # Bare numeric / lettered choice.
+    bare = _normalise(raw)
+    first_token = bare.split()[0] if bare.split() else ""
+    if first_token in {"1", "one", "a"}:
+        return CHOICE_NEW_PROPOSAL
+    if first_token in {"2", "two", "b"}:
+        return CHOICE_VAULT
+    if first_token in {"3", "three", "c"}:
+        return CHOICE_DISCUSS
+
+    # Phrase matching. Vault before new-proposal: "what did we propose for X"
+    # mentions a proposal but is a lookup, not a new engagement.
+    padded = f" {bare} "
+    if any(h in padded for h in _VAULT_HINTS):
+        return CHOICE_VAULT
+    if any(h in padded for h in _NEW_PROPOSAL_HINTS):
+        return CHOICE_NEW_PROPOSAL
+    if any(h in padded for h in _DISCUSS_HINTS):
+        return CHOICE_DISCUSS
+    return None
+
+
+def wants_restart(text: str) -> bool:
+    """True when the user asks to abandon the current flow and start over."""
+    padded = f" {_normalise(text)} "
+    return any(h in padded for h in _RESTART_HINTS)
+
+
+ROUTER_REPROMPT = """I didn't catch which of those you meant. Reply **1** to start a new proposal, **2** to search past proposals, or **3** for anything else."""
+
+
+# --- interview --------------------------------------------------------------
+def bucket_count(template: dict) -> int:
+    return len(template.get("buckets") or [])
+
+
+def get_bucket(template: dict, index: int) -> dict | None:
+    buckets = template.get("buckets") or []
+    if 0 <= index < len(buckets):
+        return buckets[index]
+    return None
+
+
+def build_bucket_message(template: dict, index: int, *, first: bool = False) -> str:
+    """Render the questions for one discovery bucket.
+
+    Unlike the old ``build_interview_start_message``, this is parameterised by
+    bucket index — which is what makes the interview able to advance at all.
+    """
+    bucket = get_bucket(template, index)
+    if bucket is None:
+        return ""
+    total = bucket_count(template)
+    lines: list[str] = []
+    if first:
+        lines += [
+            "Good — let's scope the new proposal. I'll work through "
+            f"{total} short discovery areas, then propose an architecture for your approval.",
+            "",
+        ]
+    lines.append(f"**{bucket['title']}** — area {index + 1} of {total}")
+    lines.append("")
+    for q in bucket.get("questions", []):
+        req = " *(required)*" if q.get("required") else ""
+        opts = q.get("options")
+        hint = f" — options: {', '.join(str(o) for o in opts)}" if opts else ""
+        lines.append(f"- {q['label']}{req}{hint}")
+    lines.append("")
+    lines.append(
+        "Answer in one message — plain prose is fine, I'll sort out which answer "
+        "goes where. Say **skip** to leave an area for later."
+    )
+    return "\n".join(lines)
+
+
+def build_recap_line(recorded: dict[str, str]) -> str:
+    """One-line confirmation of what was captured, so the user can catch mistakes."""
+    if not recorded:
+        return "_Nothing captured from that — I'll come back to this area._"
+    pairs = ", ".join(f"**{k}**: {v}" for k, v in list(recorded.items())[:6])
+    return f"_Noted — {pairs}_"
+
+
+def build_interview_complete_message(missing: list[str] | None) -> str:
+    """Closing message once every bucket has been walked."""
+    if missing:
+        listed = ", ".join(f"`{m}`" for m in missing[:12])
+        return (
+            "That's the end of the discovery areas, but some **required** details are "
+            f"still missing: {listed}.\n\n"
+            "Give me those and I'll move on to the architecture proposal."
+        )
+    return (
+        "Discovery is complete and saved. Next step is the **architecture proposal** — "
+        "I'll put forward a design for your approval before drafting anything.\n\n"
+        "Say **propose the architecture** when you're ready, or ask me to revisit any area first."
+    )
+
+
+SKIP_TOKENS = frozenset({"skip", "pass", "next", "n/a", "na", "none", "later", "dunno", "unknown"})
+
+
+def is_skip(text: str) -> bool:
+    """True for the short 'no answer here' tokens.
+
+    Compares a whitespace-collapsed form so punctuated variants ("N/A", "n/a")
+    match, while a real sentence that merely starts with one of these words
+    ("none of our systems are cloud-based") does not.
+    """
+    compact = _normalise(text).replace(" ", "")
+    return bool(compact) and compact in SKIP_TOKENS

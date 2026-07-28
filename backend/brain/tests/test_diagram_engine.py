@@ -442,4 +442,69 @@ def test_correction_prompt_states_the_requirement():
     except ValueError:
         pass
     assert len(prompts) == 2
-    assert "MUST" in prompts[1] and "nodes" in prompts[1]
+    low = prompts[1].lower()
+    assert "rejected" in low and "nodes" in low and "edges" in low
+
+
+# --- edges are mandatory ----------------------------------------------------
+def _spec(nodes, edges):
+    return DiagramSpec.model_validate(
+        {"diagram_type": "architecture", "title": "t", "nodes": nodes, "edges": edges})
+
+
+def test_the_live_edgeless_failure_is_rejected():
+    """REGRESSION: a live spec had 12 nodes and 1 edge and rendered as a grouped
+    list. Node count alone was checked, so it passed validation."""
+    nodes = [{"id": f"n{i}", "label": f"N{i}"} for i in range(12)]
+    shortfall = de.spec_shortfall(_spec(nodes, [{"source": "n0", "target": "n1"}]))
+    assert shortfall and "edge" in shortfall
+
+
+def test_healthy_graph_passes():
+    nodes = [{"id": f"n{i}", "label": f"N{i}"} for i in range(12)]
+    edges = [{"source": f"n{i}", "target": f"n{i+1}"} for i in range(11)]
+    assert de.spec_shortfall(_spec(nodes, edges)) is None
+
+
+def test_minimal_two_node_diagram_still_allowed():
+    assert de.spec_shortfall(_spec(
+        [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+        [{"source": "a", "target": "b"}])) is None
+
+
+def test_too_many_orphans_rejected():
+    nodes = [{"id": f"n{i}", "label": f"N{i}"} for i in range(9)]
+    # Enough edges to pass the count, but most nodes still floating.
+    edges = [{"source": "n0", "target": "n1"}, {"source": "n1", "target": "n0"},
+             {"source": "n0", "target": "n1"}, {"source": "n1", "target": "n0"},
+             {"source": "n0", "target": "n1"}]
+    shortfall = de.spec_shortfall(_spec(nodes, edges))
+    assert shortfall and "no connections" in shortfall
+
+
+def test_edgeless_spec_triggers_correction_then_raises():
+    import asyncio
+    prompts = []
+
+    async def edgeless(model, messages=None, models=None, **kw):
+        prompts.append(messages[-1]["content"])
+        return _spec([{"id": f"n{i}", "label": f"N{i}"} for i in range(8)],
+                     [{"source": "n0", "target": "n1"}])
+
+    try:
+        asyncio.run(de.generate_diagram_spec(edgeless, title="X"))
+    except ValueError as e:
+        assert "unusable" in str(e)
+    else:
+        raise AssertionError("an edgeless spec must not be accepted")
+    assert len(prompts) == 2, "no corrective retry"
+    assert "GRAPH" in prompts[1] and "edges" in prompts[1].lower()
+
+
+def test_group_labels_are_humanised():
+    for raw, want in (("identity_source_layer", "Identity Source"),
+                      ("iam_platform_layer", "IAM Platform"),
+                      ("_monitoring_layer", "Monitoring"),
+                      ("dmz_zone", "DMZ Zone"),
+                      ("Identity Sources", "Identity Sources")):
+        assert de._pretty_group(raw) == want, f"{raw} -> {de._pretty_group(raw)}"

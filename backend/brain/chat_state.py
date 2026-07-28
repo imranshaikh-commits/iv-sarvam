@@ -426,35 +426,56 @@ DEFAULT_DIAGRAMS_PER_ROUND = 3
 # balancer, no HA — which is the one thing a deployment diagram exists to convey.
 DIAGRAM_TYPE_GUIDANCE: dict[str, str] = {
     "architecture": (
-        "Show the LOGICAL solution: identity sources, the IAM platform components broken "
-        "out by product role (federation / lifecycle / directory / MFA), target "
-        "application groups, and monitoring. Group nodes into logical layers."
+        "Show the LOGICAL solution: identity sources, the IAM platform components "
+        "broken out by product role (federation / lifecycle / directory / MFA / "
+        "policy), target application groups, and monitoring."
     ),
     "network": (
-        "Show INFRASTRUCTURE and TRUST BOUNDARIES, not logical flow. Every node must sit "
-        "in a named zone (e.g. DMZ, application/secure zone, data zone, management). "
-        "Include the edge protections that were specified — WAF, load balancer/VIP, "
-        "reverse proxy — plus TLS/HSM where stated. Show data centres or cloud regions "
-        "as separate zones and draw the replication/HA links between them."
+        "Show INFRASTRUCTURE and TRUST BOUNDARIES, not logical flow. Every node must "
+        "sit in a named zone (e.g. DMZ, application/secure zone, data zone, "
+        "management). Include the edge protections that were specified — WAF, load "
+        "balancer/VIP, reverse proxy — plus TLS/HSM where stated. Show data centres "
+        "or cloud regions as separate zones and draw the replication/HA links "
+        "between them."
     ),
     "flow": (
-        "Show an ORDERED process: the trigger event first, then each step in sequence, "
-        "ending in the resulting state. Label every edge with the action or protocol."
+        "Show an ORDERED process: the trigger event first, then each step in "
+        "sequence, ending in the resulting state."
     ),
     "sequence": (
         "Show the interaction ORDER between the user, the IdP, MFA and the target "
-        "application. Label edges with the protocol or step (redirect, assertion, "
-        "challenge, token)."
+        "application (redirect, assertion, challenge, token)."
     ),
     "component": (
-        "Show the integration inventory: each connected system, the connector or protocol "
-        "used, and the direction of data flow. Group by system category."
+        "Show the integration inventory: each connected system, the connector or "
+        "protocol used, and the direction of data flow."
     ),
     "data_flow": (
-        "Show where identity DATA originates, where it is stored, where it is replicated, "
-        "and where it is retained or exported. Label edges with what data moves."
+        "Show where identity DATA originates, where it is stored, where it is "
+        "replicated, and where it is retained or exported."
     ),
 }
+
+
+# Appended to EVERY diagram's guidance. A diagram is a graph: without this the
+# model produced twelve neatly grouped nodes and a single edge, because the
+# type guidance above only ever described which nodes to include. Nodes without
+# edges are a list, not an architecture.
+EDGE_MANDATE = (
+    "\n\nEDGES ARE MANDATORY. A diagram with nodes but no edges is worthless. "
+    "Connect the nodes: nearly every node must have at least one edge, and you "
+    "should produce roughly as many edges as nodes. Label each edge with the "
+    "protocol, action or data that flows (e.g. 'SAML assertion', 'LDAP lookup', "
+    "'HR joiner event', 'provision', 'audit events', 'TLS 1.3'). Never leave a "
+    "component floating unconnected."
+)
+
+# Group labels are shown to a human reviewer, so they must read like headings.
+GROUP_LABEL_RULE = (
+    "\n\nGroup names must be human-readable headings in Title Case "
+    "(e.g. 'Identity Sources', 'IAM Platform', 'DMZ Zone') — never snake_case "
+    "identifiers like 'identity_source_layer'."
+)
 
 
 def deployment_guidance_for(title: str, engine_type: str) -> str:
@@ -476,7 +497,7 @@ def deployment_guidance_for(title: str, engine_type: str) -> str:
             "This is a SECURITY diagram: emphasise trust boundaries, encryption in "
             "transit, key storage, WAF placement, audit/SIEM paths and privileged access."
         )
-    return base
+    return base + EDGE_MANDATE + GROUP_LABEL_RULE
 
 
 def _requested_count(answers: dict) -> int:

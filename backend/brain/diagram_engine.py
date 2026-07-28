@@ -250,6 +250,33 @@ def _d2_id(raw: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", raw or "n") or "n"
 
 
+# Domain acronyms that must not be title-cased into "Iam" / "Dmz" / "Sso".
+_ACRONYMS = {
+    "iam": "IAM", "ciam": "CIAM", "pam": "PAM", "dmz": "DMZ", "sso": "SSO",
+    "mfa": "MFA", "idp": "IdP", "hrms": "HRMS", "siem": "SIEM", "ad": "AD",
+    "api": "API", "vpc": "VPC", "ha": "HA", "dr": "DR", "kms": "KMS",
+    "hsm": "HSM", "waf": "WAF", "vip": "VIP", "lb": "LB", "sp": "SP",
+}
+
+
+def _pretty_group(raw: str) -> str:
+    """Turn a snake_case group id into a readable heading.
+
+    Belt-and-braces for the prompt rule: the model emitted group names like
+    'identity_source_layer' and '_monitoring_layer', which are shown to a human
+    reviewer and read as machine output.
+    """
+    txt = (raw or "").strip().strip("_")
+    if "_" in txt or (txt and txt == txt.lower() and " " not in txt):
+        txt = txt.replace("_", " ").strip()
+        words = [w for w in txt.split() if w]
+        if words and words[-1].lower() in ("layer", "tier", "group"):
+            words = words[:-1] or words
+        txt = " ".join(_ACRONYMS.get(w.lower(), w if w.isupper() else w.capitalize())
+                       for w in words)
+    return txt or raw
+
+
 def _d2_label(raw: str) -> str:
     """D2 labels are quoted; escape the quote character."""
     return (raw or "").replace('"', "'").strip()
@@ -336,7 +363,7 @@ def build_d2(spec: DiagramSpec) -> str:
     path: dict[str, str] = {}
     for group, members in grouped.items():
         gid = _d2_id(group)
-        lines.append(f'{gid}: "{_d2_label(group)}" {{')
+        lines.append(f'{gid}: "{_d2_label(_pretty_group(group))}" {{')
         # A zone should read as a boundary, not a coloured slab competing with
         # its own contents: near-white fill, hairline border.
         lines += _iv_style("  ", fill=IV_PAPER, stroke=IV_ASH,
@@ -436,6 +463,34 @@ _SPEC_CONTEXT_BUDGET = int(os.environ.get("SARVAM_SPEC_CONTEXT_BUDGET", "3500"))
 # (source -> target) is a legitimate minimal diagram, so rejecting it would trade
 # one failure mode for another.
 MIN_SPEC_NODES = int(os.environ.get("SARVAM_MIN_SPEC_NODES", "2"))
+
+# A diagram is a GRAPH. A spec with plenty of nodes and almost no edges renders
+# as a grouped list, which is exactly what happened live: 12 nodes, 1 edge. A
+# connected graph needs at least n-1 edges, so that is the bar — and orphan
+# nodes (no incident edge at all) are counted separately because a few hub-and-
+# spoke shapes can satisfy the count while still leaving components floating.
+MIN_EDGE_RATIO = float(os.environ.get("SARVAM_MIN_EDGE_RATIO", "0.6"))
+MAX_ORPHAN_RATIO = float(os.environ.get("SARVAM_MAX_ORPHAN_RATIO", "0.34"))
+
+
+def spec_shortfall(spec: "DiagramSpec") -> str | None:
+    """Describe why a spec is unusable as a diagram, or None if it is fine."""
+    n = len(spec.nodes)
+    if n < MIN_SPEC_NODES:
+        return f"it contained {n} node(s)"
+    e = len(spec.edges)
+    if e < max(1, int(round((n - 1) * MIN_EDGE_RATIO))):
+        return (f"it contained {n} nodes but only {e} edge(s), so the components are "
+                "not connected to each other")
+    connected = set()
+    for edge in spec.edges:
+        connected.add(edge.source)
+        connected.add(edge.target)
+    orphans = [node.id for node in spec.nodes if node.id not in connected]
+    if orphans and len(orphans) / n > MAX_ORPHAN_RATIO:
+        return (f"{len(orphans)} of {n} components had no connections at all "
+                f"({', '.join(orphans[:6])})")
+    return None
 _SPEC_EVIDENCE_BUDGET = int(os.environ.get("SARVAM_SPEC_EVIDENCE_BUDGET", "1500"))
 D2_PNG_WIDTH = int(os.environ.get("SARVAM_D2_PNG_WIDTH", "1800"))
 DIAGRAM_RENDERER = os.environ.get("SARVAM_DIAGRAM_RENDERER", "auto")  # auto|d2|graphviz
@@ -612,23 +667,24 @@ async def generate_diagram_spec(
 
     spec: DiagramSpec = await _attempt(user_prompt)
 
-    # An empty/near-empty spec is schema-valid but worthless. Correct it once,
-    # explicitly, before giving up — the failure mode is the model returning an
-    # empty node list, not malformed JSON, so instructor's own retry never fires.
-    if len(spec.nodes) < MIN_SPEC_NODES:
-        log.warning("diagram spec came back with %d nodes (<%d) — retrying with an "
-                    "explicit correction", len(spec.nodes), MIN_SPEC_NODES)
+    # A schema-valid spec can still be worthless: empty, or nodes with no edges.
+    # Both happened live. Correct it once, explicitly, before giving up — these
+    # are semantic failures, not malformed JSON, so instructor never retries them.
+    shortfall = spec_shortfall(spec)
+    if shortfall:
+        log.warning("diagram spec unusable (%s) — retrying with an explicit correction",
+                    shortfall)
         spec = await _attempt(
             user_prompt
-            + f"\n\nIMPORTANT: your previous answer contained "
-              f"{len(spec.nodes)} nodes, which is not a usable diagram. You MUST "
-              f"return at least {MIN_SPEC_NODES} nodes and at least "
-              f"{max(1, MIN_SPEC_NODES - 1)} edges, each node with a distinct id and "
-              "a human-readable label, and each edge referencing existing node ids."
+            + f"\n\nIMPORTANT: your previous answer was rejected because {shortfall}. "
+              "A diagram is a GRAPH, not a list of boxes. Return the components AND "
+              "the connections between them: roughly as many edges as nodes, every "
+              "node connected to at least one other, and each edge labelled with the "
+              "protocol, action or data that flows along it."
         )
-    if len(spec.nodes) < MIN_SPEC_NODES:
-        raise ValueError(
-            f"model returned an unusable diagram spec ({len(spec.nodes)} nodes)")
+        shortfall = spec_shortfall(spec)
+    if shortfall:
+        raise ValueError(f"model returned an unusable diagram spec — {shortfall}")
 
     # Preserve caller intent for title/type, then sanitize/cap everything.
     spec.title = title or spec.title

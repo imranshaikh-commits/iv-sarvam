@@ -44,12 +44,14 @@ from dataclasses import dataclass, replace
 #                path). Sticky, so follow-up questions stay in RAG mode.
 MODE_ROUTER = "router"
 MODE_INTERVIEW = "interview"
+MODE_DIAGRAM_PLAN = "diagram_plan"
 MODE_ARCHITECTURE = "architecture"
 MODE_DRAFTING = "drafting"
 MODE_VAULT = "vault"
 
 VALID_MODES = frozenset({
-    MODE_ROUTER, MODE_INTERVIEW, MODE_ARCHITECTURE, MODE_DRAFTING, MODE_VAULT,
+    MODE_ROUTER, MODE_INTERVIEW, MODE_DIAGRAM_PLAN, MODE_ARCHITECTURE,
+    MODE_DRAFTING, MODE_VAULT,
 })
 
 # Router choices.
@@ -110,7 +112,12 @@ def _parse_fields(raw: str) -> "ChatState | None":
         bucket = int(fields.get("bucket", "0"))
     except ValueError:
         bucket = 0
-    return ChatState(mode=mode, session=session, bucket=max(0, bucket), proposal=proposal)
+    try:
+        dindex = int(fields.get("dindex", "0"))
+    except ValueError:
+        dindex = 0
+    return ChatState(mode=mode, session=session, bucket=max(0, bucket),
+                     proposal=proposal, dindex=max(0, dindex))
 
 
 @dataclass(frozen=True)
@@ -128,6 +135,7 @@ class ChatState:
     session: str | None = None
     bucket: int = 0
     proposal: str | None = None
+    dindex: int = 0          # which diagram in the approved plan we are on
 
     def advanced(self) -> "ChatState":
         """Same state, pointing at the next interview bucket."""
@@ -149,6 +157,8 @@ def encode_marker(state: ChatState) -> str:
         parts.append(f"proposal={state.proposal}")
     if state.mode == MODE_INTERVIEW:
         parts.append(f"bucket={state.bucket}")
+    if state.mode == MODE_ARCHITECTURE:
+        parts.append(f"dindex={state.dindex}")
     return _zw_encode(f"{MARKER_VERSION};{';'.join(parts)}")
 
 
@@ -514,6 +524,134 @@ def plan_diagrams(answers: dict) -> list[tuple[str, str]]:
     if not planned:
         planned = [("Solution Architecture", "architecture")]
     return planned
+
+
+def build_plan_message(plan: list[tuple[str, str]], answers: dict) -> str:
+    """Present the proposed diagram set for approval BEFORE generating any.
+
+    Generating everything up front repeatedly blew the time budget and dropped
+    diagrams silently. Agreeing the list first, then producing one at a time,
+    removes that failure mode and gives a real review point per diagram.
+    """
+    lines = [
+        "## Proposed diagram set — for your approval",
+        "",
+        f"From your discovery answers I'd produce **{len(plan)} diagram"
+        f"{'s' if len(plan) != 1 else ''}**:",
+        "",
+    ]
+    for i, (title, dtype) in enumerate(plan, 1):
+        low = title.lower()
+        # A "deployment"/"security" diagram maps to a generic engine type but
+        # conveys topology, so describe what it will actually show.
+        key = "network" if ("deployment" in low or "security" in low
+                            or "production" in low or "tenant" in low) else dtype
+        lines.append(f"{i}. **{title}** — _{dtype}_ — {_PLAN_RATIONALE.get(key, '')}")
+    requested = str(answers.get("required_diagram_types") or "").strip()
+    if requested:
+        lines += ["", f"_Based on what you asked for: {requested}._"]
+    lines += [
+        "",
+        "I'll generate these **one at a time** so you can approve or correct each "
+        "before the next — that keeps every diagram reviewable and avoids the "
+        "whole set timing out.",
+        "",
+        "Reply **approve** to start, or tell me what to change "
+        "(e.g. _drop the security one_, _add a migration diagram_).",
+    ]
+    return "\n".join(lines)
+
+
+_PLAN_RATIONALE = {
+    "architecture": "logical components and how identity flows between them",
+    "network": "zones, trust boundaries and infrastructure topology",
+    "flow": "an ordered process end to end",
+    "sequence": "the interaction order between user, IdP, MFA and application",
+    "component": "the integration inventory and connectors",
+    "data_flow": "where identity data originates, is stored and is retained",
+}
+
+
+_DROP_HINTS = ("drop", "remove", "delete", "skip", "without", "don't need",
+               "do not need", "no need for", "exclude")
+_ADD_HINTS = ("add", "include", "also want", "plus a", "and a")
+
+
+def apply_plan_edit(plan: list[tuple[str, str]], text: str) -> list[tuple[str, str]]:
+    """Apply a free-text edit to the diagram plan, deterministically.
+
+    Only drops and adds are supported, matched against the plan's own titles and
+    the known diagram vocabulary — no LLM call, and no guessing: an instruction
+    that matches nothing leaves the plan untouched so the caller re-prompts.
+    """
+    norm = _normalise(text)
+    padded = f" {norm} "
+    out = list(plan)
+
+    if any(h in padded for h in _DROP_HINTS):
+        kept = []
+        for title, dtype in out:
+            words = [w for w in _normalise(title).split() if len(w) > 3]
+            mentioned = any(w in padded for w in words) if words else False
+            if not mentioned:
+                kept.append((title, dtype))
+        if kept and len(kept) < len(out):
+            out = kept
+
+    if any(h in padded for h in _ADD_HINTS):
+        for key, engine_type in DIAGRAM_TYPE_MAP.items():
+            key_words = [w for w in _normalise(key).split() if len(w) > 3]
+            if key_words and all(w in padded for w in key_words):
+                title = key.strip().title().replace("/", " / ")
+                if all(_normalise(title) != _normalise(t) for t, _ in out):
+                    if len(out) < MAX_DIAGRAMS_PER_ROUND:
+                        out.append((title, engine_type))
+                break
+    return out
+
+
+PLAN_REPROMPT = (
+    "I didn't catch a change I could apply. Reply **approve** to go ahead with the "
+    "list above, or name a diagram to drop (e.g. _drop the security diagram_) or "
+    "add (e.g. _add a user journey diagram_)."
+)
+
+
+def build_single_diagram_message(d: dict, index: int, total: int,
+                                 *, attempt: int = 1) -> str:
+    """Present ONE diagram for approval, with its position in the agreed set."""
+    lines = [
+        f"## Diagram {index + 1} of {total} — {d.get('title')}",
+        "",
+        f"_{d.get('diagram_type')}_"
+        + (f" · revision {attempt}" if attempt > 1 else ""),
+        "",
+    ]
+    if d.get("url"):
+        lines += [f"![{d.get('title')}]({d['url']})", "",
+                  f"[Open diagram]({d['url']}) — link expires in 1 hour.", ""]
+    else:
+        lines += ["_(render unavailable — the text representation below is the "
+                  "authoritative spec.)_", ""]
+    if d.get("text_representation"):
+        lines += ["**Architecture Flow (Text Representation)**", "",
+                  d["text_representation"], ""]
+    lines += [
+        "---",
+        "",
+        "Reply **approve** to accept this diagram and move to the next, "
+        "**regenerate** for another attempt, or tell me what to change.",
+    ]
+    return "\n".join(lines)
+
+
+def build_all_diagrams_approved_message(total: int) -> str:
+    return (
+        f"All **{total}** diagram{'s' if total != 1 else ''} approved — the V1 "
+        "architecture gate is passed, so I can now draft the full proposal with the "
+        "approved diagrams embedded.\n\n"
+        "Say **generate the proposal** when you're ready."
+    )
 
 
 def build_architecture_message(rendered: list[dict], *, iteration: int = 1) -> str:

@@ -255,17 +255,66 @@ def _d2_label(raw: str) -> str:
     return (raw or "").replace('"', "'").strip()
 
 
+# --- Inspirit Vision brand (light theme) ------------------------------------
+# From the IV brand guide. Deliberately LIGHT-weight: IV's own sample decks are
+# mostly white with restrained accent colour, and D2's stock themes fill
+# containers with heavy saturated blocks that bury the labels.
+IV_CLEARANCE = "#DC5220"        # accent / emphasis (orange)
+IV_COSMOS = "#1F0A4A"           # primary dark (deep purple) — text, node strokes
+IV_WHITE = "#FFFFFF"
+IV_PAPER = "#F5F5F5"            # container fill
+IV_ASH = "#8A8A8A"              # edge labels, container hairlines
+IV_SLATE = "#4A4A4A"            # edges
+IV_CLEARANCE_TINT = "#FFF5F0"   # accent node fill
+
+# Nodes matching these get the accent treatment, so the eye lands on the IAM
+# platform itself rather than on peripheral systems.
+_ACCENT_HINTS = (
+    "pingfederate", "pingam", "pingid", "pingdirectory", "pingidm", "pinggateway",
+    "keycloak", "sailpoint", "forgerock", "okta", "entra", "identityiq",
+    "identitynow", "iam platform", "idp",
+)
+
+
+def _is_accent(label: str) -> bool:
+    low = (label or "").lower()
+    return any(h in low for h in _ACCENT_HINTS)
+
+
+def _iv_style(indent: str, *, fill: str, stroke: str, font_color: str,
+              bold: bool = False, stroke_width: int = 2) -> list[str]:
+    out = [f"{indent}style: {{",
+           f'{indent}  fill: "{fill}"',
+           f'{indent}  stroke: "{stroke}"',
+           f"{indent}  stroke-width: {stroke_width}",
+           f'{indent}  font-color: "{font_color}"',
+           f"{indent}  border-radius: 4"]
+    if bold:
+        out.append(f"{indent}  bold: true")
+    out.append(f"{indent}}}")
+    return out
+
+
 def build_d2(spec: DiagramSpec) -> str:
-    """Render a DiagramSpec as D2 source.
+    """Render a DiagramSpec as D2 source, styled to the IV light theme.
 
     D2 is used in preference to Graphviz because it draws ``group`` as a real
     nested container — which is exactly what an IAM deployment diagram needs
-    (DMZ / secure zone / data zone). Graphviz clusters exist but lay out poorly
-    and look markedly less like IV's hand-built house diagrams.
-    """
-    lines: list[str] = ["direction: down", ""]
+    (DMZ / secure zone / data zone). Graphviz clusters exist but lay out poorly.
 
-    # Group nodes into containers; ungrouped nodes sit at the top level.
+    Styling is applied per-object rather than via a D2 theme because the stock
+    themes paint containers as saturated slabs; IV's own decks are near-white
+    with restrained accent colour, and the labels have to stay legible.
+    """
+    lines: list[str] = [
+        "direction: down",
+        "",
+        "style: {",
+        f'  fill: "{IV_WHITE}"',
+        "}",
+        "",
+    ]
+
     grouped: dict[str, list[DiagramNode]] = {}
     loose: list[DiagramNode] = []
     for n in spec.nodes:
@@ -274,20 +323,31 @@ def build_d2(spec: DiagramSpec) -> str:
         else:
             loose.append(n)
 
-    # Map node id -> fully qualified D2 path so edges resolve inside containers.
+    def emit_node(n: DiagramNode, indent: str) -> list[str]:
+        accent = _is_accent(n.label)
+        out = [f'{indent}{_d2_id(n.id)}: "{_d2_label(n.label)}" {{']
+        out += _iv_style(indent + "  ",
+                         fill=IV_CLEARANCE_TINT if accent else IV_WHITE,
+                         stroke=IV_CLEARANCE if accent else IV_COSMOS,
+                         font_color=IV_COSMOS, bold=accent)
+        out.append(f"{indent}}}")
+        return out
+
     path: dict[str, str] = {}
     for group, members in grouped.items():
         gid = _d2_id(group)
         lines.append(f'{gid}: "{_d2_label(group)}" {{')
+        # A zone should read as a boundary, not a coloured slab competing with
+        # its own contents: near-white fill, hairline border.
+        lines += _iv_style("  ", fill=IV_PAPER, stroke=IV_ASH,
+                           font_color=IV_COSMOS, bold=True, stroke_width=1)
         for n in members:
-            nid = _d2_id(n.id)
-            path[n.id] = f"{gid}.{nid}"
-            lines.append(f'  {nid}: "{_d2_label(n.label)}"')
+            path[n.id] = f"{gid}.{_d2_id(n.id)}"
+            lines += emit_node(n, "  ")
         lines.append("}")
     for n in loose:
-        nid = _d2_id(n.id)
-        path[n.id] = nid
-        lines.append(f'{nid}: "{_d2_label(n.label)}"')
+        path[n.id] = _d2_id(n.id)
+        lines += emit_node(n, "")
 
     lines.append("")
     for e in spec.edges:
@@ -295,7 +355,14 @@ def build_d2(spec: DiagramSpec) -> str:
         if not src or not tgt:
             continue
         label = f': "{_d2_label(e.label)}"' if e.label else ""
-        lines.append(f"{src} -> {tgt}{label}")
+        lines.append(f"{src} -> {tgt}{label} {{")
+        lines.append("  style: {")
+        lines.append(f'    stroke: "{IV_SLATE}"')
+        lines.append("    stroke-width: 1")
+        lines.append(f'    font-color: "{IV_ASH}"')
+        lines.append("    font-size: 11")
+        lines.append("  }")
+        lines.append("}")
 
     return "\n".join(lines) + "\n"
 

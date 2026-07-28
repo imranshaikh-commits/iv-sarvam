@@ -553,6 +553,130 @@ async def _architecture_evidence(client: httpx.AsyncClient, answers: dict) -> st
     return build_evidence_block(chunks)[:6000]
 
 
+PLAN_KEY = "_diagram_plan"
+
+
+async def load_plan(session_id: str | None, answers: dict | None = None
+                    ) -> list[tuple[str, str]]:
+    """The agreed diagram plan, or a freshly derived one if none is stored."""
+    if answers is None and session_id:
+        async with httpx.AsyncClient() as c:
+            row = await supabase_client.get_intake_session(c, session_id)
+        answers = (row or {}).get("answers") or {}
+    answers = answers or {}
+    stored = answers.get(PLAN_KEY)
+    if isinstance(stored, list) and stored:
+        out = []
+        for item in stored:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                out.append((str(item[0]), str(item[1])))
+        if out:
+            return out
+    return chat_state.plan_diagrams(answers)
+
+
+async def save_plan(session_id: str | None, plan: list[tuple[str, str]]) -> None:
+    if not session_id:
+        return
+    try:
+        async with httpx.AsyncClient() as c:
+            await supabase_client.patch_intake_answers(
+                c, session_id, {PLAN_KEY: [list(p) for p in plan]})
+    except Exception as e:  # noqa: BLE001 — plan is re-derivable, never fatal
+        log.warning("could not persist diagram plan for %s: %s", session_id, e)
+
+
+async def propose_one_diagram(
+    session_id: str | None,
+    proposal_id: str | None,
+    index: int,
+    *,
+    feedback: str | None = None,
+) -> tuple[str, str | None, int]:
+    """Generate, persist and render ONE diagram from the agreed plan.
+
+    Returns ``(message, proposal_id, total_in_plan)``. Producing the whole set in
+    one turn repeatedly exhausted the time budget and dropped diagrams silently;
+    one at a time is both faster to first result and genuinely reviewable.
+    """
+    async with httpx.AsyncClient() as client:
+        answers: dict = {}
+        if session_id:
+            row = await supabase_client.get_intake_session(client, session_id)
+            answers = (row or {}).get("answers") or {}
+
+        plan = await load_plan(session_id, answers)
+        total = len(plan)
+        if not plan or index >= total:
+            return ("", proposal_id, total)
+
+        client_name = str(answers.get("client_name") or "the client")
+        proposal_type = str(answers.get("proposal_type") or "implementation")
+        iam_vendor = answers.get("iam_vendor") or None
+
+        if not proposal_id:
+            proposal_id = await supabase_client.insert_generated_proposal(
+                client, org_id=IV_ORG_ID, client_name=client_name,
+                proposal_type=proposal_type, iam_vendor=iam_vendor,
+                discovery_answers=answers, intake_session_id=session_id,
+                status="architecture_review")
+            if not proposal_id:
+                return ("I couldn't open a proposal record to attach the architecture "
+                        "to (the database didn't respond). Try again in a moment.",
+                        None, total)
+
+        evidence = await _architecture_evidence(client, answers)
+        context = _answers_summary(answers)
+        if feedback:
+            context += f"\n\nREVIEWER FEEDBACK TO ADDRESS:\n{feedback[:1500]}"
+
+        title, dtype = plan[index]
+        full_title = f"{client_name} — {title}"
+        guidance = chat_state.deployment_guidance_for(title, dtype)
+        try:
+            spec = await asyncio.wait_for(
+                diagram_engine.generate_diagram_spec(
+                    _structured_with_fallback, title=full_title, diagram_type=dtype,
+                    context_text=context, client_name=client_name,
+                    iam_vendor=iam_vendor, guidance=guidance, evidence_text=evidence),
+                timeout=_DIAGRAM_SPEC_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            log.warning("diagram spec timed out for %s", title)
+            return (f"**{title}** didn't come back in time. Say **regenerate** to retry "
+                    "it, or **skip** to move to the next diagram.", proposal_id, total)
+        except Exception as e:  # noqa: BLE001
+            log.error("diagram spec generation failed for %s: %s", title, e)
+            return (f"I couldn't produce a usable **{title}** spec. Say **regenerate** "
+                    "to retry, or **skip** to move on.", proposal_id, total)
+
+        spec_json = spec.model_dump()
+        row = await supabase_client.insert_diagram(
+            client, org_id=IV_ORG_ID, generated_proposal_id=proposal_id,
+            diagram_type=spec.diagram_type, title=spec.title, spec_json=spec_json,
+            status="needs_review", intake_session_id=session_id)
+
+        url = None
+        if row:
+            try:
+                image = await asyncio.to_thread(diagram_engine.render_spec, spec, "png")
+                if image:
+                    path = await supabase_client.upload_diagram_render(
+                        client, f"{row['id']}.png", image, content_type="image/png")
+                    if path:
+                        await supabase_client.update_diagram(
+                            client, row["id"], {"rendered_svg_path": path})
+                        url = await supabase_client.create_signed_url(
+                            client, path, bucket=supabase_client.DIAGRAM_BUCKET)
+            except Exception as e:  # noqa: BLE001
+                log.error("diagram render/upload failed for %s: %s", title, e)
+
+        d = {"title": spec.title, "diagram_type": spec.diagram_type,
+             "text_representation": chat_state.build_spec_text_representation(spec_json),
+             "url": url}
+        return (chat_state.build_single_diagram_message(
+            d, index, total, attempt=2 if feedback else 1), proposal_id, total)
+
+
 async def propose_architecture(
     session_id: str | None,
     proposal_id: str | None,
@@ -1772,10 +1896,12 @@ async def chat_completions(request: Request):
                     missing_now = missing_required(answers, ptype)
 
                     if not missing_now:
-                        arch, pid = await propose_architecture(state.session, state.proposal)
-                        return (arch + "\n\n" + chat_state.encode_marker(
-                            chat_state.ChatState(mode=chat_state.MODE_ARCHITECTURE,
-                                                 session=state.session, proposal=pid)))
+                        plan = await load_plan(state.session, answers)
+                        await save_plan(state.session, plan)
+                        return (chat_state.build_plan_message(plan, answers) + "\n\n"
+                                + chat_state.encode_marker(chat_state.ChatState(
+                                    mode=chat_state.MODE_DIAGRAM_PLAN,
+                                    session=state.session, proposal=state.proposal)))
 
                     gap = gap_fill_bucket(missing_now, ptype)
                     recorded = await resolve_bucket_answers(gap, q)
@@ -1804,12 +1930,14 @@ async def chat_completions(request: Request):
                         except Exception as e:  # noqa: BLE001
                             log.warning("complete_intake_session failed: %s", e)
 
-                    arch, pid = await propose_architecture(state.session, state.proposal)
+                    plan = await load_plan(state.session)
+                    await save_plan(state.session, plan)
                     return (chat_state.build_recap_line(recorded) + "\n\n"
-                            + "Discovery is complete and saved.\n\n" + arch + "\n\n"
+                            + "Discovery is complete and saved.\n\n"
+                            + chat_state.build_plan_message(plan, answers) + "\n\n"
                             + chat_state.encode_marker(chat_state.ChatState(
-                                mode=chat_state.MODE_ARCHITECTURE,
-                                session=state.session, proposal=pid)))
+                                mode=chat_state.MODE_DIAGRAM_PLAN,
+                                session=state.session, proposal=state.proposal)))
 
                 return await _emit_chat_lazy(_fill_gaps, stream)
 
@@ -1861,60 +1989,121 @@ async def chat_completions(request: Request):
                                 mode=chat_state.MODE_INTERVIEW, session=state.session,
                                 bucket=next_index, proposal=state.proposal)))
 
-                # Discovery complete -> propose the architecture for approval.
-                arch_msg, proposal_id = await propose_architecture(
-                    state.session, state.proposal)
+                # Discovery complete -> agree the DIAGRAM PLAN first. Generating
+                # the whole set in one turn repeatedly timed out and silently
+                # dropped diagrams; the plan is instant and gives a review point.
+                plan = await load_plan(state.session)
+                await save_plan(state.session, plan)
+                fresh: dict = {}
+                if state.session:
+                    async with httpx.AsyncClient() as sc:
+                        r = await supabase_client.get_intake_session(sc, state.session)
+                    fresh = (r or {}).get("answers") or {}
                 return (chat_state.build_recap_line(recorded) + "\n\n"
                         + "Discovery is complete and saved.\n\n"
-                        + arch_msg + "\n\n"
+                        + chat_state.build_plan_message(plan, fresh) + "\n\n"
                         + chat_state.encode_marker(chat_state.ChatState(
-                            mode=chat_state.MODE_ARCHITECTURE, session=state.session,
-                            proposal=proposal_id)))
+                            mode=chat_state.MODE_DIAGRAM_PLAN, session=state.session,
+                            proposal=state.proposal)))
 
             return await _emit_chat_lazy(_handle_answer, stream)
 
-        # --- architecture review: the V1 approval gate ---
-        if state.mode == chat_state.MODE_ARCHITECTURE:
+        # --- diagram plan: agree the set before generating any of it ---
+        if state.mode == chat_state.MODE_DIAGRAM_PLAN:
             intent = chat_state.classify_architecture_intent(q)
 
             if intent == chat_state.INTENT_APPROVE:
-                async def _approve() -> str:
-                    ok, msg = await approve_architecture(state.proposal)
-                    nxt = chat_state.ChatState(
-                        mode=chat_state.MODE_DRAFTING if ok else chat_state.MODE_ARCHITECTURE,
-                        session=state.session, proposal=state.proposal)
-                    return msg + "\n\n" + chat_state.encode_marker(nxt)
-                return await _emit_chat_lazy(_approve, stream)
+                async def _start() -> str:
+                    msg, pid, total = await propose_one_diagram(
+                        state.session, state.proposal, 0)
+                    if not msg:
+                        return ("The diagram plan is empty — say **regenerate** to "
+                                "rebuild it.\n\n" + chat_state.encode_marker(state))
+                    return msg + "\n\n" + chat_state.encode_marker(
+                        chat_state.ChatState(mode=chat_state.MODE_ARCHITECTURE,
+                                             session=state.session,
+                                             proposal=pid or state.proposal, dindex=0))
+                return await _emit_chat_lazy(_start, stream)
+
+            async def _edit() -> str:
+                answers: dict = {}
+                if state.session:
+                    async with httpx.AsyncClient() as sc:
+                        r = await supabase_client.get_intake_session(sc, state.session)
+                    answers = (r or {}).get("answers") or {}
+                current = await load_plan(state.session, answers)
+                edited = chat_state.apply_plan_edit(current, q)
+                if edited == current:
+                    return chat_state.PLAN_REPROMPT + "\n\n" + chat_state.encode_marker(state)
+                await save_plan(state.session, edited)
+                return (chat_state.build_plan_message(edited, answers) + "\n\n"
+                        + chat_state.encode_marker(state))
+            return await _emit_chat_lazy(_edit, stream)
+
+        # --- architecture review: the V1 approval gate, one diagram at a time ---
+        if state.mode == chat_state.MODE_ARCHITECTURE:
+            intent = chat_state.classify_architecture_intent(q)
+            skip = chat_state.is_skip(q)
+
+            if intent == chat_state.INTENT_APPROVE or skip:
+                async def _approve_and_next() -> str:
+                    prefix = ""
+                    if not skip:
+                        ok, _ = await approve_architecture(state.proposal)
+                        if not ok:
+                            return ("There was nothing awaiting approval — say "
+                                    "**regenerate** to produce this diagram again.\n\n"
+                                    + chat_state.encode_marker(state))
+                        prefix = "Approved.\n\n"
+                    else:
+                        prefix = "Skipped.\n\n"
+
+                    nxt = state.dindex + 1
+                    plan = await load_plan(state.session)
+                    if nxt >= len(plan):
+                        return (chat_state.build_all_diagrams_approved_message(len(plan))
+                                + "\n\n" + chat_state.encode_marker(chat_state.ChatState(
+                                    mode=chat_state.MODE_DRAFTING, session=state.session,
+                                    proposal=state.proposal)))
+                    msg, pid, _ = await propose_one_diagram(
+                        state.session, state.proposal, nxt)
+                    return (prefix + msg + "\n\n" + chat_state.encode_marker(
+                        chat_state.ChatState(mode=chat_state.MODE_ARCHITECTURE,
+                                             session=state.session,
+                                             proposal=pid or state.proposal, dindex=nxt)))
+                return await _emit_chat_lazy(_approve_and_next, stream)
 
             if intent == chat_state.INTENT_REGENERATE:
                 async def _regen() -> str:
-                    msg, pid = await propose_architecture(
-                        state.session, state.proposal, feedback=None)
-                    return msg + "\n\n" + chat_state.encode_marker(chat_state.ChatState(
-                        mode=chat_state.MODE_ARCHITECTURE, session=state.session,
-                        proposal=pid or state.proposal))
+                    msg, pid, _ = await propose_one_diagram(
+                        state.session, state.proposal, state.dindex)
+                    return msg + "\n\n" + chat_state.encode_marker(
+                        chat_state.ChatState(mode=chat_state.MODE_ARCHITECTURE,
+                                             session=state.session,
+                                             proposal=pid or state.proposal,
+                                             dindex=state.dindex))
                 return await _emit_chat_lazy(_regen, stream)
 
             if intent == chat_state.INTENT_REJECT:
                 async def _reject() -> str:
-                    ack = await reject_architecture(state.proposal, q)
-                    msg, pid = await propose_architecture(
-                        state.session, state.proposal, feedback=q)
-                    return (ack + "\n\n" + msg + "\n\n"
+                    await reject_architecture(state.proposal, q)
+                    msg, pid, _ = await propose_one_diagram(
+                        state.session, state.proposal, state.dindex, feedback=q)
+                    return ("Noted — regenerating with your feedback.\n\n" + msg + "\n\n"
                             + chat_state.encode_marker(chat_state.ChatState(
                                 mode=chat_state.MODE_ARCHITECTURE, session=state.session,
-                                proposal=pid or state.proposal)))
+                                proposal=pid or state.proposal, dindex=state.dindex)))
                 return await _emit_chat_lazy(_reject, stream)
 
             if intent == chat_state.INTENT_DRAFT:
                 return _emit_chat(
-                    "The architecture still needs sign-off before I draft anything — that's "
-                    "the V1 gate. Reply **approve** if the design above is right.\n\n"
+                    "The architecture still needs sign-off before I draft anything — "
+                    "that's the V1 gate. Reply **approve** for the diagram above.\n\n"
                     + chat_state.encode_marker(state), stream)
 
             return _emit_chat(
-                "Let me know how to proceed: **approve** to sign off, **regenerate** for "
-                "another attempt, or tell me what to change.\n\n"
+                "Let me know how to proceed: **approve** this diagram, **regenerate** "
+                "for another attempt, **skip** it, or tell me what to change.\n\n"
                 + chat_state.encode_marker(state), stream)
 
         # --- drafting: architecture approved, full document can be produced ---

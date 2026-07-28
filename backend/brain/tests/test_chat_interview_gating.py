@@ -423,7 +423,7 @@ def test_owui_task_prompt_does_not_mutate_state():
 
 
 # --- architecture gate ------------------------------------------------------
-def test_discovery_completion_enters_architecture_mode(monkeypatch):
+def test_discovery_completion_enters_diagram_plan_mode(monkeypatch):
     async def fake_extract(bucket, reply):
         return {"case_studies_include": "x"}
 
@@ -441,6 +441,11 @@ def test_discovery_completion_enters_architecture_mode(monkeypatch):
     monkeypatch.setattr(app.supabase_client, "complete_intake_session", fake_complete)
     monkeypatch.setattr(app, "propose_architecture", fake_propose)
 
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": {"client_name": "AWS",
+                                       "required_diagram_types": "solution/reference"}}
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+
     total = cs.bucket_count(app.get_intake_template(None))
     resp = client.post("/v1/chat/completions", json={
         "messages": [
@@ -452,8 +457,9 @@ def test_discovery_completion_enters_architecture_mode(monkeypatch):
     })
     content = resp.json()["choices"][0]["message"]["content"]
     state = cs.decode_marker(content)
-    assert state.mode == cs.MODE_ARCHITECTURE, f"expected architecture mode, got {state.mode}"
-    assert state.proposal == "prop-1"
+    # Discovery now hands off to the DIAGRAM PLAN step, which generates nothing
+    # until the set is agreed — generating everything up front used to time out.
+    assert state.mode == cs.MODE_DIAGRAM_PLAN, f"expected plan mode, got {state.mode}"
     assert "approval" in content.lower()
 
 
@@ -559,12 +565,13 @@ def test_rejection_regenerates_with_feedback(monkeypatch):
         seen["comment"] = comment
         return "logged rejection"
 
-    async def fake_propose(session_id, proposal_id, *, feedback=None):
+    async def fake_one(session_id, proposal_id, index, *, feedback=None):
         seen["feedback"] = feedback
-        return ("new architecture", proposal_id)
+        seen["index"] = index
+        return ("new diagram", proposal_id, 3)
 
     monkeypatch.setattr(app, "reject_architecture", fake_reject)
-    monkeypatch.setattr(app, "propose_architecture", fake_propose)
+    monkeypatch.setattr(app, "propose_one_diagram", fake_one)
 
     fb = ("the DMZ should sit in front of the load balancer and PingDirectory belongs in "
           "the secure zone, please also add the SuccessFactors feed to the diagram")
@@ -578,6 +585,8 @@ def test_rejection_regenerates_with_feedback(monkeypatch):
     })
     assert seen.get("feedback") == fb, "feedback not passed to regeneration"
     assert "DMZ" in seen.get("comment", "")
+    # Rejection regenerates the SAME diagram, it does not advance past it.
+    assert seen.get("index") == 0
     assert cs.decode_marker(
         resp.json()["choices"][0]["message"]["content"]).mode == cs.MODE_ARCHITECTURE
 
@@ -741,8 +750,9 @@ def test_gap_fill_accepts_answers_and_reaches_the_architecture_gate(monkeypatch)
     assert saved.get("client_name") == "AWS", f"gap answers not saved: {saved}"
     assert saved.get("proposal_type") == "implementation"
     state = cs.decode_marker(content)
-    assert state.mode == cs.MODE_ARCHITECTURE, f"expected the gate, got {state.mode}"
-    assert state.proposal == "prop-9"
+    # Gap-fill completion also hands off to the plan step, not straight to
+    # generating every diagram.
+    assert state.mode == cs.MODE_DIAGRAM_PLAN, f"expected plan mode, got {state.mode}"
 
 
 def test_gap_fill_reprompts_when_still_incomplete(monkeypatch):
@@ -887,6 +897,165 @@ def test_diagrams_are_generated_concurrently(monkeypatch):
     asyncio.get_event_loop().run_until_complete(app.propose_architecture("s1", None))
     assert concurrent["peak"] > 1, "diagrams ran sequentially"
     assert concurrent["peak"] <= app._ARCH_CONCURRENCY, "exceeded the concurrency limit"
+
+
+# --- diagram plan -> one-at-a-time approval ---------------------------------
+def _plan_state(session="s1", proposal="p1"):
+    return cs.encode_marker(cs.ChatState(mode=cs.MODE_DIAGRAM_PLAN,
+                                         session=session, proposal=proposal))
+
+
+def test_discovery_completion_proposes_a_plan_not_four_diagrams(monkeypatch):
+    """REGRESSION: generating the whole set up front timed out and silently
+    dropped diagrams. The plan must come first, and generate nothing."""
+    generated = {"n": 0}
+
+    async def fake_extract(bucket, reply):
+        return {"x": "y"}
+
+    async def fake_patch(c, sid, answers):
+        return {"id": sid}
+
+    async def fake_complete(c, sid):
+        return {"complete": True, "missing": []}
+
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": {
+            "client_name": "AWS", "diagram_count": "4",
+            "required_diagram_types": "solution/reference, deployment, security"}}
+
+    async def spy_one(*a, **kw):
+        generated["n"] += 1
+        return ("diagram", "p1", 3)
+
+    monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+    monkeypatch.setattr(app.supabase_client, "complete_intake_session", fake_complete)
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app, "propose_one_diagram", spy_one)
+
+    total = cs.bucket_count(app.get_intake_template(None))
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "last " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1", bucket=total - 1))},
+            {"role": "user", "content": "case studies: Ping deployments"}],
+        "stream": False})
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert cs.decode_marker(content).mode == cs.MODE_DIAGRAM_PLAN
+    assert "for your approval" in content.lower()
+    assert generated["n"] == 0, "generated diagrams before the plan was approved"
+
+
+def test_plan_edit_drops_a_diagram_without_generating(monkeypatch):
+    saved = {}
+
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": {
+            "client_name": "AWS", "diagram_count": "3",
+            "required_diagram_types": "solution/reference, deployment, security"}}
+
+    async def fake_patch(c, sid, answers):
+        saved.update(answers)
+        return {"id": sid}
+
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [{"role": "assistant", "content": "plan " + _plan_state()},
+                     {"role": "user", "content": "drop the security diagram"}],
+        "stream": False})
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert cs.decode_marker(content).mode == cs.MODE_DIAGRAM_PLAN
+    assert "Security" not in content
+    assert app.PLAN_KEY in saved, "edited plan was not persisted"
+
+
+def test_plan_approval_generates_only_the_first_diagram(monkeypatch):
+    calls = []
+
+    async def spy_one(session_id, proposal_id, index, *, feedback=None):
+        calls.append(index)
+        return (f"## Diagram {index + 1} of 3", "p1", 3)
+
+    monkeypatch.setattr(app, "propose_one_diagram", spy_one)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [{"role": "assistant", "content": "plan " + _plan_state()},
+                     {"role": "user", "content": "approve"}],
+        "stream": False})
+    content = resp.json()["choices"][0]["message"]["content"]
+    st = cs.decode_marker(content)
+    assert st.mode == cs.MODE_ARCHITECTURE and st.dindex == 0
+    assert calls == [0], f"expected only diagram 0, got {calls}"
+
+
+def test_approving_a_diagram_advances_to_the_next(monkeypatch):
+    calls = []
+
+    async def fake_approve(pid):
+        return (True, "ok")
+
+    async def spy_one(session_id, proposal_id, index, *, feedback=None):
+        calls.append(index)
+        return (f"## Diagram {index + 1} of 3", "p1", 3)
+
+    async def fake_load_plan(sid, answers=None):
+        return [("A", "architecture"), ("B", "network"), ("C", "flow")]
+
+    monkeypatch.setattr(app, "approve_architecture", fake_approve)
+    monkeypatch.setattr(app, "propose_one_diagram", spy_one)
+    monkeypatch.setattr(app, "load_plan", fake_load_plan)
+
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [{"role": "assistant", "content": "d " + cs.encode_marker(
+            cs.ChatState(mode=cs.MODE_ARCHITECTURE, session="s1",
+                         proposal="p1", dindex=0))},
+            {"role": "user", "content": "approve"}],
+        "stream": False})
+    st = cs.decode_marker(resp.json()["choices"][0]["message"]["content"])
+    assert st.dindex == 1, f"did not advance, dindex={st.dindex}"
+    assert calls == [1]
+
+
+def test_approving_the_last_diagram_unlocks_drafting(monkeypatch):
+    async def fake_approve(pid):
+        return (True, "ok")
+
+    async def fake_load_plan(sid, answers=None):
+        return [("A", "architecture"), ("B", "network")]
+
+    monkeypatch.setattr(app, "approve_architecture", fake_approve)
+    monkeypatch.setattr(app, "load_plan", fake_load_plan)
+
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [{"role": "assistant", "content": "d " + cs.encode_marker(
+            cs.ChatState(mode=cs.MODE_ARCHITECTURE, session="s1",
+                         proposal="p1", dindex=1))},
+            {"role": "user", "content": "approve"}],
+        "stream": False})
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert cs.decode_marker(content).mode == cs.MODE_DRAFTING
+    assert "approved" in content.lower()
+
+
+def test_drafting_still_blocked_mid_review(monkeypatch):
+    called = {"n": 0}
+
+    async def fake_draft(sid, pid):
+        called["n"] += 1
+        return "doc"
+
+    monkeypatch.setattr(app, "generate_proposal_from_chat", fake_draft)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [{"role": "assistant", "content": "d " + cs.encode_marker(
+            cs.ChatState(mode=cs.MODE_ARCHITECTURE, session="s1",
+                         proposal="p1", dindex=0))},
+            {"role": "user", "content": "generate the proposal"}],
+        "stream": False})
+    assert called["n"] == 0, "drafted before every diagram was approved"
+    assert cs.decode_marker(
+        resp.json()["choices"][0]["message"]["content"]).mode == cs.MODE_ARCHITECTURE
 
 
 class _MonkeyPatch:

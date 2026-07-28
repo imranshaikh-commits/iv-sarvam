@@ -167,7 +167,10 @@ def main() -> int:
 
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
-        print(f"error: {root} is not a directory", file=sys.stderr)
+        print(f"error: {root} is not a directory.\n\n"
+              f"Point this at a local copy of the Drive folder (or of any single\n"
+              f"vendor/client subfolder — partial mirrors are fine and are the\n"
+              f"recommended way to ingest, one batch at a time).", file=sys.stderr)
         return 2
 
     rows, seen_hashes = [], {}
@@ -185,7 +188,7 @@ def main() -> int:
 
             rel = full.relative_to(root)
             parts = list(rel.parts[:-1])
-            tier, reason = classify(parts, fn)
+            tier, reason = classify(parts or [root.name], fn)
 
             # Content hash for duplicate detection. The winner is chosen in a
             # SECOND pass — first-seen-wins would keep whichever copy sorts
@@ -201,7 +204,11 @@ def main() -> int:
                 except OSError:
                     pass
 
-            vendor = derive_vendor(parts)
+            # Include the root folder's own name: people often download a single
+            # vendor folder and point this script at it, which would otherwise
+            # lose the vendor entirely (root=SailPoint -> parts start at the
+            # client name).
+            vendor = derive_vendor([root.name] + parts)
             rows.append({
                 "path": str(rel),
                 "filename": fn,

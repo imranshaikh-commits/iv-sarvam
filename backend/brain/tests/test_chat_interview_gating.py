@@ -814,14 +814,18 @@ def test_slow_diagram_spec_is_skipped_not_hung(monkeypatch):
     assert calls["n"] >= 1, "never attempted a spec"
 
 
-def test_round_budget_stops_starting_new_diagrams(monkeypatch):
-    import asyncio as _a
-    attempted = []
+def test_round_budget_bounds_total_time_not_just_each_call(monkeypatch):
+    """With concurrent generation the budget caps the WHOLE round.
 
-    async def slowish(*a, **kw):
-        attempted.append(kw.get("title"))
-        await _a.sleep(0.3)
-        raise RuntimeError("no spec")
+    Diagrams are independent so they all start together (bounded by the
+    semaphore); what must be guaranteed is that the round returns promptly
+    instead of hanging, even when every spec call is slow.
+    """
+    import asyncio as _a
+    import time as _t
+
+    async def slow(*a, **kw):
+        await _a.sleep(30)
 
     async def fake_get_session(c, sid):
         return {"id": sid, "answers": {
@@ -835,16 +839,54 @@ def test_round_budget_stops_starting_new_diagrams(monkeypatch):
     async def no_evidence(c, answers):
         return ""
 
-    monkeypatch.setattr(app.diagram_engine, "generate_diagram_spec", slowish)
+    monkeypatch.setattr(app.diagram_engine, "generate_diagram_spec", slow)
     monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
     monkeypatch.setattr(app.supabase_client, "insert_generated_proposal", fake_insert_gp)
     monkeypatch.setattr(app, "_architecture_evidence", no_evidence)
-    monkeypatch.setattr(app, "_DIAGRAM_SPEC_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(app, "_DIAGRAM_SPEC_TIMEOUT_S", 10.0)
     monkeypatch.setattr(app, "_ARCH_ROUND_BUDGET_S", 0.5)
 
+    started = _t.monotonic()
+    msg, pid = asyncio.get_event_loop().run_until_complete(
+        app.propose_architecture("s1", None))
+    elapsed = _t.monotonic() - started
+
+    assert elapsed < 10, f"round did not honour its budget (took {elapsed:.1f}s)"
+    assert pid == "prop-b"
+    assert "regenerate" in msg.lower()
+
+
+def test_diagrams_are_generated_concurrently(monkeypatch):
+    """Sequential generation blew the round budget and dropped 2 of 4 diagrams."""
+    import asyncio as _a
+    concurrent = {"now": 0, "peak": 0}
+
+    async def tracked(*a, **kw):
+        concurrent["now"] += 1
+        concurrent["peak"] = max(concurrent["peak"], concurrent["now"])
+        await _a.sleep(0.15)
+        concurrent["now"] -= 1
+        raise RuntimeError("spec unavailable")  # we only care about scheduling
+
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": {
+            "client_name": "AWS", "diagram_count": "3",
+            "required_diagram_types": "solution/reference, deployment, security"}}
+
+    async def fake_insert_gp(c, **kw):
+        return "prop-c"
+
+    async def no_evidence(c, answers):
+        return ""
+
+    monkeypatch.setattr(app.diagram_engine, "generate_diagram_spec", tracked)
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "insert_generated_proposal", fake_insert_gp)
+    monkeypatch.setattr(app, "_architecture_evidence", no_evidence)
+
     asyncio.get_event_loop().run_until_complete(app.propose_architecture("s1", None))
-    # The budget must cut the round short rather than attempting all six.
-    assert len(attempted) < 6, f"budget ignored, attempted {len(attempted)}"
+    assert concurrent["peak"] > 1, "diagrams ran sequentially"
+    assert concurrent["peak"] <= app._ARCH_CONCURRENCY, "exceeded the concurrency limit"
 
 
 class _MonkeyPatch:

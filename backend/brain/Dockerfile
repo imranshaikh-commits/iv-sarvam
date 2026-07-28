@@ -12,7 +12,7 @@ RUN apt-get update \
         libreoffice-writer \
         fonts-dejavu-core \
         curl ca-certificates \
-        libcairo2 \
+        librsvg2-bin \
     && rm -rf /var/lib/apt/lists/*
 
 # D2 renders architecture diagrams with real nested containers (DMZ / secure

@@ -23,7 +23,7 @@ import re
 import time
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
-from typing import Literal
+from typing import Literal, Optional
 
 import httpx
 import instructor
@@ -513,6 +513,9 @@ def gap_fill_bucket(missing_ids: list[str], proposal_type: str | None = None) ->
 # bound the wait, keep whatever succeeded, tell the user what is missing.
 _DIAGRAM_SPEC_TIMEOUT_S = float(os.environ.get("SARVAM_DIAGRAM_SPEC_TIMEOUT_S", "75"))
 _ARCH_ROUND_BUDGET_S = float(os.environ.get("SARVAM_ARCH_ROUND_BUDGET_S", "240"))
+# Diagrams are independent, so they run concurrently. Bounded to stay polite to
+# OpenRouter rather than firing six structured calls at once.
+_ARCH_CONCURRENCY = int(os.environ.get("SARVAM_ARCH_CONCURRENCY", "3"))
 
 
 def _answers_summary(answers: dict, limit: int = 12000) -> str:
@@ -594,46 +597,36 @@ async def propose_architecture(
         if feedback:
             context += f"\n\nREVIEWER FEEDBACK TO ADDRESS:\n{feedback[:1500]}"
 
-        rendered: list[dict] = []
         planned = chat_state.plan_diagrams(answers)
         skipped: list[str] = []
-        round_started = time.monotonic()
+        sem = asyncio.Semaphore(_ARCH_CONCURRENCY)
 
-        for title, dtype in planned:
-            # Stop starting new diagrams once the round budget is spent — better
-            # to present two good diagrams promptly than to keep the user waiting.
-            if time.monotonic() - round_started > _ARCH_ROUND_BUDGET_S:
-                skipped.append(title)
-                log.warning("architecture round budget spent; skipping %s", title)
-                continue
-
-            # Title carries the client so diagrams read like IV's samples rather
-            # than anonymous boilerplate.
+        async def _one(title: str, dtype: str) -> Optional[dict]:
+            """Generate, persist and render a single diagram. None if it fails."""
             full_title = f"{client_name} — {title}"
             guidance = chat_state.deployment_guidance_for(title, dtype)
-            try:
-                spec = await asyncio.wait_for(
-                    diagram_engine.generate_diagram_spec(
-                        _structured_with_fallback,
-                        title=full_title,
-                        diagram_type=dtype,
-                        context_text=context,
-                        client_name=client_name,
-                        iam_vendor=iam_vendor,
-                        guidance=guidance,
-                        evidence_text=evidence,
-                    ),
-                    timeout=_DIAGRAM_SPEC_TIMEOUT_S,
-                )
-            except asyncio.TimeoutError:
-                skipped.append(title)
-                log.warning("diagram spec timed out after %ss for %s — skipping",
-                            _DIAGRAM_SPEC_TIMEOUT_S, title)
-                continue
-            except Exception as e:  # noqa: BLE001 — skip this diagram, keep the rest
-                skipped.append(title)
-                log.error("diagram spec generation failed for %s: %s", title, e)
-                continue
+            async with sem:
+                try:
+                    spec = await asyncio.wait_for(
+                        diagram_engine.generate_diagram_spec(
+                            _structured_with_fallback,
+                            title=full_title,
+                            diagram_type=dtype,
+                            context_text=context,
+                            client_name=client_name,
+                            iam_vendor=iam_vendor,
+                            guidance=guidance,
+                            evidence_text=evidence,
+                        ),
+                        timeout=_DIAGRAM_SPEC_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    log.warning("diagram spec timed out after %ss for %s — skipping",
+                                _DIAGRAM_SPEC_TIMEOUT_S, title)
+                    return None
+                except Exception as e:  # noqa: BLE001 — skip this one, keep the rest
+                    log.error("diagram spec generation failed for %s: %s", title, e)
+                    return None
 
             spec_json = spec.model_dump()
             row = await supabase_client.insert_diagram(
@@ -650,7 +643,8 @@ async def propose_architecture(
             url = None
             if row:
                 try:
-                    image = diagram_engine.render_spec(spec, fmt="png")
+                    image = await asyncio.to_thread(
+                        diagram_engine.render_spec, spec, "png")
                     if image:
                         path = await supabase_client.upload_diagram_render(
                             client, f"{row['id']}.png", image, content_type="image/png")
@@ -662,12 +656,28 @@ async def propose_architecture(
                 except Exception as e:  # noqa: BLE001 — never block the gate on a render
                     log.error("diagram render/upload failed (fail-soft) for %s: %s", title, e)
 
-            rendered.append({
+            return {
                 "title": spec.title,
                 "diagram_type": spec.diagram_type,
                 "text_representation": chat_state.build_spec_text_representation(spec_json),
                 "url": url,
-            })
+            }
+
+        # Run the diagrams CONCURRENTLY. Sequentially, four specs at up to 75s each
+        # blew straight through the round budget and two of four were dropped —
+        # the calls are independent, so there was never a reason to serialise them.
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*(_one(t, d) for t, d in planned)),
+                timeout=_ARCH_ROUND_BUDGET_S,
+            )
+        except asyncio.TimeoutError:
+            log.warning("architecture round exceeded %ss overall", _ARCH_ROUND_BUDGET_S)
+            results = []
+
+        rendered = [r for r in results if r]
+        got = {r["title"] for r in rendered}
+        skipped = [t for t, _ in planned if f"{client_name} — {t}" not in got]
 
         if not rendered:
             return ("I couldn't generate an architecture spec just now — the model didn't "

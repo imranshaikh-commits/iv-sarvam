@@ -300,11 +300,34 @@ def build_d2(spec: DiagramSpec) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _svg_to_png(svg: bytes, width: int) -> Optional[bytes]:
+    """Rasterise SVG via librsvg (`rsvg-convert`).
+
+    NOT cairosvg. D2 embeds its fonts as base64 WOFF inside an ``@font-face``
+    rule, which cairosvg does not support — it silently renders every glyph as a
+    filled black box, producing a diagram of unreadable bars. librsvg resolves
+    the embedded fonts correctly (measured: ~28% anti-aliased midtone pixels vs
+    cairosvg's ~2%, i.e. real text vs solid rectangles).
+    """
+    if not shutil.which("rsvg-convert"):
+        log.warning("rsvg-convert not found; cannot rasterise SVG (fail-soft).")
+        return None
+    try:
+        proc = subprocess.run(
+            ["rsvg-convert", "-w", str(width), "-b", "white", "-f", "png"],
+            input=svg, capture_output=True, timeout=30, check=True,
+        )
+        return proc.stdout or None
+    except (subprocess.SubprocessError, OSError) as e:  # noqa: BLE001
+        log.warning("rsvg-convert failed (%s); falling back to Graphviz.", e)
+        return None
+
+
 def _render_with_d2(spec: DiagramSpec, fmt: str, timeout: float) -> Optional[bytes]:
-    """Render via D2. SVG is native; PNG goes through cairosvg.
+    """Render via D2. SVG is native; PNG goes through librsvg.
 
     D2's own PNG export shells out to a headless browser, which we deliberately
-    avoid in the container — SVG plus cairosvg keeps the image path dependency-
+    avoid in the container — SVG plus librsvg keeps the image path dependency-
     light and offline.
     """
     source = build_d2(spec)
@@ -321,13 +344,7 @@ def _render_with_d2(spec: DiagramSpec, fmt: str, timeout: float) -> Optional[byt
 
     if fmt == "svg":
         return svg
-    try:
-        import cairosvg  # imported lazily so a missing lib never breaks import
-        return cairosvg.svg2png(bytestring=svg, output_width=D2_PNG_WIDTH,
-                                background_color="white")
-    except Exception as e:  # noqa: BLE001
-        log.warning("cairosvg PNG conversion failed (%s); falling back to Graphviz.", e)
-        return None
+    return _svg_to_png(svg, D2_PNG_WIDTH)
 
 
 D2_THEME = os.environ.get("SARVAM_D2_THEME", "4")       # 4 = neutral corporate

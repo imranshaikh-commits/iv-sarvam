@@ -310,7 +310,7 @@ def _render_with_d2(spec: DiagramSpec, fmt: str, timeout: float) -> Optional[byt
     source = build_d2(spec)
     try:
         proc = subprocess.run(
-            ["d2", "--theme", D2_THEME, "--layout", "dagre", "--pad", "40", "-", "-"],
+            ["d2", "--theme", D2_THEME, "--layout", D2_LAYOUT, "--pad", "40", "-", "-"],
             input=source.encode("utf-8"),
             capture_output=True, timeout=timeout, check=True,
         )
@@ -331,6 +331,13 @@ def _render_with_d2(spec: DiagramSpec, fmt: str, timeout: float) -> Optional[byt
 
 
 D2_THEME = os.environ.get("SARVAM_D2_THEME", "4")       # 4 = neutral corporate
+# ELK (Eclipse Layout Kernel) over the default dagre: more mature, actively
+# maintained, and it produces clean orthogonal edge routing with far better
+# handling of nested containers — which is what zone-based IAM deployment
+# diagrams are. Both are bundled in the D2 binary and free (MPL-2.0); TALA is
+# Terrastruct's paid engine and is deliberately NOT used (commercial use needs a
+# licence, and unlicensed renders carry a watermark).
+D2_LAYOUT = os.environ.get("SARVAM_D2_LAYOUT", "elk")
 D2_PNG_WIDTH = int(os.environ.get("SARVAM_D2_PNG_WIDTH", "1800"))
 DIAGRAM_RENDERER = os.environ.get("SARVAM_DIAGRAM_RENDERER", "auto")  # auto|d2|graphviz
 

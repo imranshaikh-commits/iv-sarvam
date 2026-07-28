@@ -338,6 +338,12 @@ D2_THEME = os.environ.get("SARVAM_D2_THEME", "4")       # 4 = neutral corporate
 # Terrastruct's paid engine and is deliberately NOT used (commercial use needs a
 # licence, and unlicensed renders carry a watermark).
 D2_LAYOUT = os.environ.get("SARVAM_D2_LAYOUT", "elk")
+
+# Per-part prompt budgets for spec generation. Deliberately modest: the prompt
+# was only ever ~4k and the model still stalled, so size is not the bottleneck —
+# a bigger prompt would just cost more for no gain.
+_SPEC_CONTEXT_BUDGET = int(os.environ.get("SARVAM_SPEC_CONTEXT_BUDGET", "3500"))
+_SPEC_EVIDENCE_BUDGET = int(os.environ.get("SARVAM_SPEC_EVIDENCE_BUDGET", "1500"))
 D2_PNG_WIDTH = int(os.environ.get("SARVAM_D2_PNG_WIDTH", "1800"))
 DIAGRAM_RENDERER = os.environ.get("SARVAM_DIAGRAM_RENDERER", "auto")  # auto|d2|graphviz
 
@@ -465,18 +471,37 @@ async def generate_diagram_spec(
     context_text: str = "",
     client_name: str = "the client",
     iam_vendor: Optional[str] = None,
+    guidance: str = "",
+    evidence_text: str = "",
 ) -> DiagramSpec:
     """Ask the LLM for a DiagramSpec via the shared structured helper, then sanitize.
 
     Uses the task-mandated caps: max_tokens<=1500, frequency_penalty=0.2,
     max_retries=1. The model/fallback selection lives inside ``structured_fn``
     (app._structured_with_fallback) — this module does not pick models.
+
+    The prompt is assembled in PRIORITY ORDER with a per-part budget, because a
+    single blunt ``[:4000]`` slice silently destroyed the most important part:
+    callers appended per-diagram-type guidance to the end of ``context_text``,
+    and the slice cut it off, so a "deployment" diagram was never actually told
+    to show zones, load balancing or HA. Guidance now has its own parameter and
+    is never truncated; discovery answers come next; retrieved evidence is
+    trimmed last because it is the most replaceable input.
     """
     vendor_clause = f" using {iam_vendor}" if iam_vendor else ""
-    user_prompt = (
-        f"Design a '{diagram_type}' architecture diagram titled \"{title}\" for {client_name}"
-        f"{vendor_clause}.\n\nCONTEXT:\n{(context_text or '').strip()[:4000]}"
-    )
+    parts = [
+        f"Design a '{diagram_type}' architecture diagram titled \"{title}\" "
+        f"for {client_name}{vendor_clause}."
+    ]
+    if guidance.strip():
+        parts.append(f"\nWHAT THIS DIAGRAM MUST SHOW (follow this closely):\n{guidance.strip()}")
+    if context_text.strip():
+        parts.append(f"\nDISCOVERY ANSWERS FOR THIS ENGAGEMENT:\n"
+                     f"{context_text.strip()[:_SPEC_CONTEXT_BUDGET]}")
+    if evidence_text.strip():
+        parts.append(f"\nIV PAST-PROPOSAL EVIDENCE (mirror this house style):\n"
+                     f"{evidence_text.strip()[:_SPEC_EVIDENCE_BUDGET]}")
+    user_prompt = "\n".join(parts)
     spec: DiagramSpec = await structured_fn(
         DiagramSpec,
         messages=[

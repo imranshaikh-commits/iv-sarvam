@@ -334,3 +334,53 @@ def test_generate_proposal_zero_diagrams_default_path():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# --- prompt assembly regression ---------------------------------------------
+def test_guidance_survives_prompt_truncation():
+    """REGRESSION: guidance used to be appended to the END of context_text, which
+    a blunt [:4000] slice cut off entirely — so a 'deployment' diagram was never
+    actually told to show zones, load balancing or HA."""
+    import asyncio
+    captured = {}
+
+    async def fake_structured(model, messages=None, **kw):
+        captured["prompt"] = messages[-1]["content"]
+        return DiagramSpec.model_validate({
+            "diagram_type": "architecture", "title": "t",
+            "nodes": [{"id": "a", "label": "A"}], "edges": []})
+
+    asyncio.run(de.generate_diagram_spec(
+        fake_structured,
+        title="AWS - Deployment",
+        diagram_type="architecture",
+        context_text="network_zones: DMZ, application, data\n" + ("filler\n" * 2000),
+        client_name="AWS",
+        iam_vendor="PingIdentity",
+        guidance="Every node must sit in a named zone. Show regions and HA.",
+        evidence_text="evidence " * 2000,
+    ))
+    prompt = captured["prompt"]
+    assert "named zone" in prompt, "guidance was truncated away"
+    assert prompt.index("named zone") < prompt.index("network_zones"), \
+        "guidance must precede the answers so it always survives"
+    assert len(prompt) < 12000, f"prompt unexpectedly large: {len(prompt)}"
+
+
+def test_evidence_is_trimmed_before_answers():
+    """Evidence is the most replaceable input, so it gets the smallest budget."""
+    import asyncio
+    captured = {}
+
+    async def fake_structured(model, messages=None, **kw):
+        captured["prompt"] = messages[-1]["content"]
+        return DiagramSpec.model_validate({
+            "diagram_type": "architecture", "title": "t",
+            "nodes": [{"id": "a", "label": "A"}], "edges": []})
+
+    asyncio.run(de.generate_diagram_spec(
+        fake_structured, title="x", context_text="ANSWER_MARKER\n" + ("a\n" * 100),
+        guidance="g", evidence_text="EVIDENCE_MARKER " * 5000))
+    prompt = captured["prompt"]
+    assert "ANSWER_MARKER" in prompt
+    assert prompt.count("EVIDENCE_MARKER") < 5000

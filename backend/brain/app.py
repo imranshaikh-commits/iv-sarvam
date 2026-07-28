@@ -591,8 +591,6 @@ async def propose_architecture(
 
         evidence = await _architecture_evidence(client, answers)
         context = _answers_summary(answers)
-        if evidence:
-            context += f"\n\nIV PAST-PROPOSAL EVIDENCE (mirror this house style):\n{evidence}"
         if feedback:
             context += f"\n\nREVIEWER FEEDBACK TO ADDRESS:\n{feedback[:1500]}"
 
@@ -619,9 +617,11 @@ async def propose_architecture(
                         _structured_with_fallback,
                         title=full_title,
                         diagram_type=dtype,
-                        context_text=f"{context}\n\nWHAT THIS DIAGRAM MUST SHOW:\n{guidance}",
+                        context_text=context,
                         client_name=client_name,
                         iam_vendor=iam_vendor,
+                        guidance=guidance,
+                        evidence_text=evidence,
                     ),
                     timeout=_DIAGRAM_SPEC_TIMEOUT_S,
                 )

@@ -506,8 +506,14 @@ def gap_fill_bucket(missing_ids: list[str], proposal_type: str | None = None) ->
 # so a diagram actually appears without hand-calling the REST endpoints.
 
 
-def _answers_summary(answers: dict, limit: int = 2500) -> str:
-    """Flatten discovery answers into context text for spec generation."""
+def _answers_summary(answers: dict, limit: int = 12000) -> str:
+    """Flatten discovery answers into context text for spec generation.
+
+    The limit was 2500, which silently discarded ~30% of a full 22-area discovery
+    — and because truncation takes the tail, the fields lost were exactly the
+    infrastructure ones (network zones, regions, environments, monitoring). That
+    is why the first generated deployment diagram had no DMZ and no zones.
+    """
     parts = []
     for k, v in (answers or {}).items():
         if k.startswith("_raw_") or v in (None, "", []):
@@ -583,12 +589,16 @@ async def propose_architecture(
 
         rendered: list[dict] = []
         for title, dtype in chat_state.plan_diagrams(answers):
+            # Title carries the client so diagrams read like IV's samples rather
+            # than anonymous boilerplate.
+            full_title = f"{client_name} — {title}"
+            guidance = chat_state.deployment_guidance_for(title, dtype)
             try:
                 spec = await diagram_engine.generate_diagram_spec(
                     _structured_with_fallback,
-                    title=title,
+                    title=full_title,
                     diagram_type=dtype,
-                    context_text=context,
+                    context_text=f"{context}\n\nWHAT THIS DIAGRAM MUST SHOW:\n{guidance}",
                     client_name=client_name,
                     iam_vendor=iam_vendor,
                 )

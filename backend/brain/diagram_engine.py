@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 import shutil
+import os
+import re
 import subprocess
 from typing import Awaitable, Callable, Literal, Optional
 
@@ -238,20 +240,126 @@ def dot_available() -> bool:
     return shutil.which("dot") is not None
 
 
+def d2_available() -> bool:
+    """True when the `d2` binary is on PATH."""
+    return shutil.which("d2") is not None
+
+
+def _d2_id(raw: str) -> str:
+    """Sanitise an id for D2 (no dots — they mean nesting)."""
+    return re.sub(r"[^A-Za-z0-9_]", "_", raw or "n") or "n"
+
+
+def _d2_label(raw: str) -> str:
+    """D2 labels are quoted; escape the quote character."""
+    return (raw or "").replace('"', "'").strip()
+
+
+def build_d2(spec: DiagramSpec) -> str:
+    """Render a DiagramSpec as D2 source.
+
+    D2 is used in preference to Graphviz because it draws ``group`` as a real
+    nested container — which is exactly what an IAM deployment diagram needs
+    (DMZ / secure zone / data zone). Graphviz clusters exist but lay out poorly
+    and look markedly less like IV's hand-built house diagrams.
+    """
+    lines: list[str] = ["direction: down", ""]
+
+    # Group nodes into containers; ungrouped nodes sit at the top level.
+    grouped: dict[str, list[DiagramNode]] = {}
+    loose: list[DiagramNode] = []
+    for n in spec.nodes:
+        if n.group:
+            grouped.setdefault(n.group, []).append(n)
+        else:
+            loose.append(n)
+
+    # Map node id -> fully qualified D2 path so edges resolve inside containers.
+    path: dict[str, str] = {}
+    for group, members in grouped.items():
+        gid = _d2_id(group)
+        lines.append(f'{gid}: "{_d2_label(group)}" {{')
+        for n in members:
+            nid = _d2_id(n.id)
+            path[n.id] = f"{gid}.{nid}"
+            lines.append(f'  {nid}: "{_d2_label(n.label)}"')
+        lines.append("}")
+    for n in loose:
+        nid = _d2_id(n.id)
+        path[n.id] = nid
+        lines.append(f'{nid}: "{_d2_label(n.label)}"')
+
+    lines.append("")
+    for e in spec.edges:
+        src, tgt = path.get(e.source), path.get(e.target)
+        if not src or not tgt:
+            continue
+        label = f': "{_d2_label(e.label)}"' if e.label else ""
+        lines.append(f"{src} -> {tgt}{label}")
+
+    return "\n".join(lines) + "\n"
+
+
+def _render_with_d2(spec: DiagramSpec, fmt: str, timeout: float) -> Optional[bytes]:
+    """Render via D2. SVG is native; PNG goes through cairosvg.
+
+    D2's own PNG export shells out to a headless browser, which we deliberately
+    avoid in the container — SVG plus cairosvg keeps the image path dependency-
+    light and offline.
+    """
+    source = build_d2(spec)
+    try:
+        proc = subprocess.run(
+            ["d2", "--theme", D2_THEME, "--layout", "dagre", "--pad", "40", "-", "-"],
+            input=source.encode("utf-8"),
+            capture_output=True, timeout=timeout, check=True,
+        )
+        svg = proc.stdout
+    except (subprocess.SubprocessError, OSError) as e:  # noqa: BLE001
+        log.warning("D2 render failed (%s); falling back to Graphviz.", e)
+        return None
+
+    if fmt == "svg":
+        return svg
+    try:
+        import cairosvg  # imported lazily so a missing lib never breaks import
+        return cairosvg.svg2png(bytestring=svg, output_width=D2_PNG_WIDTH,
+                                background_color="white")
+    except Exception as e:  # noqa: BLE001
+        log.warning("cairosvg PNG conversion failed (%s); falling back to Graphviz.", e)
+        return None
+
+
+D2_THEME = os.environ.get("SARVAM_D2_THEME", "4")       # 4 = neutral corporate
+D2_PNG_WIDTH = int(os.environ.get("SARVAM_D2_PNG_WIDTH", "1800"))
+DIAGRAM_RENDERER = os.environ.get("SARVAM_DIAGRAM_RENDERER", "auto")  # auto|d2|graphviz
+
+
 def render_spec(
     spec: DiagramSpec,
     fmt: Literal["png", "svg"] = "png",
-    timeout: float = 15.0,
+    timeout: float = 25.0,
+    renderer: Optional[str] = None,
 ) -> Optional[bytes]:
-    """Render a DiagramSpec to image bytes via the local `dot` binary.
+    """Render a DiagramSpec to image bytes.
 
-    Fail-soft: returns None (and logs) when `dot` is unavailable or the render
-    fails, so proposal generation is NEVER broken by a missing/broken renderer.
+    Prefers D2 (real nested containers, cleaner routing) and falls back to the
+    local `dot` binary. Fail-soft throughout: returns None when nothing can
+    render, so proposal generation is NEVER broken by a missing renderer.
     """
     if fmt not in ("png", "svg"):
         fmt = "png"
+    choice = (renderer or DIAGRAM_RENDERER or "auto").lower()
+
+    if choice in ("auto", "d2") and d2_available():
+        out = _render_with_d2(spec, fmt, timeout)
+        if out:
+            return out
+        if choice == "d2":
+            return None  # explicitly requested d2 and it failed
+
     if not dot_available():
-        log.warning("Graphviz `dot` not found on PATH; skipping diagram render (fail-soft).")
+        log.warning("Neither `d2` nor Graphviz `dot` found on PATH; skipping render.")
         return None
     dot_source = build_dot(spec)
     try:

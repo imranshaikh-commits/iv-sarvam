@@ -403,8 +403,79 @@ DIAGRAM_TYPE_MAP: dict[str, str] = {
 }
 
 # Cap how many diagrams one review round generates — each is an LLM call plus a
-# render, and the reviewer only needs enough to judge the architecture.
-MAX_DIAGRAMS_PER_ROUND = 3
+# render. The intake asks how many the client wants (``diagram_count``), so that
+# answer is honoured up to this ceiling. It used to be a hard 3, which silently
+# dropped the 4th requested diagram (a 'security' diagram went missing in a live
+# run without ever telling the user).
+MAX_DIAGRAMS_PER_ROUND = 6
+DEFAULT_DIAGRAMS_PER_ROUND = 3
+
+
+# What each diagram type must actually SHOW. Without this the model produced a
+# "deployment" diagram that was just the logical flow again — no zones, no load
+# balancer, no HA — which is the one thing a deployment diagram exists to convey.
+DIAGRAM_TYPE_GUIDANCE: dict[str, str] = {
+    "architecture": (
+        "Show the LOGICAL solution: identity sources, the IAM platform components broken "
+        "out by product role (federation / lifecycle / directory / MFA), target "
+        "application groups, and monitoring. Group nodes into logical layers."
+    ),
+    "network": (
+        "Show INFRASTRUCTURE and TRUST BOUNDARIES, not logical flow. Every node must sit "
+        "in a named zone (e.g. DMZ, application/secure zone, data zone, management). "
+        "Include the edge protections that were specified — WAF, load balancer/VIP, "
+        "reverse proxy — plus TLS/HSM where stated. Show data centres or cloud regions "
+        "as separate zones and draw the replication/HA links between them."
+    ),
+    "flow": (
+        "Show an ORDERED process: the trigger event first, then each step in sequence, "
+        "ending in the resulting state. Label every edge with the action or protocol."
+    ),
+    "sequence": (
+        "Show the interaction ORDER between the user, the IdP, MFA and the target "
+        "application. Label edges with the protocol or step (redirect, assertion, "
+        "challenge, token)."
+    ),
+    "component": (
+        "Show the integration inventory: each connected system, the connector or protocol "
+        "used, and the direction of data flow. Group by system category."
+    ),
+    "data_flow": (
+        "Show where identity DATA originates, where it is stored, where it is replicated, "
+        "and where it is retained or exported. Label edges with what data moves."
+    ),
+}
+
+
+def deployment_guidance_for(title: str, engine_type: str) -> str:
+    """Extra spec guidance, refined by the requested title.
+
+    A diagram the user called 'deployment' must show topology even though it maps
+    to the generic 'architecture' engine type.
+    """
+    base = DIAGRAM_TYPE_GUIDANCE.get(engine_type, "")
+    low = (title or "").lower()
+    if "deployment" in low or "production" in low or "tenant" in low:
+        base = DIAGRAM_TYPE_GUIDANCE["network"] + " " + (
+            "This is a DEPLOYMENT diagram: it must differ from the logical solution "
+            "diagram by showing regions/data centres, clusters and node counts, load "
+            "balancing and the active-active or DR relationship between sites."
+        )
+    if "security" in low:
+        base = DIAGRAM_TYPE_GUIDANCE["network"] + " " + (
+            "This is a SECURITY diagram: emphasise trust boundaries, encryption in "
+            "transit, key storage, WAF placement, audit/SIEM paths and privileged access."
+        )
+    return base
+
+
+def _requested_count(answers: dict) -> int:
+    """How many diagrams the client asked for, clamped to a sane ceiling."""
+    raw = str(answers.get("diagram_count") or "").strip()
+    m = re.search(r"\d+", raw)
+    if not m:
+        return DEFAULT_DIAGRAMS_PER_ROUND
+    return max(1, min(int(m.group()), MAX_DIAGRAMS_PER_ROUND))
 
 
 def plan_diagrams(answers: dict) -> list[tuple[str, str]]:
@@ -437,7 +508,7 @@ def plan_diagrams(answers: dict) -> list[tuple[str, str]]:
         if pair not in seen:
             seen.add(pair)
             planned.append(pair)
-        if len(planned) >= MAX_DIAGRAMS_PER_ROUND:
+        if len(planned) >= _requested_count(answers):
             break
 
     if not planned:

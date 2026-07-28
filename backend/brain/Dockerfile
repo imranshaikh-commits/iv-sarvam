@@ -11,7 +11,25 @@ RUN apt-get update \
         graphviz \
         libreoffice-writer \
         fonts-dejavu-core \
+        curl ca-certificates \
+        libcairo2 \
     && rm -rf /var/lib/apt/lists/*
+
+# D2 renders architecture diagrams with real nested containers (DMZ / secure
+# zone / data zone), which Graphviz lays out poorly. Graphviz stays installed as
+# the fallback, so a failed D2 fetch never breaks diagram rendering.
+ARG D2_VERSION=0.6.9
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in amd64) d2arch=amd64 ;; arm64) d2arch=arm64 ;; *) d2arch="" ;; esac; \
+    if [ -n "$d2arch" ]; then \
+        curl -fsSL "https://github.com/terrastruct/d2/releases/download/v${D2_VERSION}/d2-v${D2_VERSION}-linux-${d2arch}.tar.gz" \
+            -o /tmp/d2.tgz \
+        && tar -xzf /tmp/d2.tgz -C /tmp \
+        && install -m 0755 "/tmp/d2-v${D2_VERSION}/bin/d2" /usr/local/bin/d2 \
+        && rm -rf /tmp/d2.tgz "/tmp/d2-v${D2_VERSION}" \
+        && d2 --version; \
+    else echo "no d2 build for $arch - Graphviz fallback only"; fi
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py proposal_templates.py document_engine.py intake_template.py supabase_client.py branding.py diagram_engine.py export_engine.py chat_state.py .

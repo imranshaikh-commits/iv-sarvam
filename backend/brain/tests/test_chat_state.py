@@ -350,10 +350,11 @@ def test_plan_diagrams_maps_iv_vocabulary_to_engine_types():
 
 
 def test_plan_diagrams_accepts_list_and_caps_count():
+    # No diagram_count answered -> the default applies, not the hard ceiling.
     planned = cs.plan_diagrams({"required_diagram_types": [
         "solution/reference", "deployment", "security", "auth/customer journey",
         "migration phases"]})
-    assert len(planned) == cs.MAX_DIAGRAMS_PER_ROUND
+    assert len(planned) == cs.DEFAULT_DIAGRAMS_PER_ROUND
 
 
 def test_plan_diagrams_always_returns_something_reviewable():
@@ -404,6 +405,55 @@ def test_architecture_message_survives_missing_render():
          "text_representation": "- **B**", "url": None}])
     assert "render unavailable" in msg.lower()
     assert "- **B**" in msg
+
+
+# --- diagram planning regressions (from live output review) ------------------
+def test_requested_diagram_count_is_honoured():
+    """REGRESSION: a 4th requested diagram ('security') was silently dropped by a
+    hard cap of 3, so TLS/HSM/WAF had nowhere to appear."""
+    planned = cs.plan_diagrams({
+        "required_diagram_types": "solution/reference, deployment, integration/joiner flow, security",
+        "diagram_count": "4"})
+    assert len(planned) == 4
+    assert any("security" in t.lower() for t, _ in planned)
+
+
+def test_diagram_count_is_clamped_to_a_ceiling():
+    planned = cs.plan_diagrams({
+        "required_diagram_types": ", ".join(["solution/reference", "deployment", "security",
+                                             "auth/customer journey", "migration phases",
+                                             "integration", "user journey", "network"]),
+        "diagram_count": "99"})
+    assert len(planned) <= cs.MAX_DIAGRAMS_PER_ROUND
+
+
+def test_missing_diagram_count_uses_the_default():
+    planned = cs.plan_diagrams({
+        "required_diagram_types": "solution/reference, deployment, security, network"})
+    assert len(planned) == cs.DEFAULT_DIAGRAMS_PER_ROUND
+
+
+def test_deployment_guidance_demands_topology_not_logical_flow():
+    """REGRESSION: the generated deployment diagram just repeated the solution
+    diagram — no zones, no load balancer, no HA."""
+    g = cs.deployment_guidance_for("Deployment", "architecture").lower()
+    assert "zone" in g
+    assert "region" in g or "data centre" in g
+    assert "load balancer" in g or "balancing" in g
+    # And it must differ from the plain logical-architecture guidance.
+    assert g != cs.DIAGRAM_TYPE_GUIDANCE["architecture"].lower()
+
+
+def test_security_guidance_covers_the_specified_controls():
+    g = cs.deployment_guidance_for("Security", "network").lower()
+    for token in ("trust boundar", "waf", "key storage", "audit"):
+        assert token in g, token
+
+
+def test_every_engine_type_has_guidance():
+    from diagram_engine import DIAGRAM_TYPES
+    for t in DIAGRAM_TYPES:
+        assert cs.DIAGRAM_TYPE_GUIDANCE.get(t), t
 
 
 if __name__ == "__main__":

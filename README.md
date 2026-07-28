@@ -2,7 +2,7 @@
 
 **Sarvam** (सर्वम्, Sanskrit for *"all, everything, the whole"*) is Inspirit Vision's in-house Proposal Architect — a conversational, retrieval-grounded AI that turns a new RFP into a structured, client-ready proposal in hours instead of days, by drafting from IV's 100+ historical proposal bank rather than from a blank page.
 
-![Status](https://img.shields.io/badge/status-Phase%205%20~95%25%20%7C%20live--validated-blue)
+![Status](https://img.shields.io/badge/status-Phase%205%20~98%25%20%7C%20chat%20E2E%20live-blue)
 ![Brain](https://img.shields.io/badge/brain-FastAPI%20(Python)-231154)
 ![LLM](https://img.shields.io/badge/LLM-GLM%205.2%20%2B%20Qwen3%20fallback-E85A24)
 ![Retrieval](https://img.shields.io/badge/retrieval-Supabase%20pgvector-3ECF8E)
@@ -15,10 +15,10 @@
 
 ## Progress Dashboard
 
-> Quick-glance project status. Last updated: 2026-07-17 (IST).
+> Quick-glance project status. Last updated: 2026-07-28 (IST).
 
-**Overall completion: ~80%**
-`████████████████░░░░`
+**Overall completion: ~85%**
+`█████████████████░░░`
 
 ### Phase completion (6 phases / 12 sprints)
 
@@ -28,19 +28,29 @@
 | 1 — Data foundation (ingest + Supabase + embeddings) | Done | `████████████████████` 100% |
 | 2 — Agent backend (EC2 + Docker + OpenRouter) | Done | `████████████████████` 100% |
 | 3 — Retrieval + drafting | Done | `████████████████████` 100% |
-| 4 — Conversational frontend + auth | Partial | `█████████░░░░░░░░░░░` 45% |
-| 5 — Architecture approval gate + compression/export | In progress | `███████████████████░░` 95% |
+| 4 — Conversational frontend + auth | Partial | `██████████████░░░░░░` 70% — chat E2E works (router → interview → architecture gate → drafting); auth/multi-tenancy still missing |
+| 5 — Architecture approval gate + compression/export | Done (gate enforced in chat) | `████████████████████` 98% |
 | 6 — Pilot + hardening + rollout | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
 
 ### Known gaps before pilot
 
-- **`MAX_DRAFT_TOKENS` raised (1500 → 3500)** — merged `6da140c`; rebuild the brain to deploy. Anti-spiral guardrails (frequency_penalty, max_retries, truncation guard) preserved. (NoneType bug FIXED — merged `6290d23`.)
-- **Client-logo sourcing** (web/image search + approval-gated embedding) — deferred from Pass 5.
+- **Corpus coverage ~11%** — 11 of 100+ bank proposals ingested (1,413 chunks). Grounding quality and draft depth are bounded by this; bulk ingestion from the Drive bank is the highest-leverage open item.
+- **Supabase Auth / Worker / multi-tenancy** (Phase 4) — not wired (RLS + disabled sign-ups is the interim gate). `approved_by` on diagrams stays NULL until user identity exists.
+- **Client-logo sourcing** (approval-gated embedding) — deferred from Pass 5.
 - **Durable diagram spec-template store** (per vendor + diagram type) — deferred from Pass 4.
-- **`approved_by` on diagrams is NULL** — blocked on Phase 4 auth (no user identity yet).
-- **OWUI in-app logo** — code merged (`3501254`) but the `open-webui` container has not been rebuilt on the host; rebuild with `docker compose up -d --build open-webui`.
-- **Supabase Auth / Worker / multi-tenancy** (Phase 4) — not wired (RLS + disabled sign-ups is the interim gate).
-- **Phase 6 pilot** — not started.
+- **Hybrid search** (BM25 + RRF) — retrieval is pure vector similarity for now.
+- **Phase 6 pilot** — not started; no scored end-to-end runs against historical RFPs yet.
+
+### Recently shipped (2026-07-27 → 28)
+
+Eight commits (`63170cd` → `4c7a1fb`) took the chat frontend from a dead end to a working end-to-end flow:
+
+- **Chat state machine** — the OWUI chat previously returned the same interview opener forever (the gate assumed an "OWUI pipe" that never existed). Now: intent router (new proposal / search vault / discuss) → 22-area discovery → **architecture approval gate** → drafting, with state carried in invisible zero-width markers inside assistant replies.
+- **V1 approval gate ENFORCED** — "generate the proposal" is refused until the architecture is approved in chat. Approve / reject-with-feedback / regenerate all drive the Pass 4 diagram state machine.
+- **Deterministic answer parser** — labelled (`field: value`) and bare positional answers map to intake fields with zero LLM calls; the model is only a fallback for prose. Gap-fill loop recovers missing required fields instead of discarding them.
+- **Diagram renderer switched to D2** (Graphviz retained as automatic fallback) — real nested zone containers, per-diagram-type guidance (deployment must show regions/LB/HA; security must show trust boundaries), `diagram_count` honoured, client-named titles, and a 2500-char context truncation bug fixed (it was silently dropping ~30% of discovery).
+- **Robustness** — 25s extraction budget (a wedged OpenRouter call used to hang the chat ~10 min), SSE heartbeats during long work, OWUI title/tag task-prompt guard, `GET /v1/keepalive` touching Postgres daily via host cron (the free-tier project idle-paused once at exactly 7 days).
+- **`deep` depth tier** — 6 subsection facets (opt-in), `full` unchanged. Token cap 1500 → 3500 and the NoneType fix are deployed; full-depth re-measured at 42pp (vs 31pp bug-capped baseline).
 
 ---
 
@@ -74,7 +84,7 @@ Sarvam is that system. He is **not a chatbot and not a search engine** — he is
 
 - **He will not invent client references or metrics.** If he does not know something, he says so, and inserts an `[SME REVIEW]` marker.
 - **He will not fill in pricing.** Commercials are always a human call. He sets up the table; the team fills in the numbers.
-- **V1 contract:** he will not start drafting until the architecture is approved. This is a hard gate — no shortcuts. (The diagram framework is built and live; the hard pre-draft gate is not yet enforced — see [Known gaps](#known-gaps--not-pilot-ready-yet).)
+- **V1 contract:** he will not start drafting until the architecture is approved. This is a hard gate — no shortcuts — and it is **enforced in the chat flow**: a drafting request before approval is refused.
 - **He will not be sycophantic.** No "Great question!", no exclamation marks, no celebration emojis. He talks like a senior consultant.
 
 ---
@@ -84,14 +94,14 @@ Sarvam is that system. He is **not a chatbot and not a search engine** — he is
 Honest about what is not done, so no one mistakes the current state for production-ready:
 
 - **Auth and multi-tenancy:** Supabase Auth and the Worker JWT gate are not wired. The brain is protected by network isolation (internal-only) and Open WebUI's disabled sign-ups, not by per-user identity. User identity is not yet propagated end-to-end, so generated drafts are not yet attributed to individual users (`approved_by` on diagrams is NULL). Production auth hardening is a pending milestone, not abandoned.
-- **Hard pre-draft approval gate:** the diagram framework (Pass 4) is built and live — diagrams can be created, approved, rendered, and embedded — but drafting is **not hard-blocked** on an approved architecture. A proposal generates with or without an approved diagram. The V1 "no drafting until architecture is approved" contract is not yet enforced.
-- **Per-call token cap (raised):** `MAX_DRAFT_TOKENS` raised 1500 → 3500 (merged `6da140c`); rebuild the brain to deploy. The cap bounds how long any single subsection can get; the 3-subsection structure + this cap set full-depth length. Measured: `full` produced 31 pages while the NoneType bug was active — re-measure after deploying both fixes. Anti-spiral guardrails (frequency_penalty, max_retries, truncation guard) preserved. (NoneType bug FIXED — merged `6290d23`.)
+- **Corpus coverage:** only 11 of the 100+ bank proposals are ingested (1,413 chunks). Every downstream quality metric — grounding density, citation coverage, how much genuinely distinct content exists per section — is bounded by this. Bulk ingestion is the highest-leverage open item.
+- **Proposal length:** `full` depth measures 42pp after the NoneType fix + 3500-token cap (both deployed); the opt-in `deep` tier (6 subsection facets) is merged but not yet re-measured. 100+pp remains a target, pending a decision on whether length is the right proxy for "boss-ready".
 - **Client-logo sourcing:** approval-gated embedding of a client logo sourced online is deferred from Pass 5; the placeholder box is used instead.
 - **Durable diagram spec-template store:** reusable DiagramSpec templates keyed by vendor and diagram type are deferred from Pass 4 (the engine regenerates from scratch for now).
 - **External research and fact-checking:** Exa/Firecrawl external research and the secondary-LLM fact-checker are deferred to post-pilot.
 - **Hybrid search:** retrieval is pure vector similarity; BM25 + reciprocal rank fusion is deferred.
+- **Diagram visual parity:** D2 output is accurate and legible but visibly machine-generated next to IV's hand-composed sample decks (STC, NWC). Auto-layout cannot close that gap. Reaching house-style parity needs either editable export (`.drawio`/`.pptx`) for a human to finish, or a designer-built SVG template library for the ~4 recurring diagram types — a design investment, not an engineering one. Deferred until pilot feedback says whether it matters.
 - **Pilot validation:** no end-to-end runs against historical RFPs with the scoring rubric yet.
-- **OWUI branding deploy:** the in-app logo code is merged but the `open-webui` container has not been rebuilt on the host.
 
 ---
 
@@ -171,7 +181,7 @@ sequenceDiagram
 | Embeddings | **text-embedding-3-small** (1536-dim) | Cheap, well-understood, good enough for vendor/section-typed retrieval. Negligible one-time cost to embed the whole bank |
 | Retrieval | **Supabase pgvector** + `match_proposal_chunks` RPC | Vector similarity with section-type awareness and metadata filters, in the same database as everything else. No separate vector store to operate |
 | Document output | **python-docx + Jinja2** | Native DOCX with real headings, tables, a refreshable TOC field, and embedded images. Templates are version-controlled Jinja2, not a binary .dotx |
-| Diagram rendering | **DiagramSpec JSON → local Graphviz** | GLM emits a constrained JSON spec; a local Graphviz renderer produces deterministic PNG/SVG. No image-generation model (unreliable at precise schematic labels), no external rendering API (would leak client architecture) |
+| Diagram rendering | **DiagramSpec JSON → D2 (SVG → cairosvg PNG), Graphviz fallback** | GLM emits a constrained JSON spec; D2 renders it with real nested zone containers (DMZ / secure zone / data zone) which Graphviz lays out poorly. SVG is native (no headless browser); Graphviz stays installed as an automatic fallback so a missing `d2` binary degrades instead of breaking. No image-generation model (unreliable at precise labels), no external rendering API (would leak client architecture) |
 | Chat frontend | **Open WebUI** | Open-source, OpenAI-compatible, supports a persona system prompt and a single locked model. Cheaper and more controllable than building a custom chat UI |
 | Hosting | **AWS EC2 (ARM, Mumbai)** | Single-purpose box, static IP, close to the team. Fixed low monthly cost; covered by AWS credits during the MVP window |
 | Data store | **Supabase (Postgres + pgvector + RLS)** | Auth, relational data, vector search, and storage in one free-tier service. RLS at the database layer is the security backbone |
@@ -197,7 +207,7 @@ Sarvam grounds every draft in what IV has actually delivered, never in model mem
 
 ## Conversational Workflow
 
-Sarvam follows a four-stage conversation, with a hard human gate before any drafting begins (the diagram framework is built and live; the hard pre-draft gate is not yet enforced — see [Known gaps](#known-gaps--not-pilot-ready-yet)).
+Sarvam follows a four-stage conversation, with a hard human gate before any drafting begins — **enforced end-to-end in the chat flow** as of 2026-07-27. A new thread opens with an intent router (start a new proposal / search past proposals / discuss); conversation state travels in invisible markers inside assistant replies, so the stateless OpenAI-compatible protocol needs no OWUI plugin.
 
 ```mermaid
 flowchart LR
@@ -212,7 +222,7 @@ flowchart LR
 A 24-bucket structured interview collects everything needed for an accurate draft: client and engagement details, scale and volumetrics, scope, **architecture inputs (deployment model, required diagram types and count, hardware sizing, HA/DR, security architecture)**, migration, integrations (HRMS, AD/Exchange, IdP/SSO, applications), compliance and regulatory specifics, timeline, MSS-specific SLA/commercials (conditional), submission constraints, audience and win-themes, current-state systems, NFRs, delivery model, post-go-live, and reuse controls. Every answer persists to the `intake_sessions` table.
 
 ### Stage 2 — Architecture Proposal and Human-in-Loop Gate
-Sarvam retrieves the closest-matching past architecture, generates a `DiagramSpec`, renders it for preview, and presents it. The user **approves or rejects with comments**; on rejection he regenerates incorporating the feedback. Approved diagrams are persisted and embedded in the DOCX. **V1 contract:** drafting will be hard-gated on an approved architecture; the diagram framework is built and live, but the hard pre-draft gate and the reusable template library are not yet enforced/built (see [Known gaps](#known-gaps--not-pilot-ready-yet)).
+Sarvam retrieves the closest-matching past architecture, generates a `DiagramSpec`, renders it for preview, and presents it. The user **approves or rejects with comments**; on rejection he regenerates incorporating the feedback. Approved diagrams are persisted and embedded in the DOCX. **V1 contract (enforced):** drafting is hard-gated on an approved architecture — a "generate the proposal" request before approval is refused in chat. The reusable spec-template library remains deferred.
 
 ### Stage 3 — Full Proposal Assembly
 Static sections (Company Profile, Why-Vendor, Methodology) are pulled near-verbatim from the RAG bank. Dynamic sections (Executive Summary, Sizing, RACI, Timeline, Solution Architecture) are generated fresh, grounded in retrieved chunks. A compliance matrix is classified per requirement. The document is assembled into a branded DOCX with a refreshable TOC, citation appendix, and SME-review markers.
@@ -238,7 +248,7 @@ The engine is what turns a chat thread into a deliverable document.
 ### Built now (continued — enhancement passes)
 
 - **Long-form depth (Pass 3, done):** `brief` / `standard` / `full` tiers control the number of subsections drafted (Overview / Detailed Design / Considerations & Dependencies) and the retrieval fan-out — the path to long output. `full` adds RACI, timeline, sizing, integration inventory, and risk appendices as real DOCX tables.
-- **Diagram framework (Pass 4, done + live-validated):** GLM emits a constrained `DiagramSpec` JSON → local Graphviz renders PNG → user approves → only approved diagrams are embedded. Approval state machine (draft → needs_review → approved/rejected).
+- **Diagram framework (Pass 4, done + live-validated):** GLM emits a constrained `DiagramSpec` JSON → D2 renders SVG (cairosvg → PNG), Graphviz fallback → user approves **in chat** → only approved diagrams are embedded. Approval state machine (draft → needs_review → approved/rejected), now driven from the conversation.
 - **Export pipeline (Round 3, done + live-validated):** lite (<5 MB) DOCX compression via Pillow, PDF export via LibreOffice headless, and delivery to storage signed URLs (`generated-drafts` bucket, 1-hour TTL). Opt-in via `lite` / `include_pdf` / `return_signed_urls` on `/v1/generate-proposal`.
 
 ### Deferred
@@ -262,7 +272,8 @@ flowchart LR
 - **Primary:** GLM 5.2. **Fallback:** Qwen3 235B. Both are hardcoded constants — there is no model chooser in the UI; Open WebUI exposes a single model, "Sarvam Architect".
 - Fallback applies at all five LLM call sites (chat drafting, section drafting, compliance classification, open-router raw drafting, and diagram-spec generation).
 - **Why no DeepSeek:** it spiraled on ambiguous compliance requirements, generating hundreds of thousands of characters and multi-minute hangs. Removed in favor of GLM/Qwen with per-call token caps, frequency penalty, and truncation guards.
-- **Why no image-generation model for diagrams:** image-gen models mangle precise text labels and break schematic consistency, and editing labels onto a raster diagram is unreliable. Graphviz renders the DiagramSpec deterministically — no model failure point — and the only model involved (GLM spec generation) already has the Qwen fallback.
+- **Why no image-generation model for diagrams:** image-gen models mangle precise text labels and break schematic consistency, and editing labels onto a raster diagram is unreliable. D2 (with Graphviz fallback) renders the DiagramSpec deterministically — no model failure point — and the only model involved (GLM spec generation) already has the Qwen fallback.
+- **Why D2 over Graphviz:** Graphviz optimises for minimal edge crossings, not legibility, and its clusters lay out poorly — the first live deployment diagram came out as a repeat of the logical flow with no zones. D2 draws `group` as a real nested container, which is what DMZ / secure zone / data zone diagrams need. Both are auto-layout, so neither reproduces IV's hand-composed sample decks; see [Known gaps](#known-gaps--not-pilot-ready-yet).
 - Embeddings use `text-embedding-3-small` (unchanged); OpenRouter's image API remains available as an optional path for non-diagram visuals later, but is not used for architecture diagrams.
 
 ---
@@ -274,17 +285,18 @@ The brain exposes an OpenAI-compatible interface plus proposal-production endpoi
 | Method | Endpoint | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness + active primary/fallback model |
+| GET | `/v1/keepalive` | Touches Postgres (prevents Supabase free-tier idle pause); cron-curled daily on the host |
 | GET | `/v1/models` | Lists the single `sarvam-architect` model |
-| POST | `/v1/chat/completions` | Grounded RAG chat (streaming) |
+| POST | `/v1/chat/completions` | Conversation state machine: intent router → discovery interview → architecture approval gate → drafting; vault mode = grounded RAG chat (streaming, SSE heartbeats) |
 | POST | `/v1/compliance-matrix` | Classify RFP requirements against retrieved evidence |
 | GET | `/v1/intake-template` | Return the 24-bucket discovery interview (filters by proposal type) |
 | POST | `/v1/intake-sessions` | Create a discovery session |
 | PATCH | `/v1/intake-sessions/{id}` | Merge partial answers |
 | POST | `/v1/intake-sessions/{id}/complete` | Validate required answers, mark complete |
-| POST | `/v1/generate-proposal` | Generate a branded DOCX; accepts `intake_session_id`, `generated_proposal_id` (embeds approved diagrams), `proposal_depth` (`brief`/`standard`/`full`), and export flags `lite` / `include_pdf` / `return_signed_urls` |
+| POST | `/v1/generate-proposal` | Generate a branded DOCX; accepts `intake_session_id`, `generated_proposal_id` (embeds approved diagrams), `proposal_depth` (`brief`/`standard`/`full`/`deep`), and export flags `lite` / `include_pdf` / `return_signed_urls` |
 | POST | `/v1/proposals/{id}/diagrams` | Create a diagram spec (LLM-generated `DiagramSpec`, persisted as draft) |
 | GET | `/v1/proposals/{id}/diagrams` | List diagrams for a proposal |
-| PATCH | `/v1/diagrams/{id}` | Advance diagram status (draft → needs_review → approved/rejected; approved renders via Graphviz + uploads) |
+| PATCH | `/v1/diagrams/{id}` | Advance diagram status (draft → needs_review → approved/rejected; approved renders via D2/Graphviz + uploads) |
 | GET | `/v1/diagrams/{id}` | Fetch a single diagram (status, spec, rendered path) |
 
 Persistence is fail-soft: if a Supabase write fails, the generated DOCX is still returned — generation never blocks on storage.
@@ -368,7 +380,7 @@ gantt
 | Pass 1 — intake sessions + persistence foundation | Done |
 | Pass 2 — DOCX branding (IV logo, navy/orange, header/footer, client-logo placeholder) | Done |
 | Pass 3 — long-form depth (depth tiers, multi-subsection, RACI/timeline/sizing/risk appendices) | Done |
-| Pass 4 — diagram framework (DiagramSpec → Graphviz → approval → embed approved only) | Done + live-validated |
+| Pass 4 — diagram framework (DiagramSpec → D2/Graphviz → approval → embed approved only) | Done + live-validated; approval gate now enforced in chat |
 | Pass 5 — Open WebUI interview gating (no session → discovery interview) | Done |
 | Export pipeline — lite <5 MB DOCX + PDF (LibreOffice) + signed URLs to storage | Done + live-validated |
 | OWUI in-app logo branding (favicon env + /app/build/static override) | Done (merged); open-webui container rebuild pending on host |
@@ -395,7 +407,7 @@ gantt
 | Agent runtime | Hermes Agent (Docker) | FastAPI brain | Avoided framework lock-in; a thin auditable service with version-controlled Python modules |
 | Hosting | Oracle Cloud Free Tier | AWS EC2 (ARM, Mumbai) | AWS credits available; Mumbai region closer to the team |
 | Frontend | Open WebUI on Cloudflare Pages + Worker auth proxy | Open WebUI directly on EC2 | Simpler single-box deployment for MVP; Cloudflare Worker deferred until multi-tenancy is wired |
-| Diagrams | MermaidJS inline in chat | DiagramSpec JSON → local Graphviz | Deterministic, editable, approval-friendly; no external rendering dependency |
+| Diagrams | MermaidJS inline in chat | DiagramSpec JSON → D2 (Graphviz fallback) | Deterministic, editable, approval-friendly; no external rendering dependency. Graphviz first, switched to D2 for nested zone containers |
 | LLM tier | DeepSeek primary, GLM 5.2 fallback, Claude escalation | GLM 5.2 primary + Qwen3 235B fallback, hardcoded | DeepSeek removed after compliance-spiral incidents; GLM/Qwen covers drafting and classification reliably |
 | Auth | Supabase Auth + Worker JWT gate (Sprint 8) | RLS at DB layer; brain internal-only | Network isolation is the interim gate; full Auth/Worker is a known gap, not abandoned |
 
@@ -412,6 +424,7 @@ iv-sarvam/
 │   ├── app.py                        # endpoints, model routing, fallback
 │   ├── document_engine.py            # section drafting + DOCX assembly
 │   ├── proposal_templates.py         # Jinja2 section templates (implementation / mss)
+│   ├── chat_state.py                 # conversation state machine (router/interview/architecture/drafting modes)
 │   ├── intake_template.py            # 24-bucket discovery interview schema
 │   ├── supabase_client.py            # thin PostgREST helpers (fail-soft)
 │   ├── branding.py                   # DOCX branding (logo, theme, header/footer)

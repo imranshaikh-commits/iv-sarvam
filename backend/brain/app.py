@@ -1020,13 +1020,27 @@ def instructor_client():
     return _instructor_client
 
 
-async def _structured_with_fallback(response_model, messages: list[dict], **kwargs):
-    """Instructor structured call: try PRIMARY_LLM_MODEL, then FALLBACK_LLM_MODEL
-    on ANY exception (instructor validation, HTTP, schema). Keep max_retries low
-    (caller sets it) so instructor doesn't multi-retry a bad model before we fall
-    back to the other one."""
+# Diagram specs are the hardest structured output we ask for (nested node/edge
+# arrays with validators) and the primary model has proven marginal at them —
+# returning empty-but-schema-valid specs. This lets that ONE call be pointed at a
+# different model without touching any other path.
+DIAGRAM_LLM_MODELS = [
+    m.strip() for m in os.environ.get("SARVAM_DIAGRAM_MODELS", "").split(",") if m.strip()
+]
+
+
+async def _structured_with_fallback(response_model, messages: list[dict],
+                                    models: list[str] | None = None, **kwargs):
+    """Instructor structured call: try each model in turn, falling back on ANY
+    exception (instructor validation, HTTP, schema). Keep max_retries low (caller
+    sets it) so instructor doesn't multi-retry a bad model before we fall back.
+
+    NOTE: falling back on exception alone is not sufficient for diagram specs —
+    an EMPTY spec is schema-valid, so it counts as success here and the caller
+    must check the content itself (see generate_diagram_spec)."""
     ic = instructor_client()
-    for model in (PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL):
+    chain = list(models) if models else [PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL]
+    for model in chain:
         try:
             result = await ic.chat.completions.create(
                 model=model, response_model=response_model, messages=messages, **kwargs
@@ -1034,10 +1048,9 @@ async def _structured_with_fallback(response_model, messages: list[dict], **kwar
             log.info("Structured LLM model=%s", model)
             return result
         except Exception as e:
-            if model == FALLBACK_LLM_MODEL:
+            if model == chain[-1]:
                 raise
-            log.warning("Structured call failed on primary %s (%s); falling back to %s",
-                        model, e, FALLBACK_LLM_MODEL)
+            log.warning("Structured call failed on %s (%s); falling back.", model, e)
 
 
 async def extract_requirements(rfp_text: str) -> list[Requirement]:

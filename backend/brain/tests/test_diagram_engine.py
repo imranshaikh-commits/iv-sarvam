@@ -348,7 +348,9 @@ def test_guidance_survives_prompt_truncation():
         captured["prompt"] = messages[-1]["content"]
         return DiagramSpec.model_validate({
             "diagram_type": "architecture", "title": "t",
-            "nodes": [{"id": "a", "label": "A"}], "edges": []})
+            "nodes": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"},
+                      {"id": "c", "label": "C"}],
+            "edges": [{"source": "a", "target": "b"}]})
 
     asyncio.run(de.generate_diagram_spec(
         fake_structured,
@@ -376,7 +378,9 @@ def test_evidence_is_trimmed_before_answers():
         captured["prompt"] = messages[-1]["content"]
         return DiagramSpec.model_validate({
             "diagram_type": "architecture", "title": "t",
-            "nodes": [{"id": "a", "label": "A"}], "edges": []})
+            "nodes": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"},
+                      {"id": "c", "label": "C"}],
+            "edges": [{"source": "a", "target": "b"}]})
 
     asyncio.run(de.generate_diagram_spec(
         fake_structured, title="x", context_text="ANSWER_MARKER\n" + ("a\n" * 100),
@@ -384,3 +388,58 @@ def test_evidence_is_trimmed_before_answers():
     prompt = captured["prompt"]
     assert "ANSWER_MARKER" in prompt
     assert prompt.count("EVIDENCE_MARKER") < 5000
+
+
+# --- empty-spec guard -------------------------------------------------------
+def test_empty_spec_triggers_a_corrective_retry():
+    """REGRESSION: nodes defaults to [], so an EMPTY spec is schema-valid. The
+    model returned exactly that live and we rendered a diagram with only a title."""
+    import asyncio
+    calls = {"n": 0}
+
+    async def empty_then_good(model, messages=None, models=None, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return DiagramSpec.model_validate({
+                "diagram_type": "architecture", "title": "t", "nodes": [], "edges": []})
+        return DiagramSpec.model_validate({
+            "diagram_type": "architecture", "title": "t",
+            "nodes": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"},
+                      {"id": "c", "label": "C"}],
+            "edges": [{"source": "a", "target": "b"}]})
+
+    spec = asyncio.run(de.generate_diagram_spec(empty_then_good, title="X"))
+    assert calls["n"] == 2, "did not retry an empty spec"
+    assert len(spec.nodes) >= de.MIN_SPEC_NODES
+
+
+def test_persistently_empty_spec_raises_rather_than_rendering_nothing():
+    import asyncio
+
+    async def always_empty(model, messages=None, models=None, **kw):
+        return DiagramSpec.model_validate({
+            "diagram_type": "architecture", "title": "t", "nodes": [], "edges": []})
+
+    try:
+        asyncio.run(de.generate_diagram_spec(always_empty, title="X"))
+    except ValueError as e:
+        assert "unusable" in str(e)
+    else:
+        raise AssertionError("an empty spec must raise, not render an empty diagram")
+
+
+def test_correction_prompt_states_the_requirement():
+    import asyncio
+    prompts = []
+
+    async def capture(model, messages=None, models=None, **kw):
+        prompts.append(messages[-1]["content"])
+        return DiagramSpec.model_validate({
+            "diagram_type": "architecture", "title": "t", "nodes": [], "edges": []})
+
+    try:
+        asyncio.run(de.generate_diagram_spec(capture, title="X"))
+    except ValueError:
+        pass
+    assert len(prompts) == 2
+    assert "MUST" in prompts[1] and "nodes" in prompts[1]

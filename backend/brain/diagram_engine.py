@@ -427,6 +427,15 @@ D2_LAYOUT = os.environ.get("SARVAM_D2_LAYOUT", "elk")
 # was only ever ~4k and the model still stalled, so size is not the bottleneck —
 # a bigger prompt would just cost more for no gain.
 _SPEC_CONTEXT_BUDGET = int(os.environ.get("SARVAM_SPEC_CONTEXT_BUDGET", "3500"))
+# A spec with no nodes is schema-VALID (nodes defaults to []) but useless — the
+# model returned exactly that in a live run and we rendered a diagram containing
+# only its own title. Content is therefore checked explicitly.
+#
+# The bar is deliberately LOW: this guard exists to catch broken output, not to
+# enforce richness (that is the guidance prompt's job). A two-node spec
+# (source -> target) is a legitimate minimal diagram, so rejecting it would trade
+# one failure mode for another.
+MIN_SPEC_NODES = int(os.environ.get("SARVAM_MIN_SPEC_NODES", "2"))
 _SPEC_EVIDENCE_BUDGET = int(os.environ.get("SARVAM_SPEC_EVIDENCE_BUDGET", "1500"))
 D2_PNG_WIDTH = int(os.environ.get("SARVAM_D2_PNG_WIDTH", "1800"))
 DIAGRAM_RENDERER = os.environ.get("SARVAM_DIAGRAM_RENDERER", "auto")  # auto|d2|graphviz
@@ -557,6 +566,7 @@ async def generate_diagram_spec(
     iam_vendor: Optional[str] = None,
     guidance: str = "",
     evidence_text: str = "",
+    models: list[str] | None = None,
 ) -> DiagramSpec:
     """Ask the LLM for a DiagramSpec via the shared structured helper, then sanitize.
 
@@ -586,17 +596,40 @@ async def generate_diagram_spec(
         parts.append(f"\nIV PAST-PROPOSAL EVIDENCE (mirror this house style):\n"
                      f"{evidence_text.strip()[:_SPEC_EVIDENCE_BUDGET]}")
     user_prompt = "\n".join(parts)
-    spec: DiagramSpec = await structured_fn(
-        DiagramSpec,
-        messages=[
-            {"role": "system", "content": _SPEC_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.2,
-        max_tokens=DIAGRAM_SPEC_MAX_TOKENS,
-        frequency_penalty=0.2,
-        max_retries=1,
-    )
+    async def _attempt(prompt: str) -> DiagramSpec:
+        return await structured_fn(
+            DiagramSpec,
+            messages=[
+                {"role": "system", "content": _SPEC_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            models=models or None,
+            max_tokens=DIAGRAM_SPEC_MAX_TOKENS,
+            temperature=0.2,
+            frequency_penalty=0.2,
+            max_retries=1,
+        )
+
+    spec: DiagramSpec = await _attempt(user_prompt)
+
+    # An empty/near-empty spec is schema-valid but worthless. Correct it once,
+    # explicitly, before giving up — the failure mode is the model returning an
+    # empty node list, not malformed JSON, so instructor's own retry never fires.
+    if len(spec.nodes) < MIN_SPEC_NODES:
+        log.warning("diagram spec came back with %d nodes (<%d) — retrying with an "
+                    "explicit correction", len(spec.nodes), MIN_SPEC_NODES)
+        spec = await _attempt(
+            user_prompt
+            + f"\n\nIMPORTANT: your previous answer contained "
+              f"{len(spec.nodes)} nodes, which is not a usable diagram. You MUST "
+              f"return at least {MIN_SPEC_NODES} nodes and at least "
+              f"{max(1, MIN_SPEC_NODES - 1)} edges, each node with a distinct id and "
+              "a human-readable label, and each edge referencing existing node ids."
+        )
+    if len(spec.nodes) < MIN_SPEC_NODES:
+        raise ValueError(
+            f"model returned an unusable diagram spec ({len(spec.nodes)} nodes)")
+
     # Preserve caller intent for title/type, then sanitize/cap everything.
     spec.title = title or spec.title
     if diagram_type in DIAGRAM_TYPES:

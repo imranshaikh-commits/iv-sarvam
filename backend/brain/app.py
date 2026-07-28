@@ -506,6 +506,15 @@ def gap_fill_bucket(missing_ids: list[str], proposal_type: str | None = None) ->
 # so a diagram actually appears without hand-calling the REST endpoints.
 
 
+# Spec generation is a structured LLM call per diagram, and GLM is known to be
+# slow/flaky at structured output. Without these budgets the OpenAI SDK's 600s
+# default applies PER DIAGRAM — four diagrams could hang the chat for the better
+# part of an hour with no partial result. Same lesson as answer extraction:
+# bound the wait, keep whatever succeeded, tell the user what is missing.
+_DIAGRAM_SPEC_TIMEOUT_S = float(os.environ.get("SARVAM_DIAGRAM_SPEC_TIMEOUT_S", "75"))
+_ARCH_ROUND_BUDGET_S = float(os.environ.get("SARVAM_ARCH_ROUND_BUDGET_S", "240"))
+
+
 def _answers_summary(answers: dict, limit: int = 12000) -> str:
     """Flatten discovery answers into context text for spec generation.
 
@@ -588,21 +597,41 @@ async def propose_architecture(
             context += f"\n\nREVIEWER FEEDBACK TO ADDRESS:\n{feedback[:1500]}"
 
         rendered: list[dict] = []
-        for title, dtype in chat_state.plan_diagrams(answers):
+        planned = chat_state.plan_diagrams(answers)
+        skipped: list[str] = []
+        round_started = time.monotonic()
+
+        for title, dtype in planned:
+            # Stop starting new diagrams once the round budget is spent — better
+            # to present two good diagrams promptly than to keep the user waiting.
+            if time.monotonic() - round_started > _ARCH_ROUND_BUDGET_S:
+                skipped.append(title)
+                log.warning("architecture round budget spent; skipping %s", title)
+                continue
+
             # Title carries the client so diagrams read like IV's samples rather
             # than anonymous boilerplate.
             full_title = f"{client_name} — {title}"
             guidance = chat_state.deployment_guidance_for(title, dtype)
             try:
-                spec = await diagram_engine.generate_diagram_spec(
-                    _structured_with_fallback,
-                    title=full_title,
-                    diagram_type=dtype,
-                    context_text=f"{context}\n\nWHAT THIS DIAGRAM MUST SHOW:\n{guidance}",
-                    client_name=client_name,
-                    iam_vendor=iam_vendor,
+                spec = await asyncio.wait_for(
+                    diagram_engine.generate_diagram_spec(
+                        _structured_with_fallback,
+                        title=full_title,
+                        diagram_type=dtype,
+                        context_text=f"{context}\n\nWHAT THIS DIAGRAM MUST SHOW:\n{guidance}",
+                        client_name=client_name,
+                        iam_vendor=iam_vendor,
+                    ),
+                    timeout=_DIAGRAM_SPEC_TIMEOUT_S,
                 )
+            except asyncio.TimeoutError:
+                skipped.append(title)
+                log.warning("diagram spec timed out after %ss for %s — skipping",
+                            _DIAGRAM_SPEC_TIMEOUT_S, title)
+                continue
             except Exception as e:  # noqa: BLE001 — skip this diagram, keep the rest
+                skipped.append(title)
                 log.error("diagram spec generation failed for %s: %s", title, e)
                 continue
 
@@ -642,11 +671,17 @@ async def propose_architecture(
 
         if not rendered:
             return ("I couldn't generate an architecture spec just now — the model didn't "
-                    "return a usable design. Say **regenerate** to try again.", proposal_id)
+                    "return a usable design within the time budget. Say **regenerate** to "
+                    "try again.", proposal_id)
 
         iteration = 2 if feedback else 1
-        return (chat_state.build_architecture_message(rendered, iteration=iteration),
-                proposal_id)
+        msg = chat_state.build_architecture_message(rendered, iteration=iteration)
+        if skipped:
+            listed = ", ".join(f"**{t}**" for t in skipped)
+            msg += (f"\n\n_Note: {listed} did not generate in time and "
+                    f"{'is' if len(skipped) == 1 else 'are'} not shown. Approve what is "
+                    "here, or say **regenerate** to retry the full set._")
+        return (msg, proposal_id)
 
 
 async def approve_architecture(proposal_id: str | None) -> tuple[bool, str]:

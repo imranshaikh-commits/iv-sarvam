@@ -777,6 +777,76 @@ def test_gap_fill_reprompts_when_still_incomplete(monkeypatch):
     assert called["proposed"] is False, "proposed architecture with gaps still open"
 
 
+# --- architecture generation must be time-bounded ---------------------------
+def test_slow_diagram_spec_is_skipped_not_hung(monkeypatch):
+    """REGRESSION: spec generation had NO timeout, so four diagrams could hang the
+    chat for up to 40 minutes (the OpenAI SDK's 600s default, per diagram)."""
+    import asyncio as _a
+
+    calls = {"n": 0}
+
+    async def slow_spec(*a, **kw):
+        calls["n"] += 1
+        await _a.sleep(30)  # far longer than the patched budget
+
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": {"client_name": "AWS",
+                                       "required_diagram_types": "solution/reference, deployment",
+                                       "diagram_count": "2"}}
+
+    async def fake_insert_gp(c, **kw):
+        return "prop-t"
+
+    async def no_evidence(c, answers):
+        return ""
+
+    monkeypatch.setattr(app.diagram_engine, "generate_diagram_spec", slow_spec)
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "insert_generated_proposal", fake_insert_gp)
+    monkeypatch.setattr(app, "_architecture_evidence", no_evidence)
+    monkeypatch.setattr(app, "_DIAGRAM_SPEC_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(app, "_ARCH_ROUND_BUDGET_S", 5.0)
+
+    msg, pid = asyncio.get_event_loop().run_until_complete(
+        app.propose_architecture("s1", None))
+    assert pid == "prop-t"
+    assert "regenerate" in msg.lower(), msg
+    assert calls["n"] >= 1, "never attempted a spec"
+
+
+def test_round_budget_stops_starting_new_diagrams(monkeypatch):
+    import asyncio as _a
+    attempted = []
+
+    async def slowish(*a, **kw):
+        attempted.append(kw.get("title"))
+        await _a.sleep(0.3)
+        raise RuntimeError("no spec")
+
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": {
+            "client_name": "AWS", "diagram_count": "6",
+            "required_diagram_types": ("solution/reference, deployment, security, "
+                                       "auth/customer journey, integration, network")}}
+
+    async def fake_insert_gp(c, **kw):
+        return "prop-b"
+
+    async def no_evidence(c, answers):
+        return ""
+
+    monkeypatch.setattr(app.diagram_engine, "generate_diagram_spec", slowish)
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "insert_generated_proposal", fake_insert_gp)
+    monkeypatch.setattr(app, "_architecture_evidence", no_evidence)
+    monkeypatch.setattr(app, "_DIAGRAM_SPEC_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(app, "_ARCH_ROUND_BUDGET_S", 0.5)
+
+    asyncio.get_event_loop().run_until_complete(app.propose_architecture("s1", None))
+    # The budget must cut the round short rather than attempting all six.
+    assert len(attempted) < 6, f"budget ignored, attempted {len(attempted)}"
+
+
 class _MonkeyPatch:
     """Minimal setattr-only monkeypatch for bare (non-pytest) execution."""
 

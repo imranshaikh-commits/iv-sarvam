@@ -32,6 +32,27 @@
 | 5 — Architecture approval gate + compression/export | Done (gate enforced in chat) | `████████████████████` 98% |
 | 6 — Pilot + hardening + rollout | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
 
+### What's next
+
+Sequenced in **[`docs/PHASES.md`](docs/PHASES.md)**. In short:
+
+| Phase | Focus |
+|---|---|
+| **6 — Validation** *(current)* | Recreation test against a known-good proposal → corpus expansion → scored pilot on historical RFPs → eval harness → cost telemetry |
+| 7 — Hardening | TLS + network exposure, Supabase Auth / multi-tenancy, backups, CI |
+| 8 — Quality (evidence-led) | Hybrid search, model A/B, the proposal-length question, diagram visual parity, screenshot/asset reuse |
+| 9 — Production | Rollout, monitoring, runbook, key rotation |
+
+The ordering is deliberate: the project is feature-rich and evidence-poor. No
+Sarvam output has yet been scored against a human proposal, so every remaining
+quality decision — model choice, proposal length, whether diagram polish matters,
+how much corpus is enough — is currently argued from intuition. Validation comes
+before hardening, and hardening before scale.
+
+Eval fixtures live in `docs/evals/` and are **not committed** — they contain
+client-confidential proposal content and this repository is public. See
+[`docs/evals/README.md`](docs/evals/README.md).
+
 ### Known gaps before pilot
 
 - **Corpus coverage ~11%** — 11 of 100+ bank proposals ingested (1,413 chunks). Grounding quality and draft depth are bounded by this; bulk ingestion from the Drive bank is the highest-leverage open item.
@@ -39,7 +60,9 @@
 - **Client-logo sourcing** (approval-gated embedding) — deferred from Pass 5.
 - **Durable diagram spec-template store** (per vendor + diagram type) — deferred from Pass 4.
 - **Hybrid search** (BM25 + RRF) — retrieval is pure vector similarity for now.
-- **Phase 6 pilot** — not started; no *scored* runs against historical RFPs yet. The `RFP/` folder in the Drive bank is the natural test set.
+- **Phase 6 pilot** — not started; no *scored* runs against historical RFPs yet. The `RFP/` folder in the Drive bank is the natural test set. First recreation-test fixture prepared (Amlak / SailPoint — a client absent from the corpus, with the vendor present).
+- **Corpus type coverage** — the 11 ingested proposals are 10 implementation, 1 MSS and **zero migration**, despite the intake template supporting all three. A migration or MSS proposal currently has almost no grounding; ingestion should deliberately seek those out rather than adding more of the same.
+- **Visual assets** — human proposals are roughly half visual (40 images in the Amlak proposal alone; vendor product UI, IV corporate assets, client architecture). Sarvam produces generated diagrams only. Asset reuse is Phase 8.
 - **Model selection not yet measured** — GLM-5.2 drafts well but proved marginal at structured output (empty and edgeless specs), which is why spec generation was split onto its own chain. No A/B has been run on drafting quality; at ~$0.45 of API spend per full proposal, cost is not the binding constraint and quality should decide.
 
 ### Recently shipped (2026-07-27 → 28)

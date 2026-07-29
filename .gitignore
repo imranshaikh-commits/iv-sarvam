@@ -54,3 +54,10 @@ backend/hermes/logs/
 
 # Generated proposals (also client-sensitive)
 generated/
+
+# Eval fixtures contain CLIENT-CONFIDENTIAL proposal content (client names,
+# scope, sizing, commercial structure). This repository is public — fixtures
+# must never be committed. Keep them locally or in the private Drive alongside
+# the source proposals. Only docs/evals/README.md (the convention) is tracked.
+docs/evals/*
+!docs/evals/README.md

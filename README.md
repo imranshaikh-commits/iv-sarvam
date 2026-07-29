@@ -15,10 +15,10 @@
 
 ## Progress Dashboard
 
-> Quick-glance project status. Last updated: 2026-07-28 (IST).
+> Quick-glance project status. Last updated: 2026-07-29 (IST).
 
-**Overall completion: ~85%**
-`█████████████████░░░`
+**Overall completion: ~88%**
+`██████████████████░░`
 
 ### Phase completion (6 phases / 12 sprints)
 
@@ -28,7 +28,7 @@
 | 1 — Data foundation (ingest + Supabase + embeddings) | Done | `████████████████████` 100% |
 | 2 — Agent backend (EC2 + Docker + OpenRouter) | Done | `████████████████████` 100% |
 | 3 — Retrieval + drafting | Done | `████████████████████` 100% |
-| 4 — Conversational frontend + auth | Partial | `██████████████░░░░░░` 70% — chat E2E works (router → interview → architecture gate → drafting); auth/multi-tenancy still missing |
+| 4 — Conversational frontend + auth | Partial | `███████████████░░░░░` 75% — **full pipeline validated end to end in chat** (router → 22-area discovery → diagram plan → per-diagram approval → drafting → DOCX/PDF); auth/multi-tenancy still missing |
 | 5 — Architecture approval gate + compression/export | Done (gate enforced in chat) | `████████████████████` 98% |
 | 6 — Pilot + hardening + rollout | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
 
@@ -39,7 +39,8 @@
 - **Client-logo sourcing** (approval-gated embedding) — deferred from Pass 5.
 - **Durable diagram spec-template store** (per vendor + diagram type) — deferred from Pass 4.
 - **Hybrid search** (BM25 + RRF) — retrieval is pure vector similarity for now.
-- **Phase 6 pilot** — not started; no scored end-to-end runs against historical RFPs yet.
+- **Phase 6 pilot** — not started; no *scored* runs against historical RFPs yet. The `RFP/` folder in the Drive bank is the natural test set.
+- **Model selection not yet measured** — GLM-5.2 drafts well but proved marginal at structured output (empty and edgeless specs), which is why spec generation was split onto its own chain. No A/B has been run on drafting quality; at ~$0.45 of API spend per full proposal, cost is not the binding constraint and quality should decide.
 
 ### Recently shipped (2026-07-27 → 28)
 
@@ -48,8 +49,12 @@ Eight commits (`63170cd` → `4c7a1fb`) took the chat frontend from a dead end t
 - **Chat state machine** — the OWUI chat previously returned the same interview opener forever (the gate assumed an "OWUI pipe" that never existed). Now: intent router (new proposal / search vault / discuss) → 22-area discovery → **architecture approval gate** → drafting, with state carried in invisible zero-width markers inside assistant replies.
 - **V1 approval gate ENFORCED** — "generate the proposal" is refused until the architecture is approved in chat. Approve / reject-with-feedback / regenerate all drive the Pass 4 diagram state machine.
 - **Deterministic answer parser** — labelled (`field: value`) and bare positional answers map to intake fields with zero LLM calls; the model is only a fallback for prose. Gap-fill loop recovers missing required fields instead of discarding them.
-- **Diagram renderer switched to D2** (Graphviz retained as automatic fallback) — real nested zone containers, per-diagram-type guidance (deployment must show regions/LB/HA; security must show trust boundaries), `diagram_count` honoured, client-named titles, and a 2500-char context truncation bug fixed (it was silently dropping ~30% of discovery).
-- **Robustness** — 25s extraction budget (a wedged OpenRouter call used to hang the chat ~10 min), SSE heartbeats during long work, OWUI title/tag task-prompt guard, `GET /v1/keepalive` touching Postgres daily via host cron (the free-tier project idle-paused once at exactly 7 days).
+- **Diagram flow: plan → one at a time → per-diagram approval.** Discovery ends by proposing a *diagram set* (generating nothing); the user approves or edits the list by free text; each diagram is then generated, reviewed and approved individually before the next. Generating the whole set in one turn repeatedly exhausted the time budget and dropped diagrams silently.
+- **Diagram renderer switched to D2 + ELK** (Graphviz retained as automatic fallback), rendered via librsvg — real nested zone containers, per-diagram-type guidance (deployment must show regions/LB/HA; security must show trust boundaries), `diagram_count` honoured, client-named titles, and IV light-theme brand styling (Clearance `#DC5220` / Cosmos `#1F0A4A` / Paper `#F5F5F5`).
+- **Diagram spec model override** — `SARVAM_DIAGRAM_MODELS` routes only the spec calls (the hardest structured output in the system) to a stronger model, with the general chain untouched.
+- **Robustness** — 25s answer-extraction budget and 180s diagram-spec budget (unbounded calls used to hang the chat for the SDK's 600s default), SSE heartbeats during long work, OWUI title/tag task-prompt guard, `GET /v1/keepalive` touching Postgres daily via host cron (the free-tier project idle-paused once at exactly 7 days).
+- **Spec content validation** — a `DiagramSpec` with no nodes, or with nodes and almost no edges, is schema-valid but useless; both shipped to users before being caught. `spec_shortfall()` now checks node count, edge count and orphan ratio, retries once with an explicit correction, then fails honestly.
+- **DOCX inline formatting** — the drafting model's `**bold**` / `*italic*` markdown was written into Word as literal asterisks (147 stray `**` in one generated proposal). Now converted to real runs; underscores are deliberately NOT treated as markup because this domain is full of identifiers like `data_retention`.
 - **`deep` depth tier** — 6 subsection facets (opt-in), `full` unchanged. Token cap 1500 → 3500 and the NoneType fix are deployed; full-depth re-measured at 42pp (vs 31pp bug-capped baseline).
 
 ---

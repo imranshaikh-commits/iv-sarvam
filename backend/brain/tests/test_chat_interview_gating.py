@@ -1058,6 +1058,67 @@ def test_drafting_still_blocked_mid_review(monkeypatch):
         resp.json()["choices"][0]["message"]["content"]).mode == cs.MODE_ARCHITECTURE
 
 
+# --- model override must actually reach the model call ----------------------
+def test_diagram_model_override_is_passed_through(monkeypatch):
+    """REGRESSION: DIAGRAM_LLM_MODELS was parsed from the environment and then
+    never passed to generate_diagram_spec, so the override was decorative and
+    every diagram silently ran on the default chain."""
+    seen = {}
+
+    async def spy_spec(structured_fn, **kw):
+        seen["models"] = kw.get("models")
+        raise RuntimeError("stop here — we only care about the arguments")
+
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": {"client_name": "AWS",
+                                       "required_diagram_types": "solution/reference"}}
+
+    async def fake_insert_gp(c, **kw):
+        return "prop-m"
+
+    async def no_evidence(c, answers):
+        return ""
+
+    monkeypatch.setattr(app.diagram_engine, "generate_diagram_spec", spy_spec)
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "insert_generated_proposal", fake_insert_gp)
+    monkeypatch.setattr(app, "_architecture_evidence", no_evidence)
+    monkeypatch.setattr(app, "DIAGRAM_LLM_MODELS", ["vendor/strong", "vendor/weak"])
+
+    asyncio.get_event_loop().run_until_complete(
+        app.propose_one_diagram("s1", None, 0))
+    assert seen.get("models") == ["vendor/strong", "vendor/weak"], \
+        f"override did not reach the model call: {seen.get('models')!r}"
+
+
+def test_no_override_falls_back_to_the_default_chain(monkeypatch):
+    seen = {}
+
+    async def spy_spec(structured_fn, **kw):
+        seen["models"] = kw.get("models")
+        raise RuntimeError("stop")
+
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": {"client_name": "AWS",
+                                       "required_diagram_types": "solution/reference"}}
+
+    async def fake_insert_gp(c, **kw):
+        return "prop-m"
+
+    async def no_evidence(c, answers):
+        return ""
+
+    monkeypatch.setattr(app.diagram_engine, "generate_diagram_spec", spy_spec)
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "insert_generated_proposal", fake_insert_gp)
+    monkeypatch.setattr(app, "_architecture_evidence", no_evidence)
+    monkeypatch.setattr(app, "DIAGRAM_LLM_MODELS", [])
+
+    asyncio.get_event_loop().run_until_complete(
+        app.propose_one_diagram("s1", None, 0))
+    assert seen.get("models") is None, "empty override should mean the default chain"
+
+
 class _MonkeyPatch:
     """Minimal setattr-only monkeypatch for bare (non-pytest) execution."""
 

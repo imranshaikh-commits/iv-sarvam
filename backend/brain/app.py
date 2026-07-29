@@ -517,6 +517,15 @@ def gap_fill_bucket(missing_ids: list[str], proposal_type: str | None = None) ->
 # the retry path exactly when it was needed. Diagrams are produced one at a time
 # with SSE heartbeats, so a longer ceiling costs nothing but patience.
 _DIAGRAM_SPEC_TIMEOUT_S = float(os.environ.get("SARVAM_DIAGRAM_SPEC_TIMEOUT_S", "180"))
+
+# Diagram specs are the hardest structured output we ask for (nested node/edge
+# arrays with validators) and GLM has proven marginal at them. This points that
+# ONE call at a stronger model without touching any other path. MUST be passed
+# through to every generate_diagram_spec call site — defining it and forgetting
+# to pass it made the whole override silently decorative.
+DIAGRAM_LLM_MODELS = [
+    m.strip() for m in os.environ.get("SARVAM_DIAGRAM_MODELS", "").split(",") if m.strip()
+]
 _ARCH_ROUND_BUDGET_S = float(os.environ.get("SARVAM_ARCH_ROUND_BUDGET_S", "240"))
 # Diagrams are independent, so they run concurrently. Bounded to stay polite to
 # OpenRouter rather than firing six structured calls at once.
@@ -643,7 +652,8 @@ async def propose_one_diagram(
                 diagram_engine.generate_diagram_spec(
                     _structured_with_fallback, title=full_title, diagram_type=dtype,
                     context_text=context, client_name=client_name,
-                    iam_vendor=iam_vendor, guidance=guidance, evidence_text=evidence),
+                    iam_vendor=iam_vendor, guidance=guidance, evidence_text=evidence,
+                    models=DIAGRAM_LLM_MODELS or None),
                 timeout=_DIAGRAM_SPEC_TIMEOUT_S)
         except asyncio.TimeoutError:
             log.warning("diagram spec timed out for %s", title)
@@ -746,6 +756,7 @@ async def propose_architecture(
                             iam_vendor=iam_vendor,
                             guidance=guidance,
                             evidence_text=evidence,
+                            models=DIAGRAM_LLM_MODELS or None,
                         ),
                         timeout=_DIAGRAM_SPEC_TIMEOUT_S,
                     )
@@ -1023,15 +1034,6 @@ def instructor_client():
         oa = AsyncOpenAI(base_url=OPENROUTER_BASE, api_key=OPENROUTER_API_KEY)
         _instructor_client = instructor.from_openai(oa, mode=instructor.Mode.OPENROUTER_STRUCTURED_OUTPUTS)
     return _instructor_client
-
-
-# Diagram specs are the hardest structured output we ask for (nested node/edge
-# arrays with validators) and the primary model has proven marginal at them —
-# returning empty-but-schema-valid specs. This lets that ONE call be pointed at a
-# different model without touching any other path.
-DIAGRAM_LLM_MODELS = [
-    m.strip() for m in os.environ.get("SARVAM_DIAGRAM_MODELS", "").split(",") if m.strip()
-]
 
 
 async def _structured_with_fallback(response_model, messages: list[dict],
@@ -1661,6 +1663,7 @@ async def create_diagram_endpoint(proposal_id: str, request: Request):
             context_text=context_text,
             client_name=client_name,
             iam_vendor=iam_vendor,
+            models=DIAGRAM_LLM_MODELS or None,
         )
     except Exception as e:  # noqa: BLE001
         log.error("diagram spec generation failed: %s", e)
@@ -1747,6 +1750,14 @@ async def patch_diagram_endpoint(diagram_id: str, request: Request):
     if updated is None:
         return JSONResponse({"error": "could not update diagram"}, status_code=502)
     return JSONResponse(_diagram_public(updated))
+
+
+@app.on_event("startup")
+async def _log_model_chains() -> None:
+    log.info("model chains — general: %s -> %s | diagram specs: %s",
+             PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL,
+             " -> ".join(DIAGRAM_LLM_MODELS) if DIAGRAM_LLM_MODELS
+             else f"{PRIMARY_LLM_MODEL} -> {FALLBACK_LLM_MODEL} (no override set)")
 
 
 @app.get("/v1/keepalive")

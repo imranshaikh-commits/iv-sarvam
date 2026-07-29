@@ -511,7 +511,12 @@ def gap_fill_bucket(missing_ids: list[str], proposal_type: str | None = None) ->
 # default applies PER DIAGRAM — four diagrams could hang the chat for the better
 # part of an hour with no partial result. Same lesson as answer extraction:
 # bound the wait, keep whatever succeeded, tell the user what is missing.
-_DIAGRAM_SPEC_TIMEOUT_S = float(os.environ.get("SARVAM_DIAGRAM_SPEC_TIMEOUT_S", "75"))
+# This wraps generate_diagram_spec, which may now make TWO model calls (the
+# original plus one corrective retry when the spec comes back edgeless). Sized
+# for both: a complex deployment spec measured ~50s per attempt, so 75s killed
+# the retry path exactly when it was needed. Diagrams are produced one at a time
+# with SSE heartbeats, so a longer ceiling costs nothing but patience.
+_DIAGRAM_SPEC_TIMEOUT_S = float(os.environ.get("SARVAM_DIAGRAM_SPEC_TIMEOUT_S", "180"))
 _ARCH_ROUND_BUDGET_S = float(os.environ.get("SARVAM_ARCH_ROUND_BUDGET_S", "240"))
 # Diagrams are independent, so they run concurrently. Bounded to stay polite to
 # OpenRouter rather than firing six structured calls at once.

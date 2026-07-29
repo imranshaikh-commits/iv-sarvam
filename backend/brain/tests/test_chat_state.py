@@ -456,6 +456,30 @@ def test_every_engine_type_has_guidance():
         assert cs.DIAGRAM_TYPE_GUIDANCE.get(t), t
 
 
+def test_every_word_our_own_messages_suggest_is_understood():
+    """REGRESSION: the timeout message said "Say regenerate to retry it" while the
+    classifier rejected "retry" — the user typed our own word and got nothing."""
+    for word in ("retry", "retry it", "regenerate", "try again", "again",
+                 "another attempt", "one more time"):
+        assert cs.classify_architecture_intent(word) == cs.INTENT_REGENERATE, word
+    for word in ("approve", "approved", "looks good"):
+        assert cs.classify_architecture_intent(word) == cs.INTENT_APPROVE, word
+    assert cs.is_skip("skip")
+
+
+def test_guidance_always_demands_edges():
+    """A diagram is a graph: every type's guidance must ask for connections."""
+    for title, dtype in (("Solution / Reference", "architecture"),
+                         ("Deployment", "architecture"),
+                         ("Security", "network"),
+                         ("Integration / Joiner Flow", "flow"),
+                         ("Auth Journey", "sequence")):
+        g = cs.deployment_guidance_for(title, dtype)
+        assert "EDGES ARE MANDATORY" in g, title
+        assert "label" in g.lower(), title
+        assert "Title Case" in g, title
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:

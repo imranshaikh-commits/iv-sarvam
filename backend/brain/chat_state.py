@@ -350,7 +350,11 @@ _APPROVE_HINTS = (
     "signed off", "accept", "accepted", "yes proceed", "proceed", "ship it",
 )
 _REJECT_HINTS = ("reject", "not right", "wrong", "change", "revise", "fix", "no ")
-_REGEN_HINTS = ("regenerate", "try again", "redo", "another version", "different diagram")
+# "retry" MUST be here: the timeout message literally says "Say regenerate to
+# retry it", so the user typing the word from our own copy has to work.
+_REGEN_HINTS = ("regenerate", "regen", "retry", "try again", "redo", "again",
+                "another version", "another attempt", "different diagram",
+                "one more time")
 _DRAFT_HINTS = (
     "generate the proposal", "draft the proposal", "generate proposal",
     "draft proposal", "build the proposal", "write the proposal",

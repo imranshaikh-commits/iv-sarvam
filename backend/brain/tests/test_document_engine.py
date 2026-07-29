@@ -226,3 +226,65 @@ if __name__ == "__main__":
     test_assemble_docx_directly()
     test_null_llm_returns_grounded_placeholder()
     print("ALL CHECKS PASSED")
+
+
+# --- inline markdown must become real Word formatting -----------------------
+def _render(text):
+    import io, re, zipfile
+    from docx import Document as _Doc
+    doc = _Doc()
+    document_engine._add_body_paragraphs(doc, text)
+    buf = io.BytesIO(); doc.save(buf); buf.seek(0)
+    xml = zipfile.ZipFile(buf).read("word/document.xml").decode()
+    raw = "".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", xml, re.S))
+    buf.seek(0)
+    return raw, _Doc(buf)
+
+
+def test_no_literal_markdown_reaches_the_docx():
+    """REGRESSION: a generated proposal contained 147 literal ** and 82 literal *
+    because the whole block was written as a single run."""
+    raw, _ = _render(
+        "**Identity Layer.** Centralized provisioning [2][8]. "
+        "*(needs SME confirmation.)*\n\n"
+        "- **Hybrid Coexistence:** legacy AD must coexist\n"
+        "- *Integration Readiness:* assess applications\n\n"
+        "### Assumptions\nBody with **bold** inside.")
+    assert "**" not in raw, "literal bold markers reached the document"
+    import re as _re
+    assert not _re.search(r"(?<!\*)\*(?!\*)", raw), "literal italic markers reached the document"
+    assert "#" not in raw, "literal heading hashes reached the document"
+
+
+def test_emphasis_becomes_real_runs():
+    _, doc = _render("**Bold lead.** then normal text, and *italic bit* after.")
+    para = [p for p in doc.paragraphs if p.text.strip()][0]
+    assert any(r.bold for r in para.runs), "no bold run produced"
+    assert any(r.italic for r in para.runs), "no italic run produced"
+    assert any(not r.bold and not r.italic for r in para.runs), "plain text lost"
+
+
+def test_bold_survives_inside_bullets():
+    """The old lstrip('-*• ') ate the opening ** of '- **Label:** text'."""
+    raw, doc = _render("- **Hybrid Identity Coexistence:** must coexist with legacy AD")
+    assert "**" not in raw
+    bullet = [p for p in doc.paragraphs if p.style.name == "List Bullet"][0]
+    assert any(r.bold for r in bullet.runs), "bold lost when the bullet marker was stripped"
+    assert bullet.text.startswith("Hybrid Identity Coexistence:")
+
+
+def test_technical_underscores_are_never_italicised():
+    """Underscores are identifiers here (data_retention, session_data), not markup."""
+    raw, doc = _render(
+        "Retention is data_retention of 7 years and session_data of 90 days, "
+        "keyed on iam_vendor and client_name.")
+    for ident in ("data_retention", "session_data", "iam_vendor", "client_name"):
+        assert ident in raw, f"{ident} was mangled"
+    para = [p for p in doc.paragraphs if p.text.strip()][0]
+    assert not any(r.italic for r in para.runs), "underscores were treated as italics"
+
+
+def test_citation_markers_survive():
+    raw, _ = _render("Provisioning replaces per-app credentials [2][8] per the design [15].")
+    for c in ("[2]", "[8]", "[15]"):
+        assert c in raw, f"citation {c} lost"

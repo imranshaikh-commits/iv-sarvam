@@ -458,6 +458,34 @@ def _add_toc_field(document: Document) -> None:
     r.append(fld_end)
 
 
+# Inline emphasis the drafting model emits. ONLY asterisks are treated as
+# markup: underscores are far too common in this domain's technical identifiers
+# (data_retention, session_data, iam_vendor) and an underscore rule silently
+# italicises across them.
+_INLINE_MD_RE = re.compile(r"(\*\*.+?\*\*|\*(?!\s)[^*\n]+?(?<!\s)\*)", re.S)
+
+# A bullet marker is "-", "•", or a SINGLE "*" followed by space. "**" is bold.
+_BULLET_MARKER_RE = re.compile(r"^\s*(?:[-\u2022]|\*(?!\*))\s+")
+
+
+def _add_inline_runs(para, text: str) -> None:
+    """Add ``text`` to ``para`` converting **bold** / *italic* into real runs.
+
+    Without this the model's markdown lands in the DOCX as literal asterisks —
+    a generated proposal contained 147 stray ``**`` and 82 ``*`` sequences,
+    which is immediately visible to anyone opening the document.
+    """
+    for token in _INLINE_MD_RE.split(text):
+        if not token:
+            continue
+        if len(token) > 4 and token.startswith("**") and token.endswith("**"):
+            para.add_run(token[2:-2]).bold = True
+        elif len(token) > 2 and token.startswith("*") and token.endswith("*"):
+            para.add_run(token[1:-1]).italic = True
+        else:
+            para.add_run(token)
+
+
 def _add_body_paragraphs(document: Document, text: str) -> None:
     """Add body text, preserving [N] citation markers, splitting on blank lines."""
     for block in re.split(r"\n\s*\n", text.strip()):
@@ -468,14 +496,32 @@ def _add_body_paragraphs(document: Document, text: str) -> None:
         # Bullet-ify simple leading dashes/bullets for readability.
         if block.lstrip().startswith(("- ", "* ", "•")):
             for line in block.splitlines():
-                line = line.strip().lstrip("-*• ").strip()
+                # Strip ONLY the bullet marker. A blunt lstrip("-*• ") also ate the
+                # opening ** of "- **Label:** text", leaving an unmatched closing
+                # marker and losing the bold entirely.
+                line = _BULLET_MARKER_RE.sub("", line.strip()).strip()
                 if line:
-                    document.add_paragraph(line, style="List Bullet")
+                    bullet = document.add_paragraph(style="List Bullet")
+                    _add_inline_runs(bullet, line)
             # remove the empty placeholder paragraph we created above
             p = para._element
             p.getparent().remove(p)
             continue
-        para.add_run(block)
+        # A leading "### Heading" inside a block would otherwise print as literal
+        # hashes; promote it rather than emitting the markup.
+        heading_match = re.match(r"^(#{1,6})\s+(.*)$", block.splitlines()[0])
+        if heading_match:
+            rest = "\n".join(block.splitlines()[1:]).strip()
+            hpara = document.add_paragraph()
+            _add_inline_runs(hpara, heading_match.group(2).strip())
+            for r in hpara.runs:
+                r.bold = True
+            p = para._element
+            p.getparent().remove(p)
+            if rest:
+                _add_body_paragraphs(document, rest)
+            continue
+        _add_inline_runs(para, block)
 
 
 def _add_approved_diagrams(document: Document, diagrams: Optional[list[dict]]) -> None:

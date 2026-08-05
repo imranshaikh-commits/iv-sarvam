@@ -1483,6 +1483,10 @@ async def generate_proposal_endpoint(request: Request):
                 top_k=top_k,
                 proposal_depth=proposal_depth,
                 diagrams=embed_diagrams or None,
+                # The full 22-area discovery. Previously only rfp_text reached
+                # drafting, so sizing, timeline, integrations, commercials and
+                # NFRs were captured, stored, and then silently discarded.
+                discovery_answers=intake_answers or None,
             )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)

@@ -239,7 +239,7 @@ DEPTH_TIERS: dict[str, DepthTier] = {
     # full: multi-subsection drafting + wider retrieval fan-out + appendix pack.
     # UNCHANGED from before this patch — existing callers keep the same output.
     "full": DepthTier("full", subsections_per_section=3, retrieval_fanout=3,
-                      include_appendices=True, per_call_max_tokens=3500),
+                      include_appendices=True, per_call_max_tokens=2500),
     # deep: NEW — the #1 remaining length lever toward 100+ pp. Uses all 6
     # SUBSECTION_FACETS (was clamped to 3 by len(SUBSECTION_FACETS) before this
     # patch — adding facets was required, raising subsections_per_section alone
@@ -250,7 +250,7 @@ DEPTH_TIERS: dict[str, DepthTier] = {
     # never a bigger single call. Opt-in via proposal_depth="deep"; measure
     # page count and iterate (more facets / higher fanout) if still short of 100+.
     "deep": DepthTier("deep", subsections_per_section=6, retrieval_fanout=4,
-                      include_appendices=True, per_call_max_tokens=3500),
+                      include_appendices=True, per_call_max_tokens=2500),
 }
 
 DEFAULT_DEPTH = "standard"

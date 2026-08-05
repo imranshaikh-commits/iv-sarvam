@@ -84,6 +84,17 @@ HARD RULES (non-negotiable):
 5. This is a DRAFT for human review, never client-ready.
 
 {evidence}
+
+OUTPUT DISCIPLINE (mandatory):
+- Write the section as it will appear in the client proposal. NEVER narrate your
+  own research process. Do not write "the retrieved evidence", "the corpus",
+  "Note on Evidence Applicability", or any commentary about what your sources do
+  or do not contain. Sources are acknowledged ONLY through inline [N] markers.
+- Where a fact is genuinely unavailable, insert the review marker once and move
+  on. Do not explain at length what is missing or why.
+- Never emit reasoning, deliberation or <think> blocks. Output only the section.
+- Stop when the section is complete. Do not pad to fill space, and never repeat a
+  word or phrase to extend length.
 """
 
 
@@ -94,7 +105,124 @@ def _vendor_clause(iam_vendor: Optional[str]) -> str:
 # Hard ceiling on any single draft call's token budget. Pass 3 depth tiers vary
 # the budget DOWN for leaner tiers but must never raise a call above this — depth
 # comes from more (fanned-out) calls, not from one runaway call.
-MAX_DRAFT_TOKENS = 3500
+# Lowered from 3500 after the Amlak run: the cap was raised to chase page count,
+# but the generated proposal came out 38% LONGER than the human original while
+# padding with degenerate synonym chains. Length was never the gap — fidelity
+# was. 2500 leaves ample room for a substantive subsection.
+MAX_DRAFT_TOKENS = 2500
+
+
+# ---------------------------------------------------------------------------
+# Discovery context routing
+#
+# The 22-area discovery interview captures sizing, timeline, integrations,
+# commercials, NFRs and delivery model — and until this map existed NONE of it
+# reached the drafting engine. ``generate_proposal`` accepted only ``rfp_text``,
+# which app.py filled with ``business_objectives``, so 21 of 22 areas were
+# collected, stored in Supabase and then discarded. The generated Amlak proposal
+# complained that it lacked "Amlak-specific volumetrics/timeline/pricing" — it
+# was telling the truth.
+#
+# Routing per section rather than passing the whole answers dict everywhere is
+# deliberate: a single blob would bloat every call and invite every section to
+# restate everything. Sizing belongs to architecture, milestones to commercials,
+# pain points to the executive summary.
+_SECTION_DISCOVERY_FIELDS: dict[str, tuple[str, ...]] = {
+    "executive_summary": (
+        "business_objectives", "pain_points", "differentiators", "decision_criteria",
+        "engagement_duration", "app_count", "user_count", "primary_audience",
+    ),
+    "client_context": (
+        "business_objectives", "pain_points", "current_state", "existing_iam_platform",
+        "directories", "hrms", "idp", "source_of_truth", "in_scope", "out_of_scope",
+        "user_count", "app_count", "identity_types", "industry", "country",
+    ),
+    "current_state": (
+        "current_state", "existing_iam_platform", "product_versions", "directories",
+        "hrms", "idp", "source_of_truth", "pain_points", "migration_required",
+    ),
+    "solution_architecture": (
+        "deployment_model", "hardware_sizing_inputs", "cluster_topology",
+        "ha_dr_requirements", "rto_rpo", "security_architecture_needs", "regions",
+        "network_zones", "environments", "availability", "scalability", "performance",
+        "target_integrations", "app_count", "user_count",
+    ),
+    "technical_approach": (
+        "deployment_model", "cluster_topology", "security_architecture_needs",
+        "sod_required", "access_review_cadence", "pii_handling", "monitoring",
+        "audit", "data_retention", "migration_required",
+    ),
+    "implementation_methodology": (
+        "delivery_phases", "delivery_milestones", "engagement_duration",
+        "key_milestones", "target_go_live", "governance", "raci",
+        "client_responsibilities", "dependencies", "assumptions", "app_count",
+    ),
+    "integration_points": (
+        "target_integrations", "hrms_authoritative_source", "ad_exchange_details",
+        "idp_sso_details", "applications_to_onboard", "app_count", "directories",
+    ),
+    "assumptions_open_questions": (
+        "assumptions", "dependencies", "client_responsibilities", "out_of_scope",
+        "rto_rpo", "product_versions",
+    ),
+    "operating_model": (
+        "support_model", "post_golive_reporting_cadence", "governance", "raci",
+        "training", "kt", "hypercare",
+    ),
+    "service_model": (
+        "support_model", "post_sla", "hypercare", "training", "kt",
+        "delivery_phases", "environments",
+    ),
+    "sla_coverage": ("post_sla", "support_model", "availability", "monitoring", "audit"),
+    "escalation_incident": ("post_sla", "support_model", "monitoring", "governance"),
+}
+
+# Fields every section benefits from knowing.
+_UNIVERSAL_DISCOVERY_FIELDS: tuple[str, ...] = (
+    "client_name", "iam_vendor", "proposal_type", "industry", "country",
+)
+
+# Never route these into drafting prompts: control fields, or content that must
+# not be paraphrased into client-facing prose.
+_EXCLUDED_DISCOVERY_FIELDS = frozenset({
+    "proposal_depth", "diagram_count", "required_diagram_types", "rfp_text",
+    "_diagram_plan", "case_studies_exclude", "logo_url", "client_logo",
+})
+
+
+def _humanise_field(key: str) -> str:
+    return key.replace("_", " ").strip().title()
+
+
+def discovery_context_for(section_id: str, answers: Optional[dict],
+                          limit: int = 3500) -> str:
+    """Render the discovery answers relevant to one section.
+
+    Returns an empty string when nothing relevant was captured, so the prompt is
+    unchanged for callers that have no intake data (the REST path).
+    """
+    if not answers:
+        return ""
+    wanted = _SECTION_DISCOVERY_FIELDS.get(section_id, ())
+    keys = list(_UNIVERSAL_DISCOVERY_FIELDS) + [k for k in wanted
+                                                if k not in _UNIVERSAL_DISCOVERY_FIELDS]
+    lines: list[str] = []
+    for key in keys:
+        if key in _EXCLUDED_DISCOVERY_FIELDS:
+            continue
+        val = answers.get(key)
+        if val is None:
+            continue
+        text = " ".join(str(val).split())
+        if not text or text.lower() in ("skip", "none", "n/a", "na", "-"):
+            continue
+        lines.append(f"- {_humanise_field(key)}: {text}")
+    if not lines:
+        return ""
+    block = "\n".join(lines)
+    if len(block) > limit:
+        block = block[:limit].rsplit("\n", 1)[0]
+    return block
 
 
 def _draft_payload(model: str, system_prompt: str, user_prompt: str,
@@ -114,7 +242,11 @@ def _draft_payload(model: str, system_prompt: str, user_prompt: str,
         "max_tokens": min(int(max_tokens), MAX_DRAFT_TOKENS),
     }
     if include_frequency_penalty:
-        payload["frequency_penalty"] = 0.2
+        # Raised from 0.2: the low value was chosen to preserve repeated vendor
+        # and product terms, but it also let an exhausted model pad with synonym
+        # chains. 0.45 still tolerates legitimate repetition of "SailPoint" or
+        # "IdentityIQ" while discouraging runaway filler.
+        payload["frequency_penalty"] = 0.45
     return payload
 
 
@@ -233,6 +365,78 @@ async def _retrieve_fanout(
     return merged[:cap]
 
 
+# Reasoning models (GLM 5.2 among them) emit internal deliberation that must
+# never reach a client document. A live Amlak proposal contained a raw </think>
+# tag plus seven verbatim repetitions of the model's own musing about evidence
+# quality. Nothing anywhere stripped these.
+_THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.S | re.I)
+_STRAY_THINK_TAG_RE = re.compile(r"</?think\s*[^>]*>", re.I)
+
+# Whole paragraphs where the model narrates its own retrieval instead of writing
+# the proposal. These are answer content, not reasoning tokens, so the tag strip
+# above does not catch them.
+_META_PARAGRAPH_RE = re.compile(
+    r"(?m)^[^\n]*\b("
+    r"note on evidence applicability"
+    r"|the retrieved evidence"
+    r"|retrieved evidence (originates|comes|is drawn)"
+    r"|based on the (retrieved )?(corpus|evidence base)"
+    r"|the (corpus|evidence) (does not|doesn't) contain"
+    r")\b[^\n]*$",
+    re.I,
+)
+
+
+def strip_model_artifacts(text: str) -> str:
+    """Remove reasoning blocks and retrieval meta-commentary from drafted text.
+
+    Deliberately conservative: it removes whole lines that narrate the drafting
+    process, and never touches ``[N]`` citation markers or SME-review markers,
+    which are intentional signals for the human reviewer.
+    """
+    if not text:
+        return text
+    out = _THINK_BLOCK_RE.sub("", text)
+    out = _STRAY_THINK_TAG_RE.sub("", out)
+    out = _META_PARAGRAPH_RE.sub("", out)
+    # Collapse the blank lines and orphaned rules those removals leave behind.
+    out = re.sub(r"(?m)^\s*-{3,}\s*$\n(?=\s*$)", "", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
+def strip_degenerate_tail(text: str, run_threshold: int = 5) -> str:
+    """Cut a draft at the point it degenerates into repetition.
+
+    With max_tokens raised to 3500 and frequency_penalty held low, an exhausted
+    model pads to the cap with synonym chains — a live proposal ended a section
+    with "shattering shattering shattering ... vow-breakingly". Sentence-level
+    repair is not possible; the only safe action is to truncate at the onset and
+    keep the good prose before it.
+    """
+    if not text:
+        return text
+    words = text.split()
+    run_start, run_len = 0, 1
+    for i in range(1, len(words)):
+        prev = words[i - 1].strip(".,;:!?").lower()
+        cur = words[i].strip(".,;:!?").lower()
+        if cur and cur == prev:
+            run_len += 1
+            if run_len >= run_threshold:
+                cut = " ".join(words[:run_start]).rstrip()
+                # Fall back to a sentence boundary so we do not end mid-clause.
+                m = list(re.finditer(r"[.!?](\s|$)", cut))
+                if m:
+                    cut = cut[: m[-1].end()].rstrip()
+                log.warning("degenerate repetition detected (%r x%d); truncating draft",
+                            words[i], run_len)
+                return cut
+        else:
+            run_len, run_start = 1, i
+    return text
+
+
 def _is_blank(text: Optional[str]) -> bool:
     """A drafted string is unusable if it is None or whitespace-only."""
     return text is None or not str(text).strip()
@@ -258,7 +462,12 @@ async def _draft_with_retry(
     if _is_blank(content):
         log.warning("draft returned null/empty content; retrying once")
         content = await draft_with_openrouter(client, system_prompt, user_prompt, max_tokens=max_tokens)
-    return content.strip() if not _is_blank(content) else None
+    if _is_blank(content):
+        return None
+    # Single chokepoint for every drafted (sub)section: strip reasoning blocks
+    # and retrieval meta-commentary, then trim degenerate tails.
+    cleaned = strip_degenerate_tail(strip_model_artifacts(content))
+    return cleaned if not _is_blank(cleaned) else None
 
 
 def _assumption_placeholder(
@@ -333,6 +542,13 @@ async def draft_section(
         evidence=evidence_block,
     )
     rfp_ctx = (context.get("rfp_text") or "")[:4000]
+    # The discovery answers relevant to THIS section. Without this the drafting
+    # engine saw only rfp_text and invented or omitted every captured specific.
+    discovery_ctx = discovery_context_for(section_spec.id, context.get("discovery_answers"))
+    client_facts = (f"CLIENT-SUPPLIED FACTS FOR THIS SECTION — these are "
+                    f"authoritative and MUST be used verbatim where relevant. Do not "
+                    f"replace them with generic statements, and do not claim they are "
+                    f"unavailable:\n{discovery_ctx}\n\n") if discovery_ctx else ""
 
     # Plan the subsection facets. subsections<=1 keeps the original single-call
     # behaviour (facet list empty -> one whole-section draft).
@@ -347,6 +563,7 @@ async def draft_section(
     if not facets:
         user_prompt = (
             f"Draft the \"{section_spec.title}\" section now, grounded in the EVIDENCE and citing inline as [N].\n\n"
+            f"{client_facts}"
             f"RFP / requirement context:\n{rfp_ctx}"
         )
         try:
@@ -373,6 +590,7 @@ async def draft_section(
                 f"Draft the \"{sub_title}\" subsection of the \"{section_spec.title}\" section, "
                 f"focusing specifically on {facet}. Ground every claim in the EVIDENCE and cite "
                 f"inline as [N]. Do not repeat content that belongs in other subsections.\n\n"
+                f"{client_facts}"
                 f"RFP / requirement context:\n{rfp_ctx}"
             )
             try:
@@ -426,6 +644,38 @@ async def draft_section(
 _DRAFT_COLOR = RGBColor(0xB0, 0x00, 0x00)  # warning red (SME-review flag)
 _CITATION_RE = re.compile(r"\[(\d+)\]")
 
+
+
+def _add_static_toc(document: Document, sections: list[dict],
+                    extra_titles: Optional[list[str]] = None) -> None:
+    """Write a readable contents list from the headings we already know.
+
+    A bare Word TOC field renders as "Right-click here and choose 'Update
+    Field'..." until someone presses F9 — which looked broken in a live
+    proposal. We know every section title at assembly time, so the list is
+    written directly. The refreshable field is still appended afterwards so
+    page numbers appear once the document is opened and updated in Word.
+    """
+    for sec in sections:
+        title = (sec.get("title") or "").strip()
+        if not title:
+            continue
+        para = document.add_paragraph()
+        para.paragraph_format.space_after = Pt(2)
+        run = para.add_run(title)
+        run.bold = True
+        for sub in sec.get("subsections") or []:
+            sub_title = (sub.get("title") or "").strip()
+            if not sub_title:
+                continue
+            sp = document.add_paragraph()
+            sp.paragraph_format.left_indent = Inches(0.3)
+            sp.paragraph_format.space_after = Pt(0)
+            sp.add_run(sub_title)
+    for title in extra_titles or []:
+        para = document.add_paragraph()
+        para.paragraph_format.space_after = Pt(2)
+        para.add_run(title).bold = True
 
 
 def _add_toc_field(document: Document) -> None:
@@ -524,6 +774,47 @@ def _add_body_paragraphs(document: Document, text: str) -> None:
         _add_inline_runs(para, block)
 
 
+def _add_picture_fitted(document: Document, stream, *, max_w, max_h) -> None:
+    """Insert an image scaled to fit inside (max_w, max_h), keeping aspect ratio."""
+    try:
+        from PIL import Image as _PILImage
+        pos = stream.tell() if hasattr(stream, "tell") else None
+        with _PILImage.open(stream) as im:
+            w_px, h_px = im.size
+        if pos is not None:
+            stream.seek(pos)
+        if w_px and h_px:
+            scale = min(max_w / w_px, max_h / h_px)
+            document.add_picture(stream, width=int(w_px * scale), height=int(h_px * scale))
+            return
+    except Exception as e:  # noqa: BLE001 — never lose a diagram over sizing
+        log.warning("could not measure diagram for fitting (%s); using width only", e)
+        if hasattr(stream, "seek"):
+            stream.seek(0)
+    document.add_picture(stream, width=max_w)
+
+
+def _embeddable_diagrams(diagrams: Optional[list[dict]]) -> list[dict]:
+    """Diagrams that will actually be embedded: approved AND carrying an image.
+
+    Single source of truth. The contents list previously re-implemented a looser
+    version of this check and advertised a diagram section the assembler then
+    declined to create.
+    """
+    out: list[dict] = []
+    for d in diagrams or []:
+        if (d.get("status") or "").strip() != "approved":
+            continue
+        title = d.get("title") or "Architecture Diagram"
+        image = d.get("image_bytes")
+        path = d.get("image_path")
+        if image:
+            out.append({"title": title, "stream": io.BytesIO(image)})
+        elif path and os.path.exists(path):
+            out.append({"title": title, "stream": path})
+    return out
+
+
 def _add_approved_diagrams(document: Document, diagrams: Optional[list[dict]]) -> None:
     """Embed ONLY approved, rendered architecture diagrams as images.
 
@@ -533,18 +824,7 @@ def _add_approved_diagrams(document: Document, diagrams: Optional[list[dict]]) -
     enforcement of the approval gate. If nothing qualifies, no section is added,
     so proposals without approved diagrams are unchanged.
     """
-    embeddable: list[dict] = []
-    for d in diagrams or []:
-        if (d.get("status") or "").strip() != "approved":
-            continue
-        image = d.get("image_bytes")
-        path = d.get("image_path")
-        if image:
-            embeddable.append({"title": d.get("title") or "Architecture Diagram",
-                               "stream": io.BytesIO(image)})
-        elif path and os.path.exists(path):
-            embeddable.append({"title": d.get("title") or "Architecture Diagram",
-                               "stream": path})
+    embeddable = _embeddable_diagrams(diagrams)
     if not embeddable:
         return
 
@@ -560,7 +840,12 @@ def _add_approved_diagrams(document: Document, diagrams: Optional[list[dict]]) -
     for item in embeddable:
         document.add_heading(item["title"], level=2)
         try:
-            document.add_picture(item["stream"], width=Inches(6.0))
+            # Width alone lets a tall D2 render scale to any height — a live
+            # proposal had architecture diagrams spanning 2+ pages. Constrain by
+            # BOTH dimensions, preserving aspect ratio, so a diagram always fits
+            # on one page.
+            _add_picture_fitted(document, item["stream"],
+                                max_w=Inches(6.0), max_h=Inches(7.5))
         except Exception as e:  # noqa: BLE001 — a bad image must not break the doc
             log.error("failed to embed diagram '%s' (skipping): %s", item["title"], e)
 
@@ -609,7 +894,13 @@ def assemble_docx(
 
     # --- Table of contents (real, refreshable Word TOC field) --------------
     branding.add_section_heading(document, "Table of Contents")
-    _add_toc_field(document)
+    _toc_extra = [t for t in (
+        "Solution Architecture Diagrams" if _embeddable_diagrams(diagrams) else None,
+        "Compliance Matrix" if any(
+            s.get("id") == COMPLIANCE_SECTION_ID for s in sections) else None,
+        "Citation Appendix",
+    ) if t]
+    _add_static_toc(document, sections, _toc_extra)
     document.add_page_break()
 
     # --- Sections -----------------------------------------------------------
@@ -816,6 +1107,9 @@ def _add_appendices(document: Document, metadata: dict) -> None:
 
     # B. Timeline / phasing
     branding.add_section_heading(document, "Appendix B — Indicative Timeline")
+    _dur = " ".join(str((metadata.get("discovery_answers") or {}).get("engagement_duration") or "").split())
+    if _dur and _dur.lower() not in ("skip", "none", "n/a", "-"):
+        _appendix_note(document, f"Client-supplied engagement duration: {_dur}.")
     _appendix_table(
         document,
         ["Phase", "Key Activities", "Indicative Duration"],
@@ -830,16 +1124,30 @@ def _add_appendices(document: Document, metadata: dict) -> None:
 
     # C. Sizing
     branding.add_section_heading(document, "Appendix C — Sizing & Volumetrics")
-    _appendix_table(
-        document,
-        ["Dimension", "Value", "Source"],
-        [
-            ["Identities / users", f"{_APPENDIX_ASSUMPTION} TBC", "Client to confirm"],
-            ["Target applications", f"{_APPENDIX_ASSUMPTION} TBC", "Client to confirm"],
-            ["Environments", f"{_APPENDIX_ASSUMPTION} TBC", "Client to confirm"],
-            ["Peak transaction volume", f"{_APPENDIX_ASSUMPTION} TBC", "Client to confirm"],
-        ],
-    )
+    # Use what discovery actually captured. These rows used to be hardcoded
+    # "TBC / Client to confirm" even when the consultant had supplied exact
+    # figures at intake — the same discard bug as the drafting path.
+    _ans = metadata.get("discovery_answers") or {}
+
+    def _row(label: str, *keys: str) -> list[str]:
+        for k in keys:
+            v = " ".join(str(_ans.get(k) or "").split())
+            if v and v.lower() not in ("skip", "none", "n/a", "na", "-"):
+                return [label, v, "Client-supplied at discovery"]
+        return [label, f"{_APPENDIX_ASSUMPTION} TBC", "Client to confirm"]
+
+    _rows = [
+        _row("Identities / users", "user_count"),
+        _row("Target applications", "app_count", "applications_to_onboard"),
+        _row("Environments", "environments"),
+        _row("Deployment model", "deployment_model"),
+        _row("Hardware sizing", "hardware_sizing_inputs"),
+        _row("Cluster topology", "cluster_topology"),
+        _row("HA / DR", "ha_dr_requirements"),
+        _row("Availability target", "availability"),
+        _row("Peak transaction volume", "performance"),
+    ]
+    _appendix_table(document, ["Dimension", "Value", "Source"], _rows)
 
     # D. Integration inventory
     branding.add_section_heading(document, "Appendix D — Integration Inventory")
@@ -867,6 +1175,27 @@ def _add_appendices(document: Document, metadata: dict) -> None:
         ],
     )
 
+    # F. Commercial structure. The human proposals always carry one, and the
+    # milestone basis IS captured at discovery. Figures stay with the human.
+    _c = metadata.get("discovery_answers") or {}
+    _crows = []
+    for label, key in (("Licence included", "license_included"),
+                       ("Pricing model", "pricing_model"),
+                       ("Payment milestones", "payment_milestones"),
+                       ("Taxes", "taxes"),
+                       ("Travel", "travel"),
+                       ("Support terms", "support_terms")):
+        val = " ".join(str(_c.get(key) or "").split())
+        if val and val.lower() not in ("skip", "none", "n/a", "na", "-"):
+            _crows.append([label, val])
+    if _crows:
+        branding.add_section_heading(document, "Appendix F — Commercial Structure")
+        _appendix_note(
+            document,
+            "Structure as captured at discovery. Pricing figures are deliberately "
+            "omitted and must be completed by the commercial owner before issue.")
+        _appendix_table(document, ["Item", "Basis"], _crows)
+
 
 # ---------------------------------------------------------------------------
 # Orchestration
@@ -889,6 +1218,7 @@ async def generate_proposal(
     top_k: int = TOP_K,
     proposal_depth: Optional[str] = None,
     diagrams: Optional[list[dict]] = None,
+    discovery_answers: Optional[dict] = None,
 ) -> dict:
     """Orchestrate: pick template, draft sections concurrently, assemble DOCX.
 
@@ -919,6 +1249,7 @@ async def generate_proposal(
         "iam_vendor": iam_vendor or "",
         "proposal_type": proposal_type,
         "rfp_text": rfp_text or "",
+        "discovery_answers": discovery_answers or {},
     }
 
     sem = asyncio.Semaphore(DOC_CONCURRENCY)
@@ -960,6 +1291,9 @@ async def generate_proposal(
         "proposal_type": proposal_type,
         "iam_vendor": iam_vendor,
         "generated_at": generated_at,
+        # Appendices read captured figures from here instead of printing "TBC"
+        # over data the consultant already supplied.
+        "discovery_answers": discovery_answers or {},
     }
     docx_bytes = assemble_docx(
         metadata, list(drafted), compliance_markdown,

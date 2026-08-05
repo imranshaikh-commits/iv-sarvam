@@ -288,3 +288,114 @@ def test_citation_markers_survive():
     raw, _ = _render("Provisioning replaces per-app credentials [2][8] per the design [15].")
     for c in ("[2]", "[8]", "[15]"):
         assert c in raw, f"citation {c} lost"
+
+
+# --- discovery answers must reach drafting ----------------------------------
+def test_discovery_routing_sends_sizing_to_architecture():
+    """REGRESSION: generate_proposal accepted only rfp_text, so 21 of 22 discovery
+    areas were captured, stored and then discarded before drafting."""
+    ans = {"client_name": "Amlak International", "iam_vendor": "SailPoint",
+           "hardware_sizing_inputs": "4 app servers at 4 CPU, 16 GB memory",
+           "cluster_topology": "2 UI servers and 2 Task servers",
+           "payment_milestones": "20 percent on signature",
+           "engagement_duration": "42 weeks"}
+    arch = document_engine.discovery_context_for("solution_architecture", ans)
+    assert "16 GB" in arch and "Task servers" in arch
+    assert "20 percent" not in arch, "commercial detail leaked into architecture"
+
+    impl = document_engine.discovery_context_for("implementation_methodology", ans)
+    assert "42 weeks" in impl
+    assert "16 GB" not in impl, "sizing leaked into methodology"
+
+
+def test_skip_and_control_fields_are_not_routed():
+    ans = {"client_name": "X", "rto_rpo": "skip", "proposal_depth": "full",
+           "_diagram_plan": [["a", "b"]], "hardware_sizing_inputs": "real value"}
+    ctx = document_engine.discovery_context_for("solution_architecture", ans)
+    assert "real value" in ctx
+    assert "skip" not in ctx.lower()
+    assert "proposal_depth" not in ctx.lower() and "diagram_plan" not in ctx.lower()
+
+
+def test_no_answers_yields_empty_context():
+    assert document_engine.discovery_context_for("executive_summary", None) == ""
+    assert document_engine.discovery_context_for("executive_summary", {}) == ""
+
+
+# --- model artifacts must never reach the document --------------------------
+def test_think_blocks_and_meta_commentary_stripped():
+    """REGRESSION: a live proposal carried a raw </think> tag and seven copies of
+    the model's own 'Note on Evidence Applicability' deliberation."""
+    raw = ("Note on Evidence Applicability: The retrieved evidence originates from "
+           "InspiritVision proposals for Al Qadsiah FC.\n---\n"
+           "<think>let me consider the evidence</think>"
+           "InspiritVision is pleased to present this proposal [1].")
+    out = document_engine.strip_model_artifacts(raw)
+    assert "think" not in out.lower()
+    assert "Note on Evidence Applicability" not in out
+    assert "retrieved evidence" not in out.lower()
+    assert "[1]" in out, "citation markers must survive"
+    assert "pleased to present" in out
+
+
+def test_sme_marker_survives_stripping():
+    raw = f"Some drafted prose. {document_engine.SME_REVIEW_MARKER}: confirm versions."
+    assert document_engine.SME_REVIEW_MARKER in document_engine.strip_model_artifacts(raw)
+
+
+def test_degenerate_tail_truncated_at_sentence_boundary():
+    """REGRESSION: ~109 words of 'shattering shattering ... vow-breakingly'."""
+    good = "The platform integrates with Active Directory. Provisioning is automated."
+    bad = good + " shattering shattering shattering shattering shattering shattering"
+    out = document_engine.strip_degenerate_tail(bad)
+    assert "shattering" not in out
+    assert out.endswith("automated.")
+
+
+def test_legitimate_repetition_preserved():
+    """Vendor names repeat legitimately; only runaway runs should be cut."""
+    txt = ("SailPoint IdentityIQ provides governance. SailPoint connectors integrate "
+           "with AD. IdentityIQ certifications run quarterly.")
+    assert document_engine.strip_degenerate_tail(txt) == txt
+
+
+# --- assembly mechanics -----------------------------------------------------
+def test_static_toc_replaces_the_f9_placeholder():
+    import io
+    from docx import Document as _Doc
+    md = {"client_name": "C", "proposal_type": "implementation", "generated_at": "now"}
+    b = document_engine.assemble_docx(
+        md, [{"title": "Executive Summary", "content": "x", "id": "executive_summary"},
+             {"title": "Solution Architecture", "content": "y", "id": "solution_architecture"}])
+    txt = "\n".join(p.text for p in _Doc(io.BytesIO(b)).paragraphs)
+    assert "Right-click here" not in txt, "F9 placeholder still shown"
+    assert "Executive Summary" in txt and "Solution Architecture" in txt
+
+
+def test_appendices_use_captured_values_not_tbc():
+    import io
+    from docx import Document as _Doc
+    md = {"client_name": "C", "proposal_type": "implementation", "generated_at": "now",
+          "discovery_answers": {"app_count": "25 applications",
+                                "environments": "production, DR, UAT, development",
+                                "user_count": "skip"}}
+    b = document_engine.assemble_docx(
+        md, [{"title": "S", "content": "x", "id": "executive_summary"}],
+        include_appendices=True)
+    tbl = "\n".join(c.text for t in _Doc(io.BytesIO(b)).tables for r in t.rows for c in r.cells)
+    assert "25 applications" in tbl, "captured app count not used"
+    assert "production, DR, UAT" in tbl, "captured environments not used"
+    assert "TBC" in tbl, "genuinely absent values should still read TBC"
+
+
+def test_tall_diagram_is_height_capped():
+    import io
+    from docx import Document as _Doc
+    from docx.shared import Inches
+    from PIL import Image
+    buf = io.BytesIO(); Image.new("RGB", (1200, 4000), "white").save(buf, "PNG"); buf.seek(0)
+    doc = _Doc()
+    document_engine._add_picture_fitted(doc, buf, max_w=Inches(6.0), max_h=Inches(7.5))
+    shape = doc.inline_shapes[0]
+    assert shape.height <= Inches(7.5), "diagram would span multiple pages"
+    assert shape.width <= Inches(6.0)

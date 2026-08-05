@@ -155,7 +155,9 @@ def test_full_tier_unchanged_by_deep_tier_addition():
     full = get_depth_tier("full")
     assert full.subsections_per_section == 3
     assert full.retrieval_fanout == 3
-    assert full.per_call_max_tokens == 3500
+    # 3500 was set to chase page count; lowered to 2500 after the Amlak run came
+    # out 38% longer than the human original while padding with repetition.
+    assert full.per_call_max_tokens == 2500
     assert full.include_appendices is True
 
 

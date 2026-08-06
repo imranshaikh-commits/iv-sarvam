@@ -54,18 +54,18 @@ def test_marker_is_invisible_when_appended_to_prose():
 
 def test_legacy_html_comment_markers_still_decode():
     """Threads started before the zero-width fix must keep advancing."""
-    legacy = "questions <!--sarvam:v1;mode=interview;session=old-1;bucket=6-->"
+    legacy = "questions <!--shilpi:v1;mode=interview;session=old-1;bucket=6-->"
     state = cs.decode_marker(legacy)
     assert state is not None
     assert state.mode == cs.MODE_INTERVIEW
     assert state.session == "old-1"
     assert state.bucket == 6
-    assert "sarvam" not in cs.strip_markers(legacy)
+    assert "shilpi" not in cs.strip_markers(legacy)
 
 
 def test_legacy_markers_are_no_longer_emitted():
     marker = cs.encode_marker(cs.ChatState(mode=cs.MODE_ROUTER))
-    assert "<!--" not in marker and "sarvam" not in marker
+    assert "<!--" not in marker and "shilpi" not in marker
 
 
 def test_marker_embedded_in_prose_is_recoverable_and_strippable():
@@ -87,14 +87,14 @@ def test_uuid_session_round_trips():
 def test_decode_rejects_junk_and_unknown_modes():
     assert cs.decode_marker("") is None
     assert cs.decode_marker("no marker here") is None
-    assert cs.decode_marker("<!--sarvam:v1;mode=bogus-->") is None
+    assert cs.decode_marker("<!--shilpi:v1;mode=bogus-->") is None
     assert cs.decode_marker("<!--something:else-->") is None
     assert cs.decode_marker(cs._zw_encode("v1;mode=bogus")) is None
     assert cs.decode_marker("\u200d\u200d") is None  # empty payload
 
 
 def test_decode_tolerates_bad_bucket_value():
-    state = cs.decode_marker("<!--sarvam:v1;mode=interview;session=s;bucket=notanint-->")
+    state = cs.decode_marker("<!--shilpi:v1;mode=interview;session=s;bucket=notanint-->")
     assert state is not None and state.bucket == 0
 
 

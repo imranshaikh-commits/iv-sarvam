@@ -18,7 +18,7 @@ our state channel — free, and already in the payload. We encode a compact stat
 marker into each assistant reply as an HTML comment (invisible once the markdown
 is rendered) and recover it by scanning the message history backwards.
 
-    <!--sarvam:v1;mode=interview;session=<uuid>;bucket=3-->
+    <!--shilpi:v1;mode=interview;session=<uuid>;bucket=3-->
 
 No OWUI plugin, no schema change, no migration.
 
@@ -65,7 +65,7 @@ MARKER_VERSION = "v1"
 # NOT strip HTML comments — it escapes them, so users saw the raw marker text in
 # the chat. Kept in the decoder only, so threads started before the fix keep
 # working; never emitted any more.
-_LEGACY_MARKER_RE = re.compile(r"<!--\s*sarvam:v1;([^>]*?)-->", re.IGNORECASE | re.DOTALL)
+_LEGACY_MARKER_RE = re.compile(r"<!--\s*shilpi:v1;([^>]*?)-->", re.IGNORECASE | re.DOTALL)
 
 # Current marker form: the payload is encoded as zero-width characters, which
 # every renderer treats as invisible whitespace, so nothing is displayed while
@@ -210,7 +210,7 @@ def find_chat_state(messages: list[dict]) -> ChatState | None:
 
 
 # --- router -----------------------------------------------------------------
-ROUTER_MESSAGE = """Hi, I'm **Sarvam**, Inspirit Vision's proposal architect. What would you like to do?
+ROUTER_MESSAGE = """Hi, I'm **Shilpi**, Inspirit Vision's proposal architect. What would you like to do?
 
 **1. Start a new proposal / RFP** — I'll run a short discovery interview, propose an architecture for your approval, then draft the full document grounded in IV's past work.
 

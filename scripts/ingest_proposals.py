@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sarvam — Sprint 1: Proposal Ingestion Pipeline
+Shilpi — Sprint 1: Proposal Ingestion Pipeline
 
 Processes raw DOCX/PDF proposals into structured JSON with:
   - Text extracted per logical section (Exec Summary, Company Profile, Scope, etc.)
@@ -21,7 +21,7 @@ Output structure per proposal:
                 image_001.png
                 image_002.png
 
-Author: Sarvam Project
+Author: Shilpi Project
 """
 
 from __future__ import annotations
@@ -443,7 +443,7 @@ def process_file(file_path: Path, output_root: Path) -> Optional[Proposal]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Sarvam proposal ingestion pipeline")
+    parser = argparse.ArgumentParser(description="Shilpi proposal ingestion pipeline")
     parser.add_argument("--input", type=Path, required=True, help="Directory of raw DOCX/PDF proposals")
     parser.add_argument("--output", type=Path, required=True, help="Output directory for processed JSONs")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")

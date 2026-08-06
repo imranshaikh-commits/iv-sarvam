@@ -41,7 +41,7 @@ from proposal_templates import (
     get_template,
 )
 
-log = logging.getLogger("sarvam-brain.doc-engine")
+log = logging.getLogger("shilpi-brain.doc-engine")
 
 # --- config (env with safe defaults; NEVER required at import) --------------
 # app.py hard-requires OPENROUTER_API_KEY at import; this module must not, so
@@ -70,7 +70,7 @@ EmbedFn = Callable[[httpx.AsyncClient, str], Awaitable[list[float]]]
 RetrieveFn = Callable[..., Awaitable[list[dict]]]
 BuildSystemFn = Callable[[list[dict]], str]
 
-_SECTION_SYSTEM_TEMPLATE = """You are Sarvam, InspiritVision's internal proposal assistant (an IAM consulting firm).
+_SECTION_SYSTEM_TEMPLATE = """You are Shilpi, InspiritVision's internal proposal assistant (an IAM consulting firm).
 You are drafting the "{title}" section of a {proposal_type} proposal for {client_name}{vendor_clause}.
 
 SECTION PURPOSE: {purpose}
@@ -1303,7 +1303,7 @@ async def generate_proposal(
 
     safe_client = re.sub(r"[^A-Za-z0-9]+", "_", client_name).strip("_") or "Client"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = f"Sarvam_Proposal_{safe_client}_{stamp}.docx"
+    filename = f"Shilpi_Proposal_{safe_client}_{stamp}.docx"
 
     sections_meta = [
         {

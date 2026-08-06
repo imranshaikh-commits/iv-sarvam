@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sarvam Proposal Ingestion Pipeline v2
+Shilpi Proposal Ingestion Pipeline v2
 
 For each proposal (DOCX or PDF):
   1. Extract text + tables (as Markdown)

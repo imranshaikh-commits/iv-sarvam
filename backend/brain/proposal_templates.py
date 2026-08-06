@@ -1,7 +1,7 @@
 """
 Sprint 5 — proposal section templates.
 
-Ordered section definitions for the two proposal types Sarvam produces:
+Ordered section definitions for the two proposal types Shilpi produces:
   - "implementation" : a delivery/implementation proposal
   - "mss"            : a managed support services proposal
 

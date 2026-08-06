@@ -1,5 +1,7 @@
 # IV Proposal Architect — Ground-Zero Project Document
 
+> **Naming note (2026-07-29):** this project was renamed **Sarvam → Shilpi**. Entries below predate the rename and refer to the system by its former name; left as-is as an accurate historical record rather than rewritten.
+
 **Project Name:** IV Proposal Architect
 **Persona / Product Name:** **Sarvam** (सर्वम् — Sanskrit for "all, everything, the whole")
 **Owner:** Imran (Head of Marketing, Inspirit Vision)

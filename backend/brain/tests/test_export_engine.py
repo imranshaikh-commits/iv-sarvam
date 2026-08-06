@@ -275,7 +275,7 @@ async def _fake_generate_proposal(client, **kwargs):
         "docx_bytes": _SAMPLE_DOCX,
         "sections_meta": [{"id": "executive_summary", "title": "Executive Summary"}],
         "draft_markdown": "## Executive Summary\n\nBody.",
-        "filename": "Sarvam_Proposal_Test_20260101_000000.docx",
+        "filename": "Shilpi_Proposal_Test_20260101_000000.docx",
         "included_compliance_matrix": False,
         "proposal_depth": "standard",
         "included_appendices": False,

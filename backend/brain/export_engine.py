@@ -28,7 +28,7 @@ from typing import Optional
 
 from PIL import Image
 
-log = logging.getLogger("sarvam-brain.export")
+log = logging.getLogger("shilpi-brain.export")
 
 # --- lite DOCX compression --------------------------------------------------
 

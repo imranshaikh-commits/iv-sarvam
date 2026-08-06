@@ -8,7 +8,7 @@ Strategy:
     which we monkeypatch to return canned drafted prose.
 
 Run directly (`python tests/test_document_engine.py`) or via pytest. It writes a
-sample DOCX to /home/user/workspace/sarvam_sample_proposal.docx and asserts the
+sample DOCX to /home/user/workspace/shilpi_sample_proposal.docx and asserts the
 document contains the expected markers.
 """
 
@@ -29,7 +29,7 @@ from docx import Document
 import document_engine
 from document_engine import assemble_docx, generate_proposal
 
-OUTPUT_PATH = "/home/user/workspace/sarvam_sample_proposal.docx"
+OUTPUT_PATH = "/home/user/workspace/shilpi_sample_proposal.docx"
 CLIENT_NAME = "Meridian Bank"
 SME_MARKER = "[SME REVIEW]"
 
@@ -103,7 +103,7 @@ async def _run() -> bytes:
             sections=None,
             include_compliance_matrix=False,
         )
-    assert result["filename"].startswith("Sarvam_Proposal_Meridian_Bank_"), result["filename"]
+    assert result["filename"].startswith("Shilpi_Proposal_Meridian_Bank_"), result["filename"]
     assert result["filename"].endswith(".docx")
     assert result["sections_meta"], "expected section metadata"
     return result["docx_bytes"]

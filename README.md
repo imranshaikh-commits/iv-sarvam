@@ -1,6 +1,6 @@
-# Sarvam — IV Proposal Architect
+# Shilpi — IV Proposal Architect
 
-**Sarvam** (सर्वम्, Sanskrit for *"all, everything, the whole"*) is Inspirit Vision's in-house Proposal Architect — a conversational, retrieval-grounded AI that turns a new RFP into a structured, client-ready proposal in hours instead of days, by drafting from IV's 100+ historical proposal bank rather than from a blank page.
+**Shilpi** (सर्वम्, Sanskrit for *"all, everything, the whole"*) is Inspirit Vision's in-house Proposal Architect — a conversational, retrieval-grounded AI that turns a new RFP into a structured, client-ready proposal in hours instead of days, by drafting from IV's 100+ historical proposal bank rather than from a blank page.
 
 ![Status](https://img.shields.io/badge/status-Phase%205%20~98%25%20%7C%20chat%20E2E%20live-blue)
 ![Brain](https://img.shields.io/badge/brain-FastAPI%20(Python)-231154)
@@ -44,7 +44,7 @@ Sequenced in **[`docs/PHASES.md`](docs/PHASES.md)**. In short:
 | 9 — Production | Rollout, monitoring, runbook, key rotation |
 
 The ordering is deliberate: the project is feature-rich and evidence-poor. No
-Sarvam output has yet been scored against a human proposal, so every remaining
+Shilpi output has yet been scored against a human proposal, so every remaining
 quality decision — model choice, proposal length, whether diagram polish matters,
 how much corpus is enough — is currently argued from intuition. Validation comes
 before hardening, and hardening before scale.
@@ -62,7 +62,7 @@ client-confidential proposal content and this repository is public. See
 - **Hybrid search** (BM25 + RRF) — retrieval is pure vector similarity for now.
 - **Phase 6 pilot** — not started; no *scored* runs against historical RFPs yet. The `RFP/` folder in the Drive bank is the natural test set. First recreation-test fixture prepared (Amlak / SailPoint — a client absent from the corpus, with the vendor present).
 - **Corpus type coverage** — the 11 ingested proposals are 10 implementation, 1 MSS and **zero migration**, despite the intake template supporting all three. A migration or MSS proposal currently has almost no grounding; ingestion should deliberately seek those out rather than adding more of the same.
-- **Visual assets** — human proposals are roughly half visual (40 images in the Amlak proposal alone; vendor product UI, IV corporate assets, client architecture). Sarvam produces generated diagrams only. Asset reuse is Phase 8.
+- **Visual assets** — human proposals are roughly half visual (40 images in the Amlak proposal alone; vendor product UI, IV corporate assets, client architecture). Shilpi produces generated diagrams only. Asset reuse is Phase 8.
 - **Model selection not yet measured** — GLM-5.2 drafts well but proved marginal at structured output (empty and edgeless specs), which is why spec generation was split onto its own chain. No A/B has been run on drafting quality; at ~$0.45 of API spend per full proposal, cost is not the binding constraint and quality should decide.
 
 ### Recently shipped (2026-07-27 → 28)
@@ -74,7 +74,7 @@ Eight commits (`63170cd` → `4c7a1fb`) took the chat frontend from a dead end t
 - **Deterministic answer parser** — labelled (`field: value`) and bare positional answers map to intake fields with zero LLM calls; the model is only a fallback for prose. Gap-fill loop recovers missing required fields instead of discarding them.
 - **Diagram flow: plan → one at a time → per-diagram approval.** Discovery ends by proposing a *diagram set* (generating nothing); the user approves or edits the list by free text; each diagram is then generated, reviewed and approved individually before the next. Generating the whole set in one turn repeatedly exhausted the time budget and dropped diagrams silently.
 - **Diagram renderer switched to D2 + ELK** (Graphviz retained as automatic fallback), rendered via librsvg — real nested zone containers, per-diagram-type guidance (deployment must show regions/LB/HA; security must show trust boundaries), `diagram_count` honoured, client-named titles, and IV light-theme brand styling (Clearance `#DC5220` / Cosmos `#1F0A4A` / Paper `#F5F5F5`).
-- **Diagram spec model override** — `SARVAM_DIAGRAM_MODELS` routes only the spec calls (the hardest structured output in the system) to a stronger model, with the general chain untouched.
+- **Diagram spec model override** — `SHILPI_DIAGRAM_MODELS` routes only the spec calls (the hardest structured output in the system) to a stronger model, with the general chain untouched.
 - **Robustness** — 25s answer-extraction budget and 180s diagram-spec budget (unbounded calls used to hang the chat for the SDK's 600s default), SSE heartbeats during long work, OWUI title/tag task-prompt guard, `GET /v1/keepalive` touching Postgres daily via host cron (the free-tier project idle-paused once at exactly 7 days).
 - **Spec content validation** — a `DiagramSpec` with no nodes, or with nodes and almost no edges, is schema-valid but useless; both shipped to users before being caught. `spec_shortfall()` now checks node count, edge count and orphan ratio, retries once with an explicit correction, then fails honestly.
 - **DOCX inline formatting** — the drafting model's `**bold**` / `*italic*` markdown was written into Word as literal asterisks (147 stray `**` in one generated proposal). Now converted to real runs; underscores are deliberately NOT treated as markup because this domain is full of identifiers like `data_retention`.
@@ -86,7 +86,7 @@ Eight commits (`63170cd` → `4c7a1fb`) took the chat frontend from a dead end t
 
 Inspirit Vision currently spends multiple person-days drafting each client proposal from scratch — assembling company profile, similar experience, scope understanding, solution architecture, implementation methodology, RACI, timeline, and compliance from memory and old files. With a bank of 100+ historical proposals across SailPoint, Ping Identity, IBM Security Verify, Red Hat Keycloak (RHBK), and ForgeRock engagements, there is enough reusable intellectual property to power a system that drafts, diagrams, and delivers proposals in a fraction of the time.
 
-Sarvam is that system. He is **not a chatbot and not a search engine** — he is a well-read junior consultant who has read every proposal IV has ever sent, remembers all of them, interviews you about the new deal, proposes an architecture you must approve, and then drafts the full document section by section, grounded in what IV has actually delivered before.
+Shilpi is that system. He is **not a chatbot and not a search engine** — he is a well-read junior consultant who has read every proposal IV has ever sent, remembers all of them, interviews you about the new deal, proposes an architecture you must approve, and then drafts the full document section by section, grounded in what IV has actually delivered before.
 
 ### The economics behind it
 
@@ -95,7 +95,7 @@ Sarvam is that system. He is **not a chatbot and not a search engine** — he is
 | Time to first full draft, manual process | 2 to 5 person-days | IV internal baseline |
 | Proposal content that is static/reusable across deals | ~60% | IV corpus analysis, 10 sample proposals |
 | Diagrams that are reused or templated across proposals | ~38% | IV corpus analysis, perceptual hashing of 260 embedded images |
-| Source proposals in the working corpus | 11 ingested, 1,413 chunks | Sarvam Supabase, live |
+| Source proposals in the working corpus | 11 ingested, 1,413 chunks | Shilpi Supabase, live |
 | Target time to first draft | under 2 hours | Project success criterion (V1) |
 | Target output size (Lite, email-friendly) | under 5 MB | Project success criterion (V1) |
 
@@ -108,7 +108,7 @@ Sarvam is that system. He is **not a chatbot and not a search engine** — he is
 | Fabricated client references / pricing | Zero | Zero |
 | Drafts requiring major rework | under 30% | under 15% |
 
-### What Sarvam will not do
+### What Shilpi will not do
 
 - **He will not invent client references or metrics.** If he does not know something, he says so, and inserts an `[SME REVIEW]` marker.
 - **He will not fill in pricing.** Commercials are always a human call. He sets up the table; the team fills in the numbers.
@@ -139,7 +139,7 @@ Honest about what is not done, so no one mistakes the current state for producti
 flowchart TB
     subgraph EC2["AWS EC2 · Ubuntu 24.04 (ARM) · Mumbai region"]
         OWUI["Open WebUI<br/>(chat frontend, public)"]
-        BRAIN["Sarvam Brain<br/>FastAPI (internal-only)"]
+        BRAIN["Shilpi Brain<br/>FastAPI (internal-only)"]
         OWUI -->|OpenAI-compatible API| BRAIN
     end
 
@@ -177,7 +177,7 @@ flowchart TB
 ```mermaid
 sequenceDiagram
     participant U as User (Open WebUI)
-    participant B as Sarvam Brain
+    participant B as Shilpi Brain
     participant S as Supabase (pgvector)
     participant L as GLM 5.2 / Qwen3
     participant D as Document Engine
@@ -204,7 +204,7 @@ sequenceDiagram
 |---|---|---|
 | Agent runtime | **FastAPI brain** (Python) | Replaced the originally-planned Hermes agent after evaluating framework lock-in. A thin FastAPI service is fully auditable, has no telemetry, and every prompt change is a tracked commit. Skills are plain Python modules, not a proprietary format |
 | LLM gateway | **OpenRouter** | Provider-agnostic. One key, one contract, swap models by changing a constant. No per-provider SDK lock-in |
-| Primary LLM | **GLM 5.2** (`z-ai/glm-5.2`) | Strong long-context drafting at low cost. Hardcoded so the user-facing model list is a single entry: "Sarvam Architect" |
+| Primary LLM | **GLM 5.2** (`z-ai/glm-5.2`) | Strong long-context drafting at low cost. Hardcoded so the user-facing model list is a single entry: "Shilpi Architect" |
 | Fallback LLM | **Qwen3 235B** (`qwen/qwen3-235b-a22b-2507`) | Auto-triggered at every LLM call site if the primary fails before streaming. DeepSeek was removed entirely (it spiraled on ambiguous compliance requirements) |
 | Embeddings | **text-embedding-3-small** (1536-dim) | Cheap, well-understood, good enough for vendor/section-typed retrieval. Negligible one-time cost to embed the whole bank |
 | Retrieval | **Supabase pgvector** + `match_proposal_chunks` RPC | Vector similarity with section-type awareness and metadata filters, in the same database as everything else. No separate vector store to operate |
@@ -218,7 +218,7 @@ sequenceDiagram
 
 ## The Proposal Bank and RAG
 
-Sarvam grounds every draft in what IV has actually delivered, never in model memory.
+Shilpi grounds every draft in what IV has actually delivered, never in model memory.
 
 - **Bank:** 100+ historical proposals (DOCX/PDF). **Working corpus:** 11 proposals ingested and embedded as 1,413 chunks across 15 section types.
 - **Section taxonomy:** `exec_summary`, `scope`, `solution`, `architecture`, `assumptions`, `timeline`, `pricing`, `why_vendor`, `similar_experience`, `cover`, `table`, `diagram`, `ocr`, `page`, `other`. Retrieval is section-type aware — an executive-summary query matches executive-summary chunks, not commercial ones.
@@ -235,7 +235,7 @@ Sarvam grounds every draft in what IV has actually delivered, never in model mem
 
 ## Conversational Workflow
 
-Sarvam follows a four-stage conversation, with a hard human gate before any drafting begins — **enforced end-to-end in the chat flow** as of 2026-07-27. A new thread opens with an intent router (start a new proposal / search past proposals / discuss); conversation state travels in invisible markers inside assistant replies, so the stateless OpenAI-compatible protocol needs no OWUI plugin.
+Shilpi follows a four-stage conversation, with a hard human gate before any drafting begins — **enforced end-to-end in the chat flow** as of 2026-07-27. A new thread opens with an intent router (start a new proposal / search past proposals / discuss); conversation state travels in invisible markers inside assistant replies, so the stateless OpenAI-compatible protocol needs no OWUI plugin.
 
 ```mermaid
 flowchart LR
@@ -250,7 +250,7 @@ flowchart LR
 A 24-bucket structured interview collects everything needed for an accurate draft: client and engagement details, scale and volumetrics, scope, **architecture inputs (deployment model, required diagram types and count, hardware sizing, HA/DR, security architecture)**, migration, integrations (HRMS, AD/Exchange, IdP/SSO, applications), compliance and regulatory specifics, timeline, MSS-specific SLA/commercials (conditional), submission constraints, audience and win-themes, current-state systems, NFRs, delivery model, post-go-live, and reuse controls. Every answer persists to the `intake_sessions` table.
 
 ### Stage 2 — Architecture Proposal and Human-in-Loop Gate
-Sarvam retrieves the closest-matching past architecture, generates a `DiagramSpec`, renders it for preview, and presents it. The user **approves or rejects with comments**; on rejection he regenerates incorporating the feedback. Approved diagrams are persisted and embedded in the DOCX. **V1 contract (enforced):** drafting is hard-gated on an approved architecture — a "generate the proposal" request before approval is refused in chat. The reusable spec-template library remains deferred.
+Shilpi retrieves the closest-matching past architecture, generates a `DiagramSpec`, renders it for preview, and presents it. The user **approves or rejects with comments**; on rejection he regenerates incorporating the feedback. Approved diagrams are persisted and embedded in the DOCX. **V1 contract (enforced):** drafting is hard-gated on an approved architecture — a "generate the proposal" request before approval is refused in chat. The reusable spec-template library remains deferred.
 
 ### Stage 3 — Full Proposal Assembly
 Static sections (Company Profile, Why-Vendor, Methodology) are pulled near-verbatim from the RAG bank. Dynamic sections (Executive Summary, Sizing, RACI, Timeline, Solution Architecture) are generated fresh, grounded in retrieved chunks. A compliance matrix is classified per requirement. The document is assembled into a branded DOCX with a refreshable TOC, citation appendix, and SME-review markers.
@@ -297,7 +297,7 @@ flowchart LR
     OUT --> GUARD["truncation + length guards"]
 ```
 
-- **Primary:** GLM 5.2. **Fallback:** Qwen3 235B. Both are hardcoded constants — there is no model chooser in the UI; Open WebUI exposes a single model, "Sarvam Architect".
+- **Primary:** GLM 5.2. **Fallback:** Qwen3 235B. Both are hardcoded constants — there is no model chooser in the UI; Open WebUI exposes a single model, "Shilpi Architect".
 - Fallback applies at all five LLM call sites (chat drafting, section drafting, compliance classification, open-router raw drafting, and diagram-spec generation).
 - **Why no DeepSeek:** it spiraled on ambiguous compliance requirements, generating hundreds of thousands of characters and multi-minute hangs. Removed in favor of GLM/Qwen with per-call token caps, frequency penalty, and truncation guards.
 - **Why no image-generation model for diagrams:** image-gen models mangle precise text labels and break schematic consistency, and editing labels onto a raster diagram is unreliable. D2 (with Graphviz fallback) renders the DiagramSpec deterministically — no model failure point — and the only model involved (GLM spec generation) already has the Qwen fallback.
@@ -314,7 +314,7 @@ The brain exposes an OpenAI-compatible interface plus proposal-production endpoi
 |---|---|---|
 | GET | `/health` | Liveness + active primary/fallback model |
 | GET | `/v1/keepalive` | Touches Postgres (prevents Supabase free-tier idle pause); cron-curled daily on the host |
-| GET | `/v1/models` | Lists the single `sarvam-architect` model |
+| GET | `/v1/models` | Lists the single `shilpi-architect` model |
 | POST | `/v1/chat/completions` | Conversation state machine: intent router → discovery interview → architecture approval gate → drafting; vault mode = grounded RAG chat (streaming, SSE heartbeats) |
 | POST | `/v1/compliance-matrix` | Classify RFP requirements against retrieved evidence |
 | GET | `/v1/intake-template` | Return the 24-bucket discovery interview (filters by proposal type) |
@@ -339,7 +339,7 @@ Persistence is fail-soft: if a Supabase write fails, the generated DOCX is still
 | Database | Row-Level Security enforced at the Postgres layer on every table. All writes use a server-side key; client-facing access is policy-gated. RLS is never disabled |
 | Secrets | API keys live only in the server's local environment file (restricted permissions). `.gitignore` blocks `.env`, `*.pem`, `*.key`, and key-pattern files repo-wide |
 | Client data | Source proposals under NDA live under `data/raw/` (gitignored, never committed). Only anonymised metadata is version-controlled |
-| Frontend | Open WebUI open sign-ups disabled; only the Sarvam Architect model is exposed (all other LLM connections removed) |
+| Frontend | Open WebUI open sign-ups disabled; only the Shilpi Architect model is exposed (all other LLM connections removed) |
 | LLM data | OpenRouter is the only external LLM path. No client content is sent to image-generation or rendering APIs |
 | Availability | A daily keep-alive pings the database to prevent free-tier idle pause, and auto-restores the project if it is ever found paused |
 | Key hygiene | API keys rotated quarterly. The WordPress Lightsail instance is out of scope and never touched by this project |
@@ -371,7 +371,7 @@ The original plan in [`docs/PROJECT.md`](docs/PROJECT.md) is a 6-phase, 12-sprin
 ```mermaid
 gantt
     dateFormat  YYYY-MM-DD
-    title Sarvam build — phases and enhancement passes (all passes done)
+    title Shilpi build — phases and enhancement passes (all passes done)
     section Phase 0 — Foundation
     Accounts, repo, credentials                 :done, p0, 2026-07-08, 2d
     section Phase 1 — Data Foundation
@@ -448,7 +448,7 @@ The blueprint's intent (conversation-first, retrieval-grounded, human-in-loop, s
 ```
 iv-sarvam/
 ├── README.md                         # this file
-├── backend/brain/                    # the Sarvam brain (FastAPI)
+├── backend/brain/                    # the Shilpi brain (FastAPI)
 │   ├── app.py                        # endpoints, model routing, fallback
 │   ├── document_engine.py            # section drafting + DOCX assembly
 │   ├── proposal_templates.py         # Jinja2 section templates (implementation / mss)
@@ -467,7 +467,7 @@ iv-sarvam/
 │   └── assets/                       # OWUI logo assets
 ├── supabase/migrations/              # SQL migrations (schema + RLS + RPCs)
 │   ├── 001_init.sql
-│   └── sarvam_005_intake_and_diagrams.sql
+│   └── shilpi_005_intake_and_diagrams.sql
 ├── scripts/                          # ingestion + embedding pipeline
 ├── docs/                             # project, persona, sprint docs
 ├── data/                             # raw (gitignored) + tagging templates
@@ -502,7 +502,7 @@ python tests/test_document_engine.py
 Deployment to the EC2 host (run on the host):
 
 ```bash
-cd ~/iv-sarvam && git fetch && git pull origin <branch> && cd deploy && docker compose up -d --build sarvam-brain
+cd ~/iv-sarvam && git fetch && git pull origin <branch> && cd deploy && docker compose up -d --build sarvam-brain  # container name intentionally unchanged, see deploy/docker-compose.yml
 curl -s http://127.0.0.1:8000/health
 ```
 
@@ -512,7 +512,7 @@ Open WebUI is the user-facing surface; the brain is never exposed directly.
 
 ## Persona and Team
 
-**Sarvam's character** (full spec in [`docs/SARVAM_PERSONA.md`](docs/SARVAM_PERSONA.md), one-pager in [`docs/MEET_SARVAM.md`](docs/MEET_SARVAM.md)): consultative not compliant; precise on scope, conservative on claims; vendor-agnostic by conviction; bilingually and culturally aware; structured but never robotic; curious about the deal, not just the RFP; self-aware about his limits. Signature opening: *"Sarvam here — IV's Proposal Architect. New deal, or picking up something from earlier?"*
+**Shilpi's character** (full spec in [`docs/SHILPI_PERSONA.md`](docs/SHILPI_PERSONA.md), one-pager in [`docs/MEET_SHILPI.md`](docs/MEET_SHILPI.md)): consultative not compliant; precise on scope, conservative on claims; vendor-agnostic by conviction; bilingually and culturally aware; structured but never robotic; curious about the deal, not just the RFP; self-aware about his limits. Signature opening: *"Shilpi here — IV's Proposal Architect. New deal, or picking up something from earlier?"*
 
 | Role | Person | Responsibility |
 |---|---|---|
@@ -527,4 +527,4 @@ Proprietary — Inspirit Vision internal use only. Not for redistribution. Clien
 
 ---
 
-*Maintained by the IV team. Start with [`docs/PROJECT.md`](docs/PROJECT.md) for the full plan, [`docs/MEET_SARVAM.md`](docs/MEET_SARVAM.md) for the persona, or this README for the current build state.*
+*Maintained by the IV team. Start with [`docs/PROJECT.md`](docs/PROJECT.md) for the full plan, [`docs/MEET_SHILPI.md`](docs/MEET_SHILPI.md) for the persona, or this README for the current build state.*

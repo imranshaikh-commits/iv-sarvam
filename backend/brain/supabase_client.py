@@ -28,7 +28,7 @@ import httpx
 
 from intake_template import missing_required
 
-log = logging.getLogger("sarvam-brain.supabase")
+log = logging.getLogger("shilpi-brain.supabase")
 
 # Read at import but tolerate absence so the module stays importable keyless.
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -216,7 +216,7 @@ async def insert_generated_proposal(
     """Persist a generated proposal draft. Fail-soft -> None.
 
     created_by is intentionally omitted (NULL). The DB column was made nullable
-    in sarvam_005 and the service-role key bypasses the RLS INSERT policy, so a
+    in shilpi_005 and the service-role key bypasses the RLS INSERT policy, so a
     NULL created_by insert succeeds. Restore once real auth is wired.
 
     status MUST be one of the values allowed by the generated_proposals_status_check

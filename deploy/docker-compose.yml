@@ -1,6 +1,11 @@
 # =====================================================
-# SARVAM — Production stack
+# SHILPI (product name) — Production stack
 # =====================================================
+# Internal Docker identifiers below (container_name, service key, project
+# `name:`, env_file path) intentionally KEPT as "sarvam" — legacy internal
+# codename. They are invisible to end users; renaming them would risk
+# breaking Open WebUI's stored connection to the brain for zero visible
+# benefit. Only the user-facing WEBUI_NAME changed.
 # Runs on EC2 sarvam-server (13.206.20.25).
 # Usage:  cd ~/iv-sarvam/deploy && docker compose up -d --build
 #
@@ -25,7 +30,7 @@ services:
     # Branding — persistent across rebuilds (was lost in the Sprint 3
     # docker-run -> compose migration because it was only a runtime env var).
     environment:
-      - "WEBUI_NAME=Sarvam AI - Inspirit Vision Proposal Architect"
+      - "WEBUI_NAME=Shilpi AI - Inspirit Vision Proposal Architect"
       - "WEBUI_FAVICON_URL=/static/favicon.png"
     ports:
       - "8080:8080"

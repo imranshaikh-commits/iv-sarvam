@@ -1,4 +1,4 @@
-# Sarvam — Forward Phase Plan
+# Shilpi — Forward Phase Plan
 
 > Written 2026-07-29, after the first end-to-end validated run (discovery →
 > diagram plan → per-diagram approval → drafting → DOCX/PDF with embedded
@@ -9,7 +9,7 @@
 
 The project is feature-rich and evidence-poor. Every remaining quality decision —
 model choice, proposal length, whether diagram polish matters, how much corpus is
-enough — is currently argued from intuition because **no Sarvam output has ever
+enough — is currently argued from intuition because **no Shilpi output has ever
 been scored against a known-good human proposal**. So validation comes before
 hardening, and hardening before scale.
 
@@ -25,10 +25,10 @@ Goal: replace opinion with measurement. Nothing here needs new architecture.
 ### 6.0 — Recreation test (single proposal, ground truth)
 
 Pick ONE historical proposal, extract its inputs, feed them through the 22-area
-discovery interview, and compare Sarvam's output against the human original.
+discovery interview, and compare Shilpi's output against the human original.
 
 **Leakage check first — this decides whether the test means anything.**
-11 proposals are already ingested. If the chosen proposal is one of them, Sarvam
+11 proposals are already ingested. If the chosen proposal is one of them, Shilpi
 will retrieve its own source text and reproduce it, and the result will look
 excellent while proving nothing. Confirm the candidate is NOT in the corpus:
 
@@ -46,7 +46,7 @@ excluded from retrieval.
 2. Extract the 22 areas of discovery input from it (client, vendor, scale, scope,
    architecture, integrations, compliance, timeline, commercials …). Record these
    verbatim as the test fixture so the run is repeatable.
-3. Run a fresh Sarvam chat end to end using only those inputs.
+3. Run a fresh Shilpi chat end to end using only those inputs.
 4. Score the output against the human original using the sheet below.
 5. Keep the fixture, the generated DOCX and the score in `docs/evals/`.
 
@@ -86,7 +86,7 @@ Bulk-ingest the IV proposal bank. Bounds every quality metric downstream.
   reason not to ingest them as IV content.
 - Run each end to end; score with the 6.0 sheet.
 - Involve Ashish for technical review and Rajnish for the "would you send this"
-  judgement. **Nobody but Imran has used Sarvam to date; that is the real gap.**
+  judgement. **Nobody but Imran has used Shilpi to date; that is the real gap.**
 
 ### 6.3 — Evaluation harness
 
@@ -171,7 +171,7 @@ Everything here should be justified by pilot findings, not assumed.
 - Rollout beyond the pilot group.
 - Monitoring and alerting on the brain and the database.
 - Operational runbook and key-rotation schedule.
-- Re-apply Sarvam/IV branding in Open WebUI (see `docs/BACKLOG.md`).
+- Re-apply Shilpi/IV branding in Open WebUI (see `docs/BACKLOG.md`).
 - AWS budget alert (see `docs/BACKLOG.md`).
 
 ---

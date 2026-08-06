@@ -108,7 +108,7 @@ def test_build_dot_escapes_quotes_no_injection():
     # node-definition lines, which start with an indented quoted id.
     node_defs = [ln for ln in dot.splitlines() if ln.strip().startswith('"a"')]
     assert len(node_defs) == 1
-    assert dot.startswith("digraph sarvam_diagram {")
+    assert dot.startswith("digraph shilpi_diagram {")
     assert dot.strip().endswith("}")
 
 

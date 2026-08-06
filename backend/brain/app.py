@@ -1,7 +1,7 @@
 """
-sarvam-brain — Phase 1 MVP
+shilpi-brain — Phase 1 MVP
 ==========================
-OpenAI-compatible API that Open WebUI treats as a model ("Sarvam Architect").
+OpenAI-compatible API that Open WebUI treats as a model ("Shilpi Architect").
 
 Flow per user message:
   1. Embed the query  (openai/text-embedding-3-small via OpenRouter — MUST match ingest)
@@ -53,7 +53,7 @@ from diagram_engine import DiagramSpec, InvalidTransition
 import export_engine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("sarvam-brain")
+log = logging.getLogger("shilpi-brain")
 
 OPENROUTER_BASE = os.environ.get("OPENROUTER_BASE", "https://openrouter.ai/api/v1")
 OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
@@ -66,7 +66,7 @@ EMBED_MODEL = "openai/text-embedding-3-small"   # must match scripts/ingest_v2.p
 PRIMARY_LLM_MODEL = "z-ai/glm-5.2"
 FALLBACK_LLM_MODEL = "qwen/qwen3-235b-a22b-2507"
 TOP_K = int(os.environ.get("TOP_K", "8"))
-MODEL_ID = "sarvam-architect"
+MODEL_ID = "shilpi-architect"
 
 # Single Inspirit Vision organisation. Hard-coded until real multi-tenant auth
 # propagates an org id through the request. Used to scope intake sessions and
@@ -80,9 +80,9 @@ COMPLIANCE_TRIGGER = "compliance matrix"
 # Structured extraction/classification uses the same hardcoded primary model.
 STRUCTURED_MODEL = PRIMARY_LLM_MODEL
 
-app = FastAPI(title="sarvam-brain")
+app = FastAPI(title="shilpi-brain")
 
-SYSTEM_PROMPT = """You are Sarvam, InspiritVision's internal proposal assistant (an IAM consulting firm).
+SYSTEM_PROMPT = """You are Shilpi, InspiritVision's internal proposal assistant (an IAM consulting firm).
 You answer questions and draft proposal content grounded in IV's past proposals, provided below as EVIDENCE.
 
 HARD RULES (non-negotiable):
@@ -223,7 +223,7 @@ def parse_intake_session_id(body: dict) -> str | None:
 
 
 INTERVIEW_INTRO = (
-    "Hi, I'm **Sarvam**, InspiritVision's proposal assistant. Before I draft "
+    "Hi, I'm **Shilpi**, InspiritVision's proposal assistant. Before I draft "
     "anything, I run a short **Stage 1 discovery interview** so the proposal is "
     "grounded in your specifics rather than generic boilerplate."
 )
@@ -256,7 +256,7 @@ def build_interview_start_message(proposal_type: str | None = None) -> str:
 # Chat state machine helpers (OWUI unblock)
 # ---------------------------------------------------------------------------
 
-def _emit_chat(content: str, stream: bool, resp_id: str = "chatcmpl-sarvam-chat"):
+def _emit_chat(content: str, stream: bool, resp_id: str = "chatcmpl-shilpi-chat"):
     """Return ``content`` as either an SSE stream or a single chat completion.
 
     Both shapes are needed because OWUI streams by default while direct API
@@ -271,7 +271,7 @@ def _emit_chat(content: str, stream: bool, resp_id: str = "chatcmpl-sarvam-chat"
     return JSONResponse(_chat_completion_json(content, resp_id=resp_id))
 
 
-async def _emit_chat_lazy(make_content, stream: bool, resp_id: str = "chatcmpl-sarvam-chat",
+async def _emit_chat_lazy(make_content, stream: bool, resp_id: str = "chatcmpl-shilpi-chat",
                           heartbeat: float = 10.0):
     """Like ``_emit_chat`` but for content that takes a while to produce.
 
@@ -516,7 +516,7 @@ def gap_fill_bucket(missing_ids: list[str], proposal_type: str | None = None) ->
 # for both: a complex deployment spec measured ~50s per attempt, so 75s killed
 # the retry path exactly when it was needed. Diagrams are produced one at a time
 # with SSE heartbeats, so a longer ceiling costs nothing but patience.
-_DIAGRAM_SPEC_TIMEOUT_S = float(os.environ.get("SARVAM_DIAGRAM_SPEC_TIMEOUT_S", "180"))
+_DIAGRAM_SPEC_TIMEOUT_S = float(os.environ.get("SHILPI_DIAGRAM_SPEC_TIMEOUT_S", "180"))
 
 # Diagram specs are the hardest structured output we ask for (nested node/edge
 # arrays with validators) and GLM has proven marginal at them. This points that
@@ -524,12 +524,12 @@ _DIAGRAM_SPEC_TIMEOUT_S = float(os.environ.get("SARVAM_DIAGRAM_SPEC_TIMEOUT_S", 
 # through to every generate_diagram_spec call site — defining it and forgetting
 # to pass it made the whole override silently decorative.
 DIAGRAM_LLM_MODELS = [
-    m.strip() for m in os.environ.get("SARVAM_DIAGRAM_MODELS", "").split(",") if m.strip()
+    m.strip() for m in os.environ.get("SHILPI_DIAGRAM_MODELS", "").split(",") if m.strip()
 ]
-_ARCH_ROUND_BUDGET_S = float(os.environ.get("SARVAM_ARCH_ROUND_BUDGET_S", "240"))
+_ARCH_ROUND_BUDGET_S = float(os.environ.get("SHILPI_ARCH_ROUND_BUDGET_S", "240"))
 # Diagrams are independent, so they run concurrently. Bounded to stay polite to
 # OpenRouter rather than firing six structured calls at once.
-_ARCH_CONCURRENCY = int(os.environ.get("SARVAM_ARCH_CONCURRENCY", "3"))
+_ARCH_CONCURRENCY = int(os.environ.get("SHILPI_ARCH_CONCURRENCY", "3"))
 
 
 def _answers_summary(answers: dict, limit: int = 12000) -> str:
@@ -887,8 +887,8 @@ async def reject_architecture(proposal_id: str | None, comment: str) -> str:
     return chat_state.ARCHITECTURE_REJECTED_MESSAGE
 
 
-_SELF_BASE = os.environ.get("SARVAM_SELF_BASE", "http://127.0.0.1:8000")
-_DRAFT_TIMEOUT_S = float(os.environ.get("SARVAM_DRAFT_TIMEOUT_S", "1500"))
+_SELF_BASE = os.environ.get("SHILPI_SELF_BASE", "http://127.0.0.1:8000")
+_DRAFT_TIMEOUT_S = float(os.environ.get("SHILPI_DRAFT_TIMEOUT_S", "1500"))
 
 
 async def generate_proposal_from_chat(session_id: str | None,
@@ -1228,7 +1228,7 @@ def render_matrix_markdown(matrix: ComplianceMatrix) -> str:
     return "\n".join(out)
 
 
-def _sse_chunk(content: str, resp_id: str = "chatcmpl-sarvam-compliance") -> str:
+def _sse_chunk(content: str, resp_id: str = "chatcmpl-shilpi-compliance") -> str:
     return "data: " + json.dumps({
         "id": resp_id,
         "object": "chat.completion.chunk",
@@ -1238,7 +1238,7 @@ def _sse_chunk(content: str, resp_id: str = "chatcmpl-sarvam-compliance") -> str
     }) + "\n\n"
 
 
-def _chat_completion_json(content: str, resp_id: str = "chatcmpl-sarvam-compliance") -> dict:
+def _chat_completion_json(content: str, resp_id: str = "chatcmpl-shilpi-compliance") -> dict:
     return {
         "id": resp_id,
         "object": "chat.completion",
@@ -1830,7 +1830,7 @@ async def chat_completions(request: Request):
     # user's answer, and advance a discovery bucket spuriously. Answer harmlessly
     # and mutate nothing.
     if chat_state.is_owui_task_prompt(q):
-        return _emit_chat("Sarvam", stream, resp_id="chatcmpl-sarvam-task")
+        return _emit_chat("Shilpi", stream, resp_id="chatcmpl-shilpi-task")
 
     # ---- Conversation state machine -------------------------------------
     # Previously this was an unconditional gate: parse_intake_session_id(body)

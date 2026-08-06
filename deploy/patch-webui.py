@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Sarvam branding patch — applied at image build time.
+"""Shilpi branding patch — applied at image build time.
 
 Open WebUI (v0.10.x) has no admin/DB setting for either of these, so we patch
 the Python source in the base image directly:
 
 1. env.py: strip the forced ' (Open WebUI)' suffix that Open WebUI appends to
    any custom WEBUI_NAME. With this gone, the WEBUI_NAME env var we set in
-   docker-compose.yml ("Sarvam AI - Inspirit Vision Proposal Architect")
+   docker-compose.yml ("Shilpi AI - Inspirit Vision Proposal Architect")
    shows cleanly on the sign-in page and browser tab.
 
 2. main.py: the sign-in page only renders the logo centered above the title
@@ -62,4 +62,4 @@ else:
     method = f"fallback (license_metadata made truthy); guard regex matched {n}"
 
 open(MAIN, "w").write(s)
-print(f"Sarvam branding patch applied OK ({method})")
+print(f"Shilpi branding patch applied OK ({method})")

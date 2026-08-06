@@ -32,7 +32,7 @@ from typing import Awaitable, Callable, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-log = logging.getLogger("sarvam-brain.diagram-engine")
+log = logging.getLogger("shilpi-brain.diagram-engine")
 
 # --- hard caps (anti-runaway / anti-injection) ------------------------------
 MAX_NODES = 40
@@ -191,7 +191,7 @@ def build_dot(spec: DiagramSpec) -> str:
     rankdir = _RANKDIR.get(spec.diagram_type, "TB")
 
     lines: list[str] = [
-        "digraph sarvam_diagram {",
+        "digraph shilpi_diagram {",
         f'  rankdir={rankdir};',
         '  graph [fontname="Helvetica", labelloc="t", '
         f'label="{_escape_label(spec.title)}"];',
@@ -441,19 +441,19 @@ def _render_with_d2(spec: DiagramSpec, fmt: str, timeout: float) -> Optional[byt
     return _svg_to_png(svg, D2_PNG_WIDTH)
 
 
-D2_THEME = os.environ.get("SARVAM_D2_THEME", "4")       # 4 = neutral corporate
+D2_THEME = os.environ.get("SHILPI_D2_THEME", "4")       # 4 = neutral corporate
 # ELK (Eclipse Layout Kernel) over the default dagre: more mature, actively
 # maintained, and it produces clean orthogonal edge routing with far better
 # handling of nested containers — which is what zone-based IAM deployment
 # diagrams are. Both are bundled in the D2 binary and free (MPL-2.0); TALA is
 # Terrastruct's paid engine and is deliberately NOT used (commercial use needs a
 # licence, and unlicensed renders carry a watermark).
-D2_LAYOUT = os.environ.get("SARVAM_D2_LAYOUT", "elk")
+D2_LAYOUT = os.environ.get("SHILPI_D2_LAYOUT", "elk")
 
 # Per-part prompt budgets for spec generation. Deliberately modest: the prompt
 # was only ever ~4k and the model still stalled, so size is not the bottleneck —
 # a bigger prompt would just cost more for no gain.
-_SPEC_CONTEXT_BUDGET = int(os.environ.get("SARVAM_SPEC_CONTEXT_BUDGET", "3500"))
+_SPEC_CONTEXT_BUDGET = int(os.environ.get("SHILPI_SPEC_CONTEXT_BUDGET", "3500"))
 # A spec with no nodes is schema-VALID (nodes defaults to []) but useless — the
 # model returned exactly that in a live run and we rendered a diagram containing
 # only its own title. Content is therefore checked explicitly.
@@ -462,15 +462,15 @@ _SPEC_CONTEXT_BUDGET = int(os.environ.get("SARVAM_SPEC_CONTEXT_BUDGET", "3500"))
 # enforce richness (that is the guidance prompt's job). A two-node spec
 # (source -> target) is a legitimate minimal diagram, so rejecting it would trade
 # one failure mode for another.
-MIN_SPEC_NODES = int(os.environ.get("SARVAM_MIN_SPEC_NODES", "2"))
+MIN_SPEC_NODES = int(os.environ.get("SHILPI_MIN_SPEC_NODES", "2"))
 
 # A diagram is a GRAPH. A spec with plenty of nodes and almost no edges renders
 # as a grouped list, which is exactly what happened live: 12 nodes, 1 edge. A
 # connected graph needs at least n-1 edges, so that is the bar — and orphan
 # nodes (no incident edge at all) are counted separately because a few hub-and-
 # spoke shapes can satisfy the count while still leaving components floating.
-MIN_EDGE_RATIO = float(os.environ.get("SARVAM_MIN_EDGE_RATIO", "0.6"))
-MAX_ORPHAN_RATIO = float(os.environ.get("SARVAM_MAX_ORPHAN_RATIO", "0.34"))
+MIN_EDGE_RATIO = float(os.environ.get("SHILPI_MIN_EDGE_RATIO", "0.6"))
+MAX_ORPHAN_RATIO = float(os.environ.get("SHILPI_MAX_ORPHAN_RATIO", "0.34"))
 
 
 def spec_shortfall(spec: "DiagramSpec") -> str | None:
@@ -491,9 +491,9 @@ def spec_shortfall(spec: "DiagramSpec") -> str | None:
         return (f"{len(orphans)} of {n} components had no connections at all "
                 f"({', '.join(orphans[:6])})")
     return None
-_SPEC_EVIDENCE_BUDGET = int(os.environ.get("SARVAM_SPEC_EVIDENCE_BUDGET", "1500"))
-D2_PNG_WIDTH = int(os.environ.get("SARVAM_D2_PNG_WIDTH", "1800"))
-DIAGRAM_RENDERER = os.environ.get("SARVAM_DIAGRAM_RENDERER", "auto")  # auto|d2|graphviz
+_SPEC_EVIDENCE_BUDGET = int(os.environ.get("SHILPI_SPEC_EVIDENCE_BUDGET", "1500"))
+D2_PNG_WIDTH = int(os.environ.get("SHILPI_D2_PNG_WIDTH", "1800"))
+DIAGRAM_RENDERER = os.environ.get("SHILPI_DIAGRAM_RENDERER", "auto")  # auto|d2|graphviz
 
 
 def render_spec(

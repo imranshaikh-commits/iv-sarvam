@@ -10,7 +10,7 @@ of it is IV-authored proposal prose. Ingesting it wholesale would actively damag
 retrieval quality:
 
   * `RFP/` holds CLIENT-authored documents. Ingested into the proposal bank they
-    would be retrieved and cited as if they were IV's own past work — Sarvam
+    would be retrieved and cited as if they were IV's own past work — Shilpi
     would ground IV's voice in the client's words.
   * `Questionaires/`, `Product Comparison/` are vendor/marketing material, not
     IV positioning.

@@ -1,6 +1,6 @@
 # Evaluation fixtures
 
-Fixtures for measuring Sarvam's output quality against known-good human
+Fixtures for measuring Shilpi's output quality against known-good human
 proposals. See `docs/PHASES.md` §6.0 for the protocol and §6.3 for where this is
 heading.
 
@@ -48,10 +48,10 @@ committed; the fixture *content* cannot.
 
 ## What the test measures
 
-Given complete, expert inputs: does Sarvam produce a structurally complete,
+Given complete, expert inputs: does Shilpi produce a structurally complete,
 correctly grounded, IV-voiced document a reviewer could send with limited rework?
 
-It does **not** measure whether Sarvam could design the solution unaided. That is
+It does **not** measure whether Shilpi could design the solution unaided. That is
 a different question and not the product's job.
 
 ## Watch for loss, not just invention

@@ -162,7 +162,25 @@ Everything here should be justified by pilot findings, not assumed.
   the ~4 recurring diagram types. Otherwise leave it.
 - **Durable diagram spec-template store** (per vendor + diagram type) — deferred
   from Pass 4.
-- **Client-logo sourcing** with approval-gated embedding — deferred from Pass 5.
+- **Visual asset reuse (screenshots, not architecture diagrams)** — human proposals
+  are roughly half visual (40 images in the Amlak proposal alone); Shilpi currently
+  produces generated diagrams only. Three kinds, different treatment:
+  - IV corporate assets (client-logo walls, delivery methodology, maturity journey
+    graphics) — best candidate: stable, IV-owned, does not date. Start here.
+  - Vendor product UI (IdentityIQ dashboards, PingID app, etc.) — reusable but
+    needs a `captured_date`/freshness check; a stale console screenshot in a new
+    proposal looks careless.
+  - Client-specific architecture — NOT reusable across clients; already correctly
+    handled by the diagram engine.
+  Storage: no separate database — one new `visual_assets` table + one storage
+  bucket in the existing Supabase project, same pattern already used for
+  diagrams (`architecture_diagrams` table + `upload_diagram_render`). Placement
+  can be derived from the corpus itself: extracting
+  `(section_heading, image, caption)` triples during ingestion gives a
+  placement model for free, without designing one from scratch.
+  **Hard requirement: a human approval gate before any stock image is embedded
+  in a client document — the same discipline as the diagram approval flow.**
+  An unreviewed image landing in a proposal is a worse failure than no image.
 
 ---
 

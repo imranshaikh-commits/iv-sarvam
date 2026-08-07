@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -565,6 +566,53 @@ async def _architecture_evidence(client: httpx.AsyncClient, answers: dict) -> st
         log.warning("architecture evidence retrieval failed (fail-soft): %s", e)
         return ""
     return build_evidence_block(chunks)[:6000]
+
+
+async def _resolve_client_logo(answers: dict) -> str | None:
+    """Turn the intake's client-logo answer into a local file path.
+
+    The interview asks for a client logo (area 10) and assemble_docx accepts a
+    path, but nothing joined them up — every document rendered the bordered
+    "Client Logo" placeholder even when a logo had been supplied. The answer may
+    be an https URL or a path already on disk; anything else is ignored.
+    """
+    raw = ""
+    for key in ("client_logo", "logo_url", "logo"):
+        val = answers.get(key)
+        if val:
+            raw = " ".join(str(val).split())
+            break
+    if not raw or raw.lower() in ("skip", "none", "n/a", "na", "-"):
+        return None
+
+    # A bare local path (rare, but supported).
+    if not raw.lower().startswith(("http://", "https://")):
+        return raw if os.path.exists(raw) else None
+
+    # Pull the first URL out of a possibly-prose answer.
+    match = re.search(r"https?://\S+", raw)
+    if not match:
+        return None
+    url = match.group(0).rstrip(").,;\"'")
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            resp = await c.get(url)
+            resp.raise_for_status()
+            data = resp.content
+        if not data or len(data) > 8 * 1024 * 1024:
+            log.warning("client logo rejected (empty or >8MB): %s", url)
+            return None
+        suffix = os.path.splitext(url.split("?")[0])[1].lower()
+        if suffix not in (".png", ".jpg", ".jpeg", ".gif", ".bmp"):
+            suffix = ".png"
+        fd, path = tempfile.mkstemp(prefix="client_logo_", suffix=suffix)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        log.info("client logo downloaded (%d bytes) -> %s", len(data), path)
+        return path
+    except Exception as e:  # noqa: BLE001 — a missing logo must never fail a proposal
+        log.warning("could not fetch client logo (%s): %s", url, e)
+        return None
 
 
 PLAN_KEY = "_diagram_plan"
@@ -1487,6 +1535,7 @@ async def generate_proposal_endpoint(request: Request):
                 # drafting, so sizing, timeline, integrations, commercials and
                 # NFRs were captured, stored, and then silently discarded.
                 discovery_answers=intake_answers or None,
+                client_logo_path=await _resolve_client_logo(intake_answers or {}),
             )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)

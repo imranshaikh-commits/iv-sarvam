@@ -32,6 +32,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 import branding
+import document_qa
 from proposal_templates import (
     COMPLIANCE_SECTION_ID,
     SUBSECTION_FACETS,
@@ -464,9 +465,38 @@ async def _draft_with_retry(
         content = await draft_with_openrouter(client, system_prompt, user_prompt, max_tokens=max_tokens)
     if _is_blank(content):
         return None
-    # Single chokepoint for every drafted (sub)section: strip reasoning blocks
-    # and retrieval meta-commentary, then trim degenerate tails.
-    cleaned = strip_degenerate_tail(strip_model_artifacts(content))
+
+    # Single chokepoint for every drafted (sub)section.
+    cleaned = strip_model_artifacts(content)
+    cleaned, issues = document_qa.qa_text(cleaned)
+
+    # A degenerate draft is padding, not content. Re-draft once — truncating
+    # silently (the previous behaviour) hid the failure and lost real prose.
+    if any(i.startswith("degenerate") for i in issues):
+        log.warning("QA: degenerate draft (%s); re-drafting once",
+                    "; ".join(i for i in issues if i.startswith("degenerate")))
+        retry = await draft_with_openrouter(
+            client, system_prompt,
+            user_prompt + (
+                "\n\nIMPORTANT: your previous attempt padded the section by repeating "
+                "the same phrases. Write it again, shorter, with no repetition. Stop as "
+                "soon as the substance is covered — length is not a goal."
+            ),
+            max_tokens=max_tokens)
+        if not _is_blank(retry):
+            retry_clean, retry_issues = document_qa.qa_text(
+                strip_model_artifacts(retry))
+            if not any(i.startswith("degenerate") for i in retry_issues):
+                cleaned = retry_clean
+            else:
+                # Both attempts padded: keep the good prose, drop the padding.
+                log.warning("QA: re-draft still degenerate; truncating at onset")
+                cleaned = document_qa.truncate_at_degeneration(retry_clean)
+        else:
+            cleaned = document_qa.truncate_at_degeneration(cleaned)
+    elif issues:
+        log.info("QA: %s", "; ".join(issues))
+
     return cleaned if not _is_blank(cleaned) else None
 
 
@@ -648,34 +678,50 @@ _CITATION_RE = re.compile(r"\[(\d+)\]")
 
 def _add_static_toc(document: Document, sections: list[dict],
                     extra_titles: Optional[list[str]] = None) -> None:
-    """Write a readable contents list from the headings we already know.
+    """Write a formatted contents table from the headings we already know.
 
-    A bare Word TOC field renders as "Right-click here and choose 'Update
-    Field'..." until someone presses F9 — which looked broken in a live
-    proposal. We know every section title at assembly time, so the list is
-    written directly. The refreshable field is still appended afterwards so
-    page numbers appear once the document is opened and updated in Word.
+    Renders as a real table (section | subsections) rather than a flat run of
+    Normal paragraphs, which looked unformatted next to IV's own documents. A
+    bare Word TOC field is not used because it shows "Right-click here and
+    choose 'Update Field'..." until someone presses F9.
     """
+    rows = []
     for sec in sections:
         title = (sec.get("title") or "").strip()
         if not title:
             continue
-        para = document.add_paragraph()
-        para.paragraph_format.space_after = Pt(2)
-        run = para.add_run(title)
-        run.bold = True
-        for sub in sec.get("subsections") or []:
-            sub_title = (sub.get("title") or "").strip()
-            if not sub_title:
-                continue
-            sp = document.add_paragraph()
-            sp.paragraph_format.left_indent = Inches(0.3)
-            sp.paragraph_format.space_after = Pt(0)
-            sp.add_run(sub_title)
+        subs = [ (sub.get("title") or "").strip()
+                 for sub in (sec.get("subsections") or []) ]
+        rows.append((title, [x for x in subs if x]))
     for title in extra_titles or []:
-        para = document.add_paragraph()
-        para.paragraph_format.space_after = Pt(2)
-        para.add_run(title).bold = True
+        rows.append((title, []))
+    if not rows:
+        return
+
+    table = document.add_table(rows=0, cols=2)
+    table.style = "Table Grid"
+    table.autofit = False
+    for idx, (title, subs) in enumerate(rows, start=1):
+        cells = table.add_row().cells
+        cells[0].width = Inches(0.45)
+        cells[1].width = Inches(5.55)
+
+        num = cells[0].paragraphs[0]
+        num.paragraph_format.space_after = Pt(2)
+        nrun = num.add_run(str(idx))
+        nrun.bold = True
+        nrun.font.color.rgb = branding.ORANGE
+
+        body = cells[1].paragraphs[0]
+        body.paragraph_format.space_after = Pt(2)
+        body.add_run(title).bold = True
+        for sub in subs:
+            sp = cells[1].add_paragraph()
+            sp.paragraph_format.left_indent = Inches(0.18)
+            sp.paragraph_format.space_after = Pt(0)
+            r = sp.add_run(sub)
+            r.font.size = Pt(9)
+            r.font.color.rgb = branding.NEUTRAL_MUTED
 
 
 def _add_toc_field(document: Document) -> None:
@@ -1219,6 +1265,7 @@ async def generate_proposal(
     proposal_depth: Optional[str] = None,
     diagrams: Optional[list[dict]] = None,
     discovery_answers: Optional[dict] = None,
+    client_logo_path: Optional[str] = None,
 ) -> dict:
     """Orchestrate: pick template, draft sections concurrently, assemble DOCX.
 
@@ -1297,6 +1344,7 @@ async def generate_proposal(
     }
     docx_bytes = assemble_docx(
         metadata, list(drafted), compliance_markdown,
+        client_logo_path=client_logo_path,
         include_appendices=tier.include_appendices,
         diagrams=diagrams,
     )

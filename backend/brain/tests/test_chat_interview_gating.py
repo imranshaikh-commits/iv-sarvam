@@ -1155,5 +1155,132 @@ def main():
     print(f"ALL {passed} CHAT INTERVIEW GATING TESTS PASSED")
 
 
+
+
+# ---------------------------------------------------------------------------
+# Client logo attached in chat (area 10 / branding).
+#
+# OWUI sends attachments in the multimodal content array. last_user_text keeps
+# only the "text" parts, so the image reached the brain and was discarded one
+# line before anything could use it. These tests assert the CALL SITE threads it
+# through, not merely that the helpers work in isolation — the failure mode in
+# this project has repeatedly been a mechanism built and never wired.
+# ---------------------------------------------------------------------------
+
+import base64 as _b64  # noqa: E402
+
+_BRANDING_BUCKET = 9  # area 10
+
+# Smallest valid 1x1 PNG.
+_PNG_BYTES = _b64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+_PNG_URI = "data:image/png;base64," + _b64.b64encode(_PNG_BYTES).decode()
+
+
+def _branding_turn(user_content, monkeypatch):
+    """Drive one chat turn on the branding area, returning (content, patched)."""
+    seen = {}
+
+    async def fake_patch(c, sid, answers):
+        seen.update(answers)
+        return {"id": sid, "answers": answers}
+
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "q " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1",
+                             bucket=_BRANDING_BUCKET))},
+            {"role": "user", "content": user_content},
+        ],
+        "stream": False,
+    })
+    return resp.json()["choices"][0]["message"]["content"], seen
+
+
+def test_attached_png_is_recorded_as_the_client_logo(monkeypatch):
+    content, patched = _branding_turn(
+        [{"type": "text", "text": ""},
+         {"type": "image_url", "image_url": {"url": _PNG_URI}}],
+        monkeypatch,
+    )
+    assert "client_logo" in patched, "attached logo never reached the answers"
+    path = patched["client_logo"]
+    assert os.path.exists(path), f"logo file not written: {path}"
+    assert open(path, "rb").read(4) == b"\x89PNG", "decoded bytes are not a PNG"
+    assert cs.decode_marker(content).bucket == _BRANDING_BUCKET + 1, \
+        "an image-only turn must still advance the interview"
+
+
+def test_attached_logo_resolves_for_document_assembly(monkeypatch):
+    """The recorded value must be something _resolve_client_logo accepts."""
+    _, patched = _branding_turn(
+        [{"type": "image_url", "image_url": {"url": _PNG_URI}}], monkeypatch)
+    # A private loop: asyncio.run() closes the default one, and a later test in
+    # this file still uses get_event_loop().run_until_complete().
+    loop = asyncio.new_event_loop()
+    try:
+        resolved = loop.run_until_complete(app._resolve_client_logo(patched))
+    finally:
+        loop.close()
+    assert resolved == patched["client_logo"]
+
+
+def test_text_answer_on_branding_still_works(monkeypatch):
+    import tempfile as _tf
+    fd, existing = _tf.mkstemp(suffix=".png")
+    os.close(fd)
+    _, patched = _branding_turn(f"Client logo: {existing}", monkeypatch)
+    assert patched.get("client_logo") == existing
+
+
+def test_skip_on_branding_records_nothing(monkeypatch):
+    content, patched = _branding_turn("skip", monkeypatch)
+    assert patched == {}, "skip must not record a logo"
+    assert cs.decode_marker(content).bucket == _BRANDING_BUCKET + 1
+
+
+def test_attachment_on_a_non_branding_area_is_ignored(monkeypatch):
+    """Only area 10 treats an image as the answer."""
+    seen = {}
+
+    async def fake_patch(c, sid, answers):
+        seen.update(answers)
+        return {"id": sid}
+
+    async def fake_extract(bucket, reply):
+        return {"client_name": "Acme"}
+
+    monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+    client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "q " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1", bucket=0))},
+            {"role": "user", "content": [
+                {"type": "text", "text": "client is Acme"},
+                {"type": "image_url", "image_url": {"url": _PNG_URI}},
+            ]},
+        ],
+        "stream": False,
+    })
+    assert "client_logo" not in seen
+
+
+def test_bad_attachments_are_ignored_not_fatal():
+    assert app.save_attached_logo([]) is None
+    assert app.save_attached_logo(["data:image/png;base64,!!!not-base64!!!"]) is None
+    assert app.save_attached_logo(["data:application/pdf;base64,AAAA"]) is None
+    assert app.save_attached_logo(["not-a-uri"]) is None
+    # An http attachment is passed through for _resolve_client_logo to fetch.
+    assert app.save_attached_logo(["https://x.test/logo.png"]) == "https://x.test/logo.png"
+
+
+def test_last_user_images_ignores_plain_string_content():
+    assert app.last_user_images([{"role": "user", "content": "hello"}]) == []
+    assert app.last_user_images([]) == []
+
+
 if __name__ == "__main__":
     main()

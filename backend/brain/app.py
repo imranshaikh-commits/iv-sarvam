@@ -16,6 +16,7 @@ Endpoints:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -200,6 +201,80 @@ def last_user_text(messages: list[dict]) -> str:
                 return " ".join(p.get("text", "") for p in content if p.get("type") == "text")
             return str(content)
     return ""
+
+
+def last_user_images(messages: list[dict]) -> list[str]:
+    """Image URLs / data URIs attached to the most recent user message.
+
+    ``last_user_text`` deliberately keeps only the ``text`` parts of Open WebUI's
+    multimodal content array. That silently discarded every attached image — a
+    client logo dropped into the chat reached the brain and was thrown away one
+    line before anything could use it. This is the other half of that payload.
+    """
+    for m in reversed(messages or []):
+        if m.get("role") != "user":
+            continue
+        content = m.get("content", "")
+        if not isinstance(content, list):
+            return []
+        out: list[str] = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "image_url":
+                continue
+            ref = part.get("image_url")
+            # OWUI sends {"url": ...}; some clients send the string directly.
+            url = ref.get("url") if isinstance(ref, dict) else ref
+            if isinstance(url, str) and url.strip():
+                out.append(url.strip())
+        return out
+    return []
+
+
+# The one discovery area whose answer can be an attachment rather than text.
+LOGO_BUCKET_ID = "branding"
+
+_DATA_URI_RE = re.compile(r"^data:(image/[a-z0-9.+-]+);base64,(.+)$",
+                          re.IGNORECASE | re.DOTALL)
+_LOGO_SUFFIXES = {
+    "image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg",
+    "image/gif": ".gif", "image/bmp": ".bmp", "image/webp": ".webp",
+}
+_MAX_LOGO_BYTES = 8 * 1024 * 1024
+
+
+def save_attached_logo(images: list[str]) -> Optional[str]:
+    """Turn the first attached image into something ``_resolve_client_logo`` takes.
+
+    A base64 data URI is decoded to a temp file and the PATH is returned — the
+    local-path branch of ``_resolve_client_logo`` then picks it up unchanged, so
+    that function needs no modification. An http(s) attachment is passed straight
+    through for it to fetch. Returns None when there is nothing usable; a bad
+    logo must never fail a proposal.
+    """
+    for raw in images or []:
+        if raw.lower().startswith(("http://", "https://")):
+            return raw
+        match = _DATA_URI_RE.match(raw)
+        if not match:
+            continue
+        mime = match.group(1).lower()
+        if mime not in _LOGO_SUFFIXES:
+            log.warning("attached image ignored, unsupported type: %s", mime)
+            continue
+        try:
+            data = base64.b64decode(match.group(2), validate=False)
+        except Exception as e:  # noqa: BLE001 — a bad attachment must not wedge the chat
+            log.warning("could not decode attached image: %s", e)
+            continue
+        if not data or len(data) > _MAX_LOGO_BYTES:
+            log.warning("attached image rejected (empty or >8MB): %d bytes", len(data))
+            continue
+        fd, path = tempfile.mkstemp(prefix="client_logo_", suffix=_LOGO_SUFFIXES[mime])
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        log.info("client logo attached in chat (%d bytes) -> %s", len(data), path)
+        return path
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2025,8 +2100,22 @@ async def chat_completions(request: Request):
 
             async def _handle_answer() -> str:
                 recorded: dict[str, str] = {}
+
+                # On the branding area an ATTACHED IMAGE is the answer. It has to
+                # be read here because last_user_text drops image parts, and the
+                # is_skip() guard below would otherwise discard an attachment
+                # sent with no accompanying text at all.
+                attached_logo = (
+                    save_attached_logo(last_user_images(messages))
+                    if bucket.get("id") == LOGO_BUCKET_ID else None
+                )
+
                 if not chat_state.is_skip(q):
                     recorded = await resolve_bucket_answers(bucket, q)
+                if attached_logo:
+                    recorded["client_logo"] = attached_logo
+
+                if recorded or not chat_state.is_skip(q):
                     payload = dict(recorded) if recorded else {f"_raw_{bucket['id']}": q[:4000]}
                     if state.session:
                         try:
@@ -2042,7 +2131,7 @@ async def chat_completions(request: Request):
                 # More areas to walk.
                 if next_index < total:
                     parts = ([chat_state.build_recap_line(recorded)]
-                             if not chat_state.is_skip(q) else [])
+                             if recorded or not chat_state.is_skip(q) else [])
                     parts.append("")
                     parts.append(chat_state.build_bucket_message(tpl, next_index))
                     parts.append("")

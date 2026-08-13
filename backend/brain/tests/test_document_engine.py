@@ -8,14 +8,15 @@ Strategy:
     which we monkeypatch to return canned drafted prose.
 
 Run directly (`python tests/test_document_engine.py`) or via pytest. It writes a
-sample DOCX to /home/user/workspace/shilpi_sample_proposal.docx and asserts the
-document contains the expected markers.
+sample DOCX into the system temp dir (override with SHILPI_TEST_OUTPUT_DIR) and
+asserts the document contains the expected markers.
 """
 
 import asyncio
 import io
 import os
 import sys
+import tempfile
 
 # Make the brain package importable when run as a bare script from any cwd.
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,9 +30,14 @@ from docx import Document
 import document_engine
 from document_engine import assemble_docx, generate_proposal
 
-OUTPUT_PATH = "/home/user/workspace/shilpi_sample_proposal.docx"
+# Was hardcoded to /home/user/workspace/, which exists on exactly one machine —
+# the test failed everywhere else before it could assert anything.
+OUTPUT_DIR = os.environ.get("SHILPI_TEST_OUTPUT_DIR") or tempfile.gettempdir()
+OUTPUT_PATH = os.path.join(OUTPUT_DIR, "shilpi_sample_proposal.docx")
 CLIENT_NAME = "Meridian Bank"
 SME_MARKER = "[SME REVIEW]"
+# A phrase unique to stub_draft's output — proof the drafting path actually ran.
+DRAFT_SENTINEL = "Inspirit Vision proposes a SailPoint IdentityIQ deployment"
 
 
 # --- stubs ------------------------------------------------------------------
@@ -72,7 +78,12 @@ def stub_build_system(chunks):
     )
 
 
-async def stub_draft(client, system_prompt, user_prompt):
+# NOTE: this signature must track draft_with_openrouter's. When ``max_tokens``
+# was added to the real function (2026-07-17) this stub was not updated, so every
+# section raised TypeError, document_engine swallowed it per-section, and the
+# test stayed green while drafted content never reached the DOCX at all. The
+# DRAFT_SENTINEL assertion below is what makes that visible.
+async def stub_draft(client, system_prompt, user_prompt, max_tokens=None):
     # Canned drafted paragraph with a [1] citation and an SME-review marker.
     return (
         "Inspirit Vision proposes a SailPoint IdentityIQ deployment covering automated "
@@ -133,6 +144,13 @@ def test_generate_proposal_docx():
     assert "Executive Summary" in text, "expected a section heading"
     assert "Citation Appendix" in text, "citation appendix heading missing"
     assert SME_MARKER in text, "SME REVIEW marker missing"
+    # The scaffold supplies the headings, banner and appendix on its own, so
+    # every other assertion here passes even when drafting fails outright.
+    # This one fails unless the drafted prose actually reached the document.
+    assert DRAFT_SENTINEL in text, (
+        "drafted section content missing — the stub was never successfully "
+        "called (check its signature against draft_with_openrouter)"
+    )
     # A citation source from the fake corpus should appear in the appendix.
     assert "Northwind Insurance" in text, "citation source missing from appendix"
 
@@ -399,3 +417,91 @@ def test_tall_diagram_is_height_capped():
     shape = doc.inline_shapes[0]
     assert shape.height <= Inches(7.5), "diagram would span multiple pages"
     assert shape.width <= Inches(6.0)
+
+
+# ---------------------------------------------------------------------------
+# GFM tables in drafted section bodies.
+#
+# Before this, only the compliance-matrix path converted markdown tables to real
+# Word tables. A sizing / RACI / BOQ table drafted into any normal section landed
+# as one paragraph of literal pipe characters. IV's own proposals are table-heavy
+# (25 tables vs Shilpi's 9), so this path has to work before any template work
+# asking the model for tables can pay off.
+# ---------------------------------------------------------------------------
+
+_SIZING_MD = """Proposed production sizing is below.
+
+| Component | vCPU | RAM | Disk |
+|---|---|---|---|
+| App server (UI) | 4 | 16 GB | 100 GB |
+| App server (Task) | 4 | 16 GB | 100 GB |
+| Database | 8 | 64 GB | 500 GB |
+
+DR is sized identically to production.
+"""
+
+
+def _render_body(text: str):
+    from docx import Document as _Doc
+    doc = _Doc()
+    document_engine._add_body_paragraphs(doc, text)
+    return doc
+
+
+def test_markdown_table_in_body_becomes_word_table():
+    doc = _render_body(_SIZING_MD)
+    assert len(doc.tables) == 1, f"expected 1 native table, got {len(doc.tables)}"
+    table = doc.tables[0]
+    assert len(table.columns) == 4
+    assert len(table.rows) == 4, "header + 3 data rows"
+    assert table.rows[0].cells[0].text == "Component"
+    assert table.rows[3].cells[2].text == "64 GB"
+    # And no literal pipe soup left behind in the prose.
+    body = "\n".join(p.text for p in doc.paragraphs)
+    assert "|" not in body, f"literal pipes survived into prose: {body!r}"
+
+
+def test_table_preserves_surrounding_prose_and_order():
+    doc = _render_body(_SIZING_MD)
+    paras = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+    assert any(p.startswith("Proposed production sizing") for p in paras)
+    assert any(p.startswith("DR is sized identically") for p in paras)
+
+
+def test_table_cells_render_bold_markup_as_runs():
+    doc = _render_body(
+        "| Item | Amount |\n|---|---|\n| **Total** | 100 |\n"
+    )
+    cell = doc.tables[0].rows[1].cells[0]
+    assert cell.text == "Total", "literal ** left in a table cell"
+    assert any(r.bold for r in cell.paragraphs[0].runs), "bold run lost in cell"
+
+
+def test_prose_without_tables_is_unchanged():
+    doc = _render_body("A plain paragraph.\n\n- bullet one\n- bullet two\n")
+    assert len(doc.tables) == 0
+    texts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+    assert texts == ["A plain paragraph.", "bullet one", "bullet two"]
+
+
+def test_stray_pipe_line_is_not_a_table():
+    """A single pipe line with no separator row must stay prose.
+
+    The previous subset check treated an empty following line as a valid
+    separator and built a one-row table out of it.
+    """
+    doc = _render_body("Latency was measured end | to end during UAT.\n")
+    assert len(doc.tables) == 0
+    assert "| to end" in "\n".join(p.text for p in doc.paragraphs)
+
+
+def test_compliance_matrix_still_renders_tables():
+    """The compliance path now shares the parser — prove it did not regress."""
+    from docx import Document as _Doc
+    doc = _Doc()
+    document_engine._add_markdown_ish(
+        doc,
+        "# Coverage\n\n| Requirement | Status |\n|---|---|\n| SSO | Met |\n",
+    )
+    assert len(doc.tables) == 1
+    assert doc.tables[0].rows[1].cells[1].text == "Met"

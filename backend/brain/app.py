@@ -63,10 +63,13 @@ SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
 EMBED_MODEL = "openai/text-embedding-3-small"   # must match scripts/ingest_v2.py
-# LLM models are HARDCODED (no env override) so EC2 env cannot silently pin an
-# old model. Every LLM call site tries the primary, then falls back to Qwen.
-PRIMARY_LLM_MODEL = "z-ai/glm-5.2"
-FALLBACK_LLM_MODEL = "qwen/qwen3-235b-a22b-2507"
+# The drafting/chat chain. Overridable so the primary model can be swapped for a
+# measured comparison run without a code change, but the defaults stay here and
+# any override is LOGGED AT STARTUP — the original rule was "no env override so
+# EC2 cannot SILENTLY pin an old model", and silence was the part that mattered.
+# Keep in sync with document_engine.py, which cannot import this module.
+PRIMARY_LLM_MODEL = os.environ.get("SHILPI_PRIMARY_MODEL", "").strip() or "z-ai/glm-5.2"
+FALLBACK_LLM_MODEL = os.environ.get("SHILPI_FALLBACK_MODEL", "").strip() or "qwen/qwen3-235b-a22b-2507"
 TOP_K = int(os.environ.get("TOP_K", "8"))
 MODEL_ID = "shilpi-architect"
 
@@ -83,6 +86,15 @@ COMPLIANCE_TRIGGER = "compliance matrix"
 STRUCTURED_MODEL = PRIMARY_LLM_MODEL
 
 app = FastAPI(title="shilpi-brain")
+
+# An override must never be silent — that was the whole point of hardcoding
+# these. /health reports the same two values for post-deploy verification.
+if os.environ.get("SHILPI_PRIMARY_MODEL", "").strip():
+    log.warning("MODEL OVERRIDE ACTIVE: primary=%s fallback=%s (from environment)",
+                PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL)
+else:
+    log.info("model chain: primary=%s fallback=%s (defaults)",
+             PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL)
 
 SYSTEM_PROMPT = """You are Shilpi, InspiritVision's internal proposal assistant (an IAM consulting firm).
 You answer questions and draft proposal content grounded in IV's past proposals, provided below as EVIDENCE.
@@ -477,8 +489,33 @@ async def extract_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str
 
 
 def _norm_label(text: str) -> str:
-    """Loose key for matching a user's label against a question label/id."""
-    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+    """Loose key for matching a user's label against a question label/id.
+
+    "and", "&" and "/" all collapse to nothing, because people write the same
+    field five ways: the schema says "HA / DR requirements" and the answer says
+    "HA and DR requirements". Squashing punctuation alone left those as
+    'hadrrequirements' vs 'haanddrrequirements', which matched neither exactly
+    nor by containment — so five supplied answers were silently discarded in the
+    Amlak run. The word must be removed BEFORE punctuation is stripped, or
+    "brand" becomes "br".
+    """
+    s = (text or "").lower().replace("&", " ").replace("/", " ")
+    s = re.sub(r"\band\b", " ", s)
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
+def _label_keys(label: str) -> list[str]:
+    """Every normalised form a question label might be typed as.
+
+    Includes the form with any parenthetical dropped, so the schema's
+    "Segregation of duties (SoD) required?" also matches a reply that just says
+    "segregation of duties required".
+    """
+    keys = [_norm_label(label)]
+    bare = re.sub(r"\([^)]*\)", " ", label or "")
+    if _norm_label(bare) != keys[0]:
+        keys.append(_norm_label(bare))
+    return [k for k in keys if k]
 
 
 def parse_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
@@ -506,32 +543,63 @@ def parse_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
     for q in questions:
         qid = q["id"]
         lookup[_norm_label(qid)] = qid
-        lookup[_norm_label(q.get("label", ""))] = qid
+        for key in _label_keys(q.get("label", "")):
+            lookup.setdefault(key, qid)
         # "HA / DR requirements" -> also try without a trailing "requirements"/"details"
         base = re.sub(r"(requirements|details|count|name)$", "",
                       _norm_label(q.get("label", "")))
         if base and base not in lookup:
             lookup[base] = qid
 
+    def _resolve(raw_label: str) -> Optional[str]:
+        key = _norm_label(raw_label)
+        if not key:
+            return None
+        qid = lookup.get(key)
+        if qid is not None:
+            return qid
+        # Loose containment both ways, longest match wins.
+        cands = [(len(k), v) for k, v in lookup.items()
+                 if k and (k in key or key in k) and len(k) > 3]
+        return max(cands)[1] if cands else None
+
     out: dict[str, str] = {}
 
     # --- labelled form -----------------------------------------------------
-    # Split on sentence-ish boundaries, then on the FIRST colon of each part.
-    for part in re.split(r"(?:\.\s+|\n|;)", reply):
-        if ":" not in part:
+    # Find where each ANSWER starts, then take everything up to the next answer
+    # as its value.
+    #
+    # This used to split the reply on `. `, newline or `;` and then partition
+    # each fragment on its first colon. A semicolon inside a VALUE was therefore
+    # read as an answer boundary, and everything after it was dropped: in the
+    # Amlak run that silently removed 9 of 10 out-of-scope items, five of six
+    # pain points (including off-network password reset), the DR/UAT/dev sizing,
+    # and Tranches 1-3 of the delivery plan. Multi-item answers separated by
+    # semicolons are the normal way a consultant writes, so the parser has to
+    # keep them.
+    boundaries: list[tuple[int, int, str]] = []  # (label_start, value_start, qid)
+    for m in re.finditer(r":", reply):
+        colon = m.start()
+        # The label is whatever sits between the previous hard break and here.
+        # `;` counts as a break so "a; b; label: value" still finds `label`,
+        # but a semicolon NOT followed by a label simply never becomes a
+        # boundary and stays inside the preceding value.
+        prev = max(reply.rfind(". ", 0, colon), reply.rfind("\n", 0, colon),
+                   reply.rfind(";", 0, colon))
+        label_start = prev + 1 if prev >= 0 else 0
+        raw_label = reply[label_start:colon]
+        # A label is short. This stops a colon deep inside prose from being
+        # matched against a question by loose containment.
+        if len(raw_label.split()) > 8:
             continue
-        raw_label, _, raw_value = part.partition(":")
-        value = raw_value.strip().strip(".").strip()
-        if not value:
-            continue
-        key = _norm_label(raw_label)
-        qid = lookup.get(key)
-        if qid is None:
-            # Loose containment both ways, longest match wins.
-            cands = [(len(k), v) for k, v in lookup.items()
-                     if k and (k in key or key in k) and len(k) > 3]
-            qid = max(cands)[1] if cands else None
-        if qid and qid not in out:
+        qid = _resolve(raw_label)
+        if qid is not None:
+            boundaries.append((label_start, colon + 1, qid))
+
+    for i, (_, value_start, qid) in enumerate(boundaries):
+        value_end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(reply)
+        value = reply[value_start:value_end].strip().strip(".;").strip()
+        if value and qid not in out:
             out[qid] = value[:2000]
 
     if out:

@@ -1282,5 +1282,115 @@ def test_last_user_images_ignores_plain_string_content():
     assert app.last_user_images([]) == []
 
 
+# ---------------------------------------------------------------------------
+# parse_bucket_answers: two classes of SILENT data loss found by replaying the
+# real Amlak fixture through the parser. Both produced a confident partial parse
+# that short-circuited the LLM fallback, so the missing content was never
+# chased and never logged.
+#
+#   1. Label mismatch. The schema writes "HA / DR requirements"; consultants
+#      write "HA and DR requirements". Squashing punctuation gave
+#      'hadrrequirements' vs 'haanddrrequirements' — no exact match, and neither
+#      contains the other. Five fields were dropped this way.
+#   2. Semicolon truncation. The reply was split on `;`, so a multi-item value
+#      ended at its first semicolon. Nine of ten out-of-scope items, five of six
+#      pain points, and Tranches 1-3 were discarded.
+# ---------------------------------------------------------------------------
+
+def _qbucket(*labels):
+    return {"id": "t", "questions": [
+        {"id": f"q{i}", "label": l} for i, l in enumerate(labels)]}
+
+
+def test_and_matches_slash_in_labels():
+    """'HA and DR requirements' must map to the 'HA / DR requirements' field."""
+    b = _qbucket("HA / DR requirements", "Cluster topology")
+    got = app.parse_bucket_answers(b, "HA and DR requirements: active-active. cluster topology: 2 UI nodes")
+    assert got.get("q0") == "active-active", f"label with 'and' did not match: {got}"
+    assert got.get("q1") == "2 UI nodes"
+
+
+def test_ampersand_and_parenthetical_labels_match():
+    b = _qbucket("AD / Exchange details", "Segregation of duties (SoD) required?")
+    got = app.parse_bucket_answers(
+        b, "AD & Exchange details: in scope. segregation of duties required: yes")
+    assert got.get("q0") == "in scope"
+    assert got.get("q1") == "yes"
+
+
+def test_norm_label_does_not_maul_words_containing_and():
+    """'and' must be removed as a WORD, not as a substring, or brand -> br."""
+    assert app._norm_label("Brand guidelines") == app._norm_label("brand guidelines")
+    assert "br" != app._norm_label("Brand")
+    assert app._norm_label("HA and DR") == app._norm_label("HA / DR")
+
+
+def test_semicolons_inside_a_value_are_preserved():
+    """THE truncation bug: everything after the first `;` used to vanish."""
+    b = _qbucket("Out of scope", "Current state")
+    reply = ("out of scope: network changes; data cleansing; third-party integrations; "
+             "penetration testing. current state: Keycloak in place")
+    got = app.parse_bucket_answers(b, reply)
+    for item in ("network changes", "data cleansing", "third-party integrations",
+                 "penetration testing"):
+        assert item in got["q0"], f"{item!r} lost to semicolon truncation: {got['q0']!r}"
+    assert got["q1"] == "Keycloak in place", "next label was swallowed into the value"
+
+
+def test_semicolon_separated_value_does_not_leak_into_the_next_field():
+    b = _qbucket("Pain points", "Decision criteria")
+    got = app.parse_bucket_answers(
+        b, "pain points: manual JML; no audit trail. decision criteria: governance depth")
+    assert "decision criteria" not in got["q0"].lower()
+    assert got["q1"] == "governance depth"
+
+
+def test_colon_inside_prose_does_not_create_a_false_field():
+    """A colon in a long clause must not be treated as a label boundary."""
+    b = _qbucket("Business objectives", "Current state")
+    reply = ("business objectives: replace Keycloak, because the position today is "
+             "simply this: nobody can say who has access. current state: Keycloak")
+    got = app.parse_bucket_answers(b, reply)
+    assert "nobody can say who has access" in got["q0"]
+    assert got["q1"] == "Keycloak"
+
+
+def test_single_field_answers_still_parse():
+    """Regression guard: the common short form must be unaffected."""
+    b = _qbucket("Proposal depth")
+    assert app.parse_bucket_answers(b, "proposal depth: full") == {"q0": "full"}
+
+
+def test_bare_positional_list_still_parses():
+    b = _qbucket("Client name", "Industry", "Country")
+    got = app.parse_bucket_answers(b, "Amlak International, Real Estate Finance, Saudi Arabia")
+    assert got == {"q0": "Amlak International", "q1": "Real Estate Finance",
+                   "q2": "Saudi Arabia"}
+
+
+def test_unparseable_prose_still_falls_through_to_the_llm():
+    b = _qbucket("Is this a migration?")
+    assert app.parse_bucket_answers(b, "Yes, we are replacing Keycloak entirely") == {}
+
+
+# ---------------------------------------------------------------------------
+# Model chain override (Step 2 needs to swap the primary model for one run).
+# ---------------------------------------------------------------------------
+
+def test_model_chain_defaults_are_glm_and_qwen():
+    import importlib, document_engine
+    assert "glm" in app.PRIMARY_LLM_MODEL or os.environ.get("SHILPI_PRIMARY_MODEL")
+    assert app.PRIMARY_LLM_MODEL == document_engine.PRIMARY_LLM_MODEL, \
+        "chat and drafting paths must use the same model chain"
+    assert app.FALLBACK_LLM_MODEL == document_engine.FALLBACK_LLM_MODEL
+
+
+def test_health_reports_the_active_model():
+    """Post-deploy verification depends on this, so assert the shape."""
+    body = client.get("/health").json()
+    assert body["primary_model"] == app.PRIMARY_LLM_MODEL
+    assert body["fallback_model"] == app.FALLBACK_LLM_MODEL
+
+
 if __name__ == "__main__":
     main()

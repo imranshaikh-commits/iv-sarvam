@@ -49,10 +49,13 @@ log = logging.getLogger("shilpi-brain.doc-engine")
 # that it stays importable in a keyless environment (smoke test / CI).
 OPENROUTER_BASE = os.environ.get("OPENROUTER_BASE", "https://openrouter.ai/api/v1")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-# Hardcoded LLM models (kept in sync with app.py). document_engine must NOT
-# import app (circular-import rule), so the constants are duplicated here.
-PRIMARY_LLM_MODEL = "z-ai/glm-5.2"
-FALLBACK_LLM_MODEL = "qwen/qwen3-235b-a22b-2507"
+# LLM models (kept in sync with app.py). document_engine must NOT import app
+# (circular-import rule), so the constants are duplicated here — including the
+# env names, so a swap moves BOTH the chat path and the drafting path. Setting
+# only one would leave the proposal drafted by a different model than the chat,
+# which is exactly the kind of split that makes a comparison run meaningless.
+PRIMARY_LLM_MODEL = os.environ.get("SHILPI_PRIMARY_MODEL", "").strip() or "z-ai/glm-5.2"
+FALLBACK_LLM_MODEL = os.environ.get("SHILPI_FALLBACK_MODEL", "").strip() or "qwen/qwen3-235b-a22b-2507"
 TOP_K = int(os.environ.get("TOP_K", "8"))
 DOC_CONCURRENCY = int(os.environ.get("DOC_CONCURRENCY", os.environ.get("COMPLIANCE_CONCURRENCY", "3")))
 
@@ -782,7 +785,94 @@ def _add_inline_runs(para, text: str) -> None:
             para.add_run(token)
 
 
+def _is_gfm_separator(line: str) -> bool:
+    """True for a GFM header/body separator such as ``|---|---|`` or ``---|---``.
+
+    Deliberately stricter than a bare subset check: an EMPTY line is a subset of
+    the allowed character set, which previously let a single stray ``|`` line be
+    parsed as a one-row table.
+    """
+    s = line.strip()
+    return bool(s) and "-" in s and set(s) <= set("|-: ")
+
+
+def _parse_gfm_table(lines: list[str], i: int) -> Optional[tuple[list[str], list[list[str]], int]]:
+    """If a GFM table starts at ``lines[i]``, return (headers, rows, next_index).
+
+    Returns None when there is no table here, so callers fall through to their
+    normal prose handling.
+    """
+    if i >= len(lines) or not lines[i].strip().startswith("|"):
+        return None
+    if i + 1 >= len(lines) or not _is_gfm_separator(lines[i + 1]):
+        return None
+    headers = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+    j = i + 2
+    rows: list[list[str]] = []
+    while j < len(lines) and lines[j].strip().startswith("|"):
+        rows.append([c.strip() for c in lines[j].strip().strip("|").split("|")])
+        j += 1
+    return headers, rows, j
+
+
+def _add_gfm_table(document: Document, headers: list[str], rows: list[list[str]]) -> None:
+    """Render parsed GFM table data as a native Word table.
+
+    Cell text goes through ``_add_inline_runs`` so ``**Total**`` inside a BOQ or
+    milestone row becomes a bold run rather than literal asterisks — the same
+    failure that put 147 stray ``**`` into a generated proposal.
+    """
+    table = document.add_table(rows=1, cols=len(headers))
+    table.style = "Light Grid Accent 1"
+    for j, h in enumerate(headers):
+        cell_para = table.rows[0].cells[j].paragraphs[0]
+        _add_inline_runs(cell_para, h)
+        for run in cell_para.runs:
+            run.bold = True
+    for row in rows:
+        cells = table.add_row().cells
+        for j in range(len(headers)):
+            _add_inline_runs(cells[j].paragraphs[0], row[j] if j < len(row) else "")
+
+
 def _add_body_paragraphs(document: Document, text: str) -> None:
+    """Add body text, preserving [N] citation markers, splitting on blank lines.
+
+    Markdown tables emitted inside a drafted section are rendered as native Word
+    tables. Before this, only the compliance-matrix path could do that, so a
+    sizing or BOQ table anywhere else in the document landed as a single
+    paragraph of literal pipe characters.
+    """
+    if "|" in text:
+        _add_body_with_tables(document, text)
+        return
+    _add_prose_paragraphs(document, text)
+
+
+def _add_body_with_tables(document: Document, text: str) -> None:
+    """Split body text into alternating prose runs and GFM tables, in order."""
+    lines = text.splitlines()
+    i = 0
+    prose: list[str] = []
+
+    def _flush() -> None:
+        if prose:
+            _add_prose_paragraphs(document, "\n".join(prose))
+            prose.clear()
+
+    while i < len(lines):
+        parsed = _parse_gfm_table(lines, i)
+        if parsed is None:
+            prose.append(lines[i])
+            i += 1
+            continue
+        headers, rows, i = parsed
+        _flush()
+        _add_gfm_table(document, headers, rows)
+    _flush()
+
+
+def _add_prose_paragraphs(document: Document, text: str) -> None:
     """Add body text, preserving [N] citation markers, splitting on blank lines."""
     for block in re.split(r"\n\s*\n", text.strip()):
         block = block.strip()
@@ -1052,23 +1142,12 @@ def _add_markdown_ish(document: Document, text: str) -> None:
         if not stripped:
             i += 1
             continue
-        # GFM table block
-        if stripped.startswith("|") and i + 1 < len(lines) and set(lines[i + 1].strip()) <= set("|-: "):
-            header_cells = [c.strip() for c in stripped.strip("|").split("|")]
-            i += 2  # skip header + separator
-            rows = []
-            while i < len(lines) and lines[i].strip().startswith("|"):
-                rows.append([c.strip() for c in lines[i].strip().strip("|").split("|")])
-                i += 1
-            table = document.add_table(rows=1, cols=len(header_cells))
-            table.style = "Light Grid Accent 1"
-            for j, h in enumerate(header_cells):
-                run = table.rows[0].cells[j].paragraphs[0].add_run(h)
-                run.bold = True
-            for r in rows:
-                cells = table.add_row().cells
-                for j in range(len(header_cells)):
-                    cells[j].text = r[j] if j < len(r) else ""
+        # GFM table block — same parser/renderer the section body path uses, so
+        # a fix to one is a fix to both.
+        parsed = _parse_gfm_table(lines, i)
+        if parsed is not None:
+            headers, rows, i = parsed
+            _add_gfm_table(document, headers, rows)
             continue
         if stripped.startswith("#"):
             para = document.add_paragraph()

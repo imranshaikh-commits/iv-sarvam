@@ -125,11 +125,13 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
         static_from_corpus=True,
         subsections=(
             ("Relevant Engagements",
-             "engagements comparable to this one by vendor, sector and scope. Name the "
-             "sector and the nature of the work. Do NOT name a client unless the "
-             "discovery answers explicitly authorise it."),
+             "engagements comparable to this one by vendor, sector and scope. Naming "
+             "past clients is permitted and expected - IV's own proposals do it. State "
+             "the client, sector, vendor and the nature of the work. Never state an "
+             "outcome metric the evidence does not support."),
             ("Case Studies",
-             "two or three short case studies: the problem, what was delivered, the outcome."),
+             "two or three short case studies: client, problem, what was delivered, "
+             "outcome. Keep each to about 80 words."),
         ),
     ),
     SectionSpec(

@@ -529,6 +529,20 @@ def _assumption_placeholder(
     )
 
 
+# Prose subsections get a much tighter budget than table subsections.
+#
+# Measured: run 5 produced 16,051 prose words against the human proposal's 6,648
+# across a near-identical subsection count (54 vs 53). That is ~300 words per
+# subsection against IV's ~125. The cause is not the model choosing to ramble:
+# a section was measured running dry at ~950 tokens and continuing to ~2,000, so
+# it fills whatever budget it is given. The budget is therefore the lever.
+#
+# Table subsections keep the full budget - a 25-row RACI needs it.
+PROSE_SUBSECTION_TOKENS = int(os.environ.get("SHILPI_PROSE_SUBSECTION_TOKENS", "420"))
+PROSE_SUBSECTION_WORDS = int(os.environ.get("SHILPI_PROSE_SUBSECTION_WORDS", "220"))
+_WANTS_TABLE_RE = re.compile(r"\bmarkdown\s+TABLE\b|\bas a (?:markdown )?TABLE\b", re.I)
+
+
 async def draft_section(
     client: httpx.AsyncClient,
     section_spec: SectionSpec,
@@ -633,15 +647,26 @@ async def draft_section(
         # Independent drafting call per facet (the structured fan-out).
         parts: list[str] = []
         for sub_title, facet in facets:
+            wants_table = _WANTS_TABLE_RE.search(facet) is not None
+            budget = max_tokens if wants_table else min(max_tokens, PROSE_SUBSECTION_TOKENS)
+            length_rule = (
+                "Output the table and one short lead-in line, nothing else."
+                if wants_table else
+                f"Write NO MORE than {PROSE_SUBSECTION_WORDS} words. IV's own proposals "
+                f"average about 125 words per subsection; density beats length. If you "
+                f"run out of grounded material, stop - do not pad."
+            )
             user_prompt = (
                 f"Draft the \"{sub_title}\" subsection of the \"{section_title}\" section, "
                 f"focusing specifically on {facet}. Ground every claim in the EVIDENCE and cite "
-                f"inline as [N]. Do not repeat content that belongs in other subsections.\n\n"
+                f"inline as [N]. Do not repeat content that belongs in other subsections.\n"
+                f"{length_rule}\n\n"
                 f"{client_facts}"
                 f"RFP / requirement context:\n{rfp_ctx}"
             )
             try:
-                sub_content = await _draft_once(user_prompt)
+                sub_content = await _draft_with_retry(
+                    client, system_prompt, user_prompt, budget)
             except Exception as e:
                 log.error("draft_section subsection %s failed for %s: %s", sub_title, section_spec.id, e)
                 sub_content = (
@@ -1167,8 +1192,16 @@ def assemble_docx(
     # Retrieval provenance belongs in logs, not in a client deliverable.
 
     # --- Appendices (full depth only) --------------------------------------
+    # The appendix pack predates the template rebuild, when the body was seven
+    # generic sections with no RACI, timeline, sizing or commercial content.
+    # The body now carries all four as real tables, so run 5 printed each twice
+    # with DIFFERENT numbers: a 25-row RACI built from discovery answers in the
+    # body, and a 9-row generic placeholder one in Appendix A. Two versions of
+    # the same table in one proposal is worse than neither, because a reader
+    # cannot tell which is authoritative.
     if include_appendices:
-        _add_appendices(document, metadata)
+        _add_appendices(document, metadata,
+                        skip=_superseded_appendices({s.get("id") for s in sections}))
 
     buffer = io.BytesIO()
     document.save(buffer)
@@ -1240,7 +1273,27 @@ def _appendix_table(document: Document, headers: list[str], rows: list[list[str]
             cells[j].text = row[j] if j < len(row) else ""
 
 
-def _add_appendices(document: Document, metadata: dict) -> None:
+# Appendix letter -> the body section that now carries the same content.
+_APPENDIX_SUPERSEDED_BY = {
+    "A": "implementation_approach",   # RACI matrix
+    "B": "project_timeline",          # indicative timeline
+    "C": "proposed_solution",         # sizing & volumetrics
+    "F": "commercial",                # commercial structure
+}
+
+
+def _superseded_appendices(body_section_ids: set) -> frozenset:
+    """Appendices the body template already covers, so they must not print twice.
+
+    D (integration inventory) and E (risk register) have no body counterpart and
+    are always kept.
+    """
+    return frozenset(letter for letter, sec_id in _APPENDIX_SUPERSEDED_BY.items()
+                     if sec_id in body_section_ids)
+
+
+def _add_appendices(document: Document, metadata: dict,
+                    skip: frozenset = frozenset()) -> None:
     """Append the full-depth appendix pack as real DOCX sections/tables.
 
     Every row is either grounded in supplied metadata or an explicit
@@ -1249,6 +1302,28 @@ def _add_appendices(document: Document, metadata: dict) -> None:
     """
     vendor = (metadata.get("iam_vendor") or "the selected IAM platform").strip() or "the selected IAM platform"
     ptype = (metadata.get("proposal_type") or "implementation").strip().lower()
+
+    if len(skip) >= 6:
+        return
+
+    # Rather than reindenting six large literal blocks behind guards, the emit
+    # helpers below no-op while the current appendix is in `skip`. Each block
+    # sets `_cur` first. Fewer moving parts than restructuring, and the skip
+    # decision stays in one place.
+    _cur = [""]
+
+    def _heading(text: str) -> None:
+        if _cur[0] not in skip:
+            branding.add_section_heading(document, text)
+
+    def _table(_doc, cols, rows) -> None:
+        # Signature mirrors _appendix_table so the call sites are unchanged.
+        if _cur[0] not in skip:
+            _appendix_table(_doc, cols, rows)
+
+    def _note(text: str) -> None:
+        if _cur[0] not in skip:
+            _appendix_note(document, text)
 
     document.add_page_break()
     branding.add_section_heading(document, "Appendices")
@@ -1260,8 +1335,9 @@ def _add_appendices(document: Document, metadata: dict) -> None:
     )
 
     # A. RACI matrix
-    branding.add_section_heading(document, "Appendix A — RACI Matrix")
-    _appendix_table(
+    _cur[0] = "A"
+    _heading("Appendix A — RACI Matrix")
+    _table(
         document,
         ["Activity / Workstream", "InspiritVision", "Client", "Vendor"],
         [
@@ -1275,14 +1351,15 @@ def _add_appendices(document: Document, metadata: dict) -> None:
             [f"{_APPENDIX_ASSUMPTION} Additional workstreams", "TBC", "TBC", "TBC"],
         ],
     )
-    _appendix_note(document, "R = Responsible, A = Accountable, C = Consulted, I = Informed.")
+    _note("R = Responsible, A = Accountable, C = Consulted, I = Informed.")
 
     # B. Timeline / phasing
-    branding.add_section_heading(document, "Appendix B — Indicative Timeline")
+    _cur[0] = "B"
+    _heading("Appendix B — Indicative Timeline")
     _dur = " ".join(str((metadata.get("discovery_answers") or {}).get("engagement_duration") or "").split())
     if _dur and _dur.lower() not in ("skip", "none", "n/a", "-"):
-        _appendix_note(document, f"Client-supplied engagement duration: {_dur}.")
-    _appendix_table(
+        _note(f"Client-supplied engagement duration: {_dur}.")
+    _table(
         document,
         ["Phase", "Key Activities", "Indicative Duration"],
         [
@@ -1292,10 +1369,11 @@ def _add_appendices(document: Document, metadata: dict) -> None:
             ["Deploy & Stabilise", "Cutover, hypercare, handover", f"{_APPENDIX_ASSUMPTION} TBC"],
         ],
     )
-    _appendix_note(document, "Durations are confirmed once scope and volumetrics are baselined in discovery.")
+    _note("Durations are confirmed once scope and volumetrics are baselined in discovery.")
 
     # C. Sizing
-    branding.add_section_heading(document, "Appendix C — Sizing & Volumetrics")
+    _cur[0] = "C"
+    _heading("Appendix C — Sizing & Volumetrics")
     # Use what discovery actually captured. These rows used to be hardcoded
     # "TBC / Client to confirm" even when the consultant had supplied exact
     # figures at intake — the same discard bug as the drafting path.
@@ -1322,8 +1400,9 @@ def _add_appendices(document: Document, metadata: dict) -> None:
     _appendix_table(document, ["Dimension", "Value", "Source"], _rows)
 
     # D. Integration inventory
-    branding.add_section_heading(document, "Appendix D — Integration Inventory")
-    _appendix_table(
+    _cur[0] = "D"
+    _heading("Appendix D — Integration Inventory")
+    _table(
         document,
         ["System / Application", "Integration Type", f"{vendor} Connector", "Notes"],
         [
@@ -1334,8 +1413,9 @@ def _add_appendices(document: Document, metadata: dict) -> None:
     )
 
     # E. Risks
-    branding.add_section_heading(document, "Appendix E — Risk Register")
-    _appendix_table(
+    _cur[0] = "E"
+    _heading("Appendix E — Risk Register")
+    _table(
         document,
         ["Risk", "Likelihood", "Impact", "Mitigation"],
         [
@@ -1348,6 +1428,7 @@ def _add_appendices(document: Document, metadata: dict) -> None:
     )
 
     # F. Commercial structure. The human proposals always carry one, and the
+    _cur[0] = "F"
     # milestone basis IS captured at discovery. Figures stay with the human.
     _c = metadata.get("discovery_answers") or {}
     _crows = []

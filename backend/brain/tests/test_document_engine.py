@@ -702,3 +702,54 @@ def test_assemble_docx_puts_the_client_logo_in_the_running_header():
     assert header_xml.count("<a:blip") == 2, (
         f"expected IV logo + client logo in the header, found "
         f"{header_xml.count('<a:blip')} image(s)")
+
+
+def test_prose_subsections_get_a_tighter_token_budget_than_tables():
+    """CALL-SITE test: draft_section must pass a reduced budget for prose.
+
+    Run 5 produced 16,051 prose words against the human proposal's 6,648 across
+    a near-identical subsection count. The model fills whatever budget it is
+    given, so the budget is the lever - but only if the call site applies it.
+    """
+    import proposal_templates
+    seen: list[int] = []
+
+    async def spy(client, system_prompt, user_prompt, max_tokens=None):
+        seen.append(max_tokens)
+        return "Drafted body text for the subsection."
+
+    original = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = spy
+    try:
+        spec = proposal_templates.SectionSpec(
+            id="t", title="T", purpose="p", query_template="q",
+            subsections=(
+                ("Sizing", "production sizing as a markdown TABLE with columns X, Y"),
+                ("Narrative", "a description of the approach in prose"),
+            ),
+        )
+
+        async def stub_embed(c, q):
+            return [0.0] * 8
+
+        async def stub_retrieve(c, v, **kw):
+            return []
+
+        asyncio.run(document_engine.draft_section(
+            None, spec,
+            {"client_name": "X", "iam_vendor": "SailPoint",
+             "proposal_type": "implementation", "rfp_text": ""},
+            embed_fn=stub_embed, retrieve_fn=stub_retrieve,
+            build_grounded_system_fn=lambda chunks: "EVIDENCE",
+            top_k=1, subsections=2, max_tokens=2500,
+        ))
+    finally:
+        document_engine.draft_with_openrouter = original
+
+    assert len(seen) >= 2, f"expected two drafting calls, saw {seen}"
+    table_budget, prose_budget = seen[0], seen[1]
+    assert table_budget == 2500, f"table subsection lost its budget: {table_budget}"
+    assert prose_budget <= document_engine.PROSE_SUBSECTION_TOKENS, (
+        f"prose subsection got {prose_budget}, expected "
+        f"<= {document_engine.PROSE_SUBSECTION_TOKENS}")
+    assert prose_budget < table_budget

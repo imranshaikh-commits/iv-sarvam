@@ -193,11 +193,26 @@ def test_full_mode_adds_subsections_and_appendices():
     assert "Detailed Design" in text
     assert "Considerations & Dependencies" in text
 
-    # Appendix pack: all five appendices present with content.
+    # The appendix pack is now SUPPRESSED when the body template carries RACI,
+    # timeline, sizing and commercial as real sections (2026-08-14). Run 5
+    # printed each of those twice with different numbers -- a 25-row RACI built
+    # from discovery answers in the body, and a 9-row generic placeholder in
+    # Appendix A. The tier flag still reports True; what changed is that the
+    # assembler skips a pack the body supersedes.
+    # A/B/C/F are suppressed (body carries RACI, timeline, sizing, commercial).
+    # D and E have no body counterpart and must survive.
     for h in APPENDIX_HEADINGS:
-        assert h in text, f"missing appendix heading: {h}"
-    assert "Responsible" in text  # RACI legend
-    assert "InspiritVision" in text  # RACI column
+        superseded = any(k in h for k in ("RACI", "Timeline", "Sizing", "Commercial"))
+        if superseded:
+            assert h not in text, f"appendix {h!r} duplicates a body section"
+        else:
+            assert h in text, f"appendix {h!r} has no body counterpart and must remain"
+    # The RACI legend lived in the (now suppressed) appendix pack; the body's
+    # RACI table is drafted from discovery answers and carries its own header.
+    assert "RACI" in text, "no RACI content anywhere in the document"
+    # Was the appendix RACI's column header. The body RACI is drafted, so
+    # assert the section exists rather than a hardcoded appendix cell.
+    assert "RACI" in text, "no RACI content anywhere in the document"
     assert "Risk" in text
     assert "[ASSUMPTION]" in text  # conservative placeholders, not fabricated specifics
 
@@ -225,9 +240,12 @@ def test_deep_mode_adds_all_facets_and_appendices():
     ):
         assert facet_title in text, f"missing facet subheading: {facet_title}"
 
-    # Appendix pack still present at deep depth.
     for h in APPENDIX_HEADINGS:
-        assert h in text, f"missing appendix heading: {h}"
+        superseded = any(k in h for k in ("RACI", "Timeline", "Sizing", "Commercial"))
+        if superseded:
+            assert h not in text, f"appendix {h!r} duplicates a body section"
+        else:
+            assert h in text, f"appendix {h!r} has no body counterpart and must remain"
     assert "[ASSUMPTION]" in text  # conservative placeholders, not fabricated specifics
 
 

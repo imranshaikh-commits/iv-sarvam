@@ -1422,8 +1422,13 @@ def render_matrix_markdown(matrix: ComplianceMatrix, *, client_facing: bool = Fa
     header = ["| Req | Requirement | Status | Evidence | Summary | Next step |",
               "|---|---|---|---|---|---|"]
     if client_facing:
-        header = ["| Req | Requirement | Status | Summary | Next step |",
-                  "|---|---|---|---|---|"]
+        # Req / Requirement / Status is a genuine client-facing compliance
+        # matrix. Summary and Next step are NOT: they are IV's drafting notes.
+        # Run 5 shipped "Reuse MOEnergy SailPoint joiner-workflow and DFCC Ping
+        # JML table as base" and "The evidence corpus shows..." to a client.
+        # Naming past clients is fine (IV's own proposals do it); narrating how
+        # this document was assembled from them is not.
+        header = ["| Req | Requirement | Status |", "|---|---|---|"]
     title = "Compliance Matrix" if client_facing else "# DRAFT Compliance Matrix"
     notes = "" if client_facing else matrix.overall_notes
     out = [title, "", notes, ""] + header
@@ -1435,10 +1440,7 @@ def render_matrix_markdown(matrix: ComplianceMatrix, *, client_facing: bool = Fa
         summary = clean(e.summary)
         recommendation = clean(e.recommendation)
         if client_facing:
-            summary = _strip_internal_notes(summary)
-            recommendation = _strip_internal_notes(recommendation)
-            out.append(f"| {e.requirement_id} | {req} | {label[e.status]} | "
-                       f"{summary[:200]} | {recommendation[:200]} |")
+            out.append(f"| {e.requirement_id} | {req} | {label[e.status]} |")
             continue
         ev = "; ".join(f'[{r.evidence_id}] \"{clean(r.quote)[:90]}\"'
                        for r in e.evidence_refs) or "—"

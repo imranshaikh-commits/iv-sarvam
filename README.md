@@ -2,9 +2,9 @@
 
 **Shilpi** (सर्वम्, Sanskrit for *"all, everything, the whole"*) is Inspirit Vision's in-house Proposal Architect — a conversational, retrieval-grounded AI that turns a new RFP into a structured, client-ready proposal in hours instead of days, by drafting from IV's 100+ historical proposal bank rather than from a blank page.
 
-![Status](https://img.shields.io/badge/status-Phase%205%20~98%25%20%7C%20chat%20E2E%20live-blue)
+![Status](https://img.shields.io/badge/status-Phase%206%20validation%20%7C%20run%205%20pending-blue)
 ![Brain](https://img.shields.io/badge/brain-FastAPI%20(Python)-231154)
-![LLM](https://img.shields.io/badge/LLM-GLM%205.2%20%2B%20Qwen3%20fallback-E85A24)
+![LLM](https://img.shields.io/badge/LLM-Claude%20Sonnet%205%20%2B%20GLM%205.2%20fallback-E85A24)
 ![Retrieval](https://img.shields.io/badge/retrieval-Supabase%20pgvector-3ECF8E)
 ![Frontend](https://img.shields.io/badge/frontend-Open%20WebUI-9333EA)
 ![Infra](https://img.shields.io/badge/infra-AWS%20EC2%20(Mumbai)-FF9900)
@@ -15,12 +15,12 @@
 
 ## Progress Dashboard
 
-> Quick-glance project status. Last updated: 2026-07-29 (IST).
+> Quick-glance project status. Last updated: 2026-08-14 (IST).
 
 **Overall completion: ~88%**
 `██████████████████░░`
 
-### Phase completion (6 phases / 12 sprints)
+### Phase completion
 
 | Phase | Status | Progress |
 |---|---|---|
@@ -30,7 +30,8 @@
 | 3 — Retrieval + drafting | Done | `████████████████████` 100% |
 | 4 — Conversational frontend + auth | Partial | `███████████████░░░░░` 75% — **full pipeline validated end to end in chat** (router → 22-area discovery → diagram plan → per-diagram approval → drafting → DOCX/PDF); auth/multi-tenancy still missing |
 | 5 — Architecture approval gate + compression/export | Done (gate enforced in chat) | `████████████████████` 98% |
-| 6 — Pilot + hardening + rollout | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
+| 6 — Validation (recreation benchmark) | In progress | `████████░░░░░░░░░░░░` 40% — four scored runs against the Amlak proposal; fidelity, hygiene and structure addressed, run 5 pending |
+| 7 — Pilot + hardening + rollout | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
 
 ### What's next
 
@@ -57,28 +58,60 @@ client-confidential proposal content and this repository is public. See
 
 - **Corpus coverage ~11%** — 11 of 100+ bank proposals ingested (1,413 chunks). Grounding quality and draft depth are bounded by this; bulk ingestion from the Drive bank is the highest-leverage open item.
 - **Supabase Auth / Worker / multi-tenancy** (Phase 4) — not wired (RLS + disabled sign-ups is the interim gate). `approved_by` on diagrams stays NULL until user identity exists.
-- **Client-logo sourcing** (approval-gated embedding) — deferred from Pass 5.
+- **Diagram variety** — Shilpi produces zone-and-box architecture graphs only. IV's proposals also use swimlane workflows (HRMS joiner flow across HRMS / IdM / Manager / AD lanes) with decision nodes, and hardware-spec callouts drawn beside the boxes. Not built.
 - **Durable diagram spec-template store** (per vendor + diagram type) — deferred from Pass 4.
 - **Hybrid search** (BM25 + RRF) — retrieval is pure vector similarity for now.
 - **Phase 6 pilot** — not started; no *scored* runs against historical RFPs yet. The `RFP/` folder in the Drive bank is the natural test set. First recreation-test fixture prepared (Amlak / SailPoint — a client absent from the corpus, with the vendor present).
 - **Corpus type coverage** — the 11 ingested proposals are 10 implementation, 1 MSS and **zero migration**, despite the intake template supporting all three. A migration or MSS proposal currently has almost no grounding; ingestion should deliberately seek those out rather than adding more of the same.
 - **Visual assets** — human proposals are roughly half visual (40 images in the Amlak proposal alone; vendor product UI, IV corporate assets, client architecture). Shilpi produces generated diagrams only. Asset reuse is Phase 8.
-- **Model selection not yet measured** — GLM-5.2 drafts well but proved marginal at structured output (empty and edgeless specs), which is why spec generation was split onto its own chain. No A/B has been run on drafting quality; at ~$0.45 of API spend per full proposal, cost is not the binding constraint and quality should decide.
+- **Visual density** — the human Amlak proposal carries 37 images, roughly a third of them corporate and case-study assets rather than architecture. Shilpi produces 6. Asset reuse (the `visual_assets` table plus a mandatory human approval gate) is Phase 8.
 
-### Recently shipped (2026-07-27 → 28)
+### Recently shipped (2026-08-11 → 14)
 
-Eight commits (`63170cd` → `4c7a1fb`) took the chat frontend from a dead end to a working end-to-end flow:
+Four validation runs against the Amlak benchmark drove this work. Each number
+below is measured against the human proposal as a control, not asserted.
 
-- **Chat state machine** — the OWUI chat previously returned the same interview opener forever (the gate assumed an "OWUI pipe" that never existed). Now: intent router (new proposal / search vault / discuss) → 22-area discovery → **architecture approval gate** → drafting, with state carried in invisible zero-width markers inside assistant replies.
-- **V1 approval gate ENFORCED** — "generate the proposal" is refused until the architecture is approved in chat. Approve / reject-with-feedback / regenerate all drive the Pass 4 diagram state machine.
-- **Deterministic answer parser** — labelled (`field: value`) and bare positional answers map to intake fields with zero LLM calls; the model is only a fallback for prose. Gap-fill loop recovers missing required fields instead of discarding them.
-- **Diagram flow: plan → one at a time → per-diagram approval.** Discovery ends by proposing a *diagram set* (generating nothing); the user approves or edits the list by free text; each diagram is then generated, reviewed and approved individually before the next. Generating the whole set in one turn repeatedly exhausted the time budget and dropped diagrams silently.
-- **Diagram renderer switched to D2 + ELK** (Graphviz retained as automatic fallback), rendered via librsvg — real nested zone containers, per-diagram-type guidance (deployment must show regions/LB/HA; security must show trust boundaries), `diagram_count` honoured, client-named titles, and IV light-theme brand styling (Clearance `#DC5220` / Cosmos `#1F0A4A` / Paper `#F5F5F5`).
-- **Diagram spec model override** — `SHILPI_DIAGRAM_MODELS` routes only the spec calls (the hardest structured output in the system) to a stronger model, with the general chain untouched.
-- **Robustness** — 25s answer-extraction budget and 180s diagram-spec budget (unbounded calls used to hang the chat for the SDK's 600s default), SSE heartbeats during long work, OWUI title/tag task-prompt guard, `GET /v1/keepalive` touching Postgres daily via host cron (the free-tier project idle-paused once at exactly 7 days).
-- **Spec content validation** — a `DiagramSpec` with no nodes, or with nodes and almost no edges, is schema-valid but useless; both shipped to users before being caught. `spec_shortfall()` now checks node count, edge count and orphan ratio, retries once with an explicit correction, then fails honestly.
-- **DOCX inline formatting** — the drafting model's `**bold**` / `*italic*` markdown was written into Word as literal asterisks (147 stray `**` in one generated proposal). Now converted to real runs; underscores are deliberately NOT treated as markup because this domain is full of identifiers like `data_retention`.
-- **`deep` depth tier** — 6 subsection facets (opt-in), `full` unchanged. Token cap 1500 → 3500 and the NoneType fix are deployed; full-depth re-measured at 42pp (vs 31pp bug-capped baseline).
+- **Two classes of silent answer loss fixed.** `parse_bucket_answers` split
+  replies on `;`, so a multi-item value ended at its first semicolon — 9 of 10
+  out-of-scope items, 5 of 6 pain points and Tranches 1-3 were discarded before
+  reaching the drafting engine. Separately, `_norm_label` treated "HA and DR
+  requirements" and "HA / DR requirements" as different fields, dropping five
+  more answers. Both produced a confident *partial* parse that short-circuited
+  the LLM fallback, so nothing was chased and nothing was logged.
+- **Template rebuilt to IV's house structure** — 11 sections, 47 unique
+  content-specific subsections. Previously 7 generic sections whose subsections
+  were the same three headings ("Overview / Detailed Design / Considerations &
+  Dependencies") repeated on every section, because they came from a
+  module-level list applied uniformly. IV's own proposal has 53 subsections and
+  all 53 differ.
+- **Markdown tables render as Word tables in drafted sections.** Only the
+  compliance-matrix path could do this; a sizing or BOQ table anywhere else
+  landed as one paragraph of literal pipe characters.
+- **Real Word styles for bullets and subheadings.** The renderer decided per
+  *block*: a block opening with a label kept its dash lines as body text. One
+  run produced 42 paragraphs with embedded newlines, 52 dash-lines as prose and
+  zero uses of `List Bullet`. The decision is now per line.
+- **Client logo attached in chat.** Open WebUI sends attachments in the
+  multimodal content array; `last_user_text` kept only the text parts, so the
+  image reached the brain and was discarded one line before anything could use
+  it. Now decoded at discovery area 10 and placed on the cover and in the
+  running header.
+- **Corpus leakage closed.** The citation appendix and the compliance matrix's
+  Evidence column carried other clients' names and verbatim proposal text into a
+  client deliverable. The appendix is gone; the matrix now has separate internal
+  and client-facing renders.
+- **Degeneration detection generalised.** The phrase-repetition check scored a
+  single-pass thesaurus walk at zero, because it never repeats. Two structural
+  signals added: longest run without sentence-ending punctuation, and
+  function-word density. Thresholds set for zero false positives against the
+  human proposal rather than for maximum catch.
+- **Primary model moved to Claude Sonnet 5** after a controlled comparison.
+
+**Lesson re-learned.** Two of the tests written for this work passed a negative
+control with their call sites deliberately unwired, and a third was satisfied by
+the IV logo when it meant to detect the client logo. The "built but never wired"
+failure was reproduced inside its own regression suite. All three now drive the
+real pipeline and assert the generated document.
 
 ---
 
@@ -266,16 +299,17 @@ The engine is what turns a chat thread into a deliverable document.
 
 ### Built now
 
-- **Templates:** Jinja2 section templates for `implementation` and `mss` proposal types (8 sections each). Conditional sections branch on proposal type (MSS gets SLA tiers and mandatory/on-demand services; implementation gets HLD/LLD and deployment architecture).
+- **Templates:** Jinja2 section templates per proposal type. The `implementation` template mirrors IV's real house structure — **11 top-level sections and 47 content-specific subsections, every heading distinct** ("Proposed Production Hardware Sizing", "Tranche 2 - Lifecycle Management and Initial Applications", "Payment Milestones"). Eleven subsections explicitly require a markdown table, which the assembler renders as native Word tables. Section titles and headings render through Jinja, so vendor and client names substitute ("Proposed Solution - SailPoint", "Why SailPoint"). Subsections defined on a section override the depth tier's count: those headings are the section's structure, not a knob.
 - **Section-by-section drafting:** each section runs its own retrieval query and LLM draft, with per-call token caps and frequency penalty to prevent repetition spirals on ambiguous content.
 - **Compliance matrix:** per-requirement classification against retrieved evidence, with paraphrase matching and a truncation guard.
-- **Citations and traceability:** every section carries a citation appendix mapping reference numbers to source proposals; a retrieval trace is persisted with each generated proposal.
+- **Citations and traceability:** retrieval traces are persisted with each generated proposal. Inline `[N]` markers and the citation appendix are **stripped from the deliverable** — the appendix listed retrieved chunks by client name and similarity score, so an Amlak document named three other IV clients across 78 paragraphs. Provenance belongs in logs, not in a document that leaves the building.
 - **SME-review markers:** inserted where evidence is weak or a gap is detected, so human review is fast and targeted.
-- **Branded DOCX (Pass 2, done):** IV logo on the title page, navy (`#231154`) and orange (`#E85A24`) accents, running header/footer with page numbers, section dividers, and a client-logo placeholder (with a hook for embedding a supplied client logo).
+- **Branded DOCX:** IV logo on the title page, navy (`#231154`) and orange (`#E85A24`) accents, running header/footer with page numbers and section dividers. A client logo **attached in the chat** at discovery area 10 is decoded and placed both on the title page and in the running header on every page.
+- **Deterministic QA gate (`document_qa.py`):** three independent structural signals for degeneration — phrase repetition, longest run without sentence-ending punctuation, and function-word density — measured against the human Amlak proposal as a control (0 false positives across 375 blocks). Also strips em-dashes (IV writes 0.2 per 1,000 words; an early run wrote 13.4) and internal review asides in bracketed, dash-led and bare forms.
 
 ### Built now (continued — enhancement passes)
 
-- **Long-form depth (Pass 3, done):** `brief` / `standard` / `full` tiers control the number of subsections drafted (Overview / Detailed Design / Considerations & Dependencies) and the retrieval fan-out — the path to long output. `full` adds RACI, timeline, sizing, integration inventory, and risk appendices as real DOCX tables.
+- **Long-form depth:** `brief` / `standard` / `full` tiers control retrieval fan-out and, for sections that do not define their own subsections, the number of generic facets drafted. `full` adds RACI, timeline, sizing, integration inventory, and risk appendices as real DOCX tables.
 - **Diagram framework (Pass 4, done + live-validated):** GLM emits a constrained `DiagramSpec` JSON → D2 renders SVG (cairosvg → PNG), Graphviz fallback → user approves **in chat** → only approved diagrams are embedded. Approval state machine (draft → needs_review → approved/rejected), now driven from the conversation.
 - **Export pipeline (Round 3, done + live-validated):** lite (<5 MB) DOCX compression via Pillow, PDF export via LibreOffice headless, and delivery to storage signed URLs (`generated-drafts` bucket, 1-hour TTL). Opt-in via `lite` / `include_pdf` / `return_signed_urls` on `/v1/generate-proposal`.
 
@@ -290,14 +324,15 @@ The engine is what turns a chat thread into a deliverable document.
 
 ```mermaid
 flowchart LR
-    CALL["LLM call site<br/>(draft · classify · diagram-spec)"] --> P{"primary<br/>GLM 5.2"}
+    CALL["LLM call site<br/>(draft · classify · diagram-spec)"] --> P{"primary<br/>Claude Sonnet 5"}
     P -->|ok| OUT["structured / text output"]
-    P -->|fail before stream| F["fallback<br/>Qwen3 235B"]
+    P -->|fail before stream| F["fallback<br/>GLM 5.2"]
     F --> OUT
     OUT --> GUARD["truncation + length guards"]
 ```
 
-- **Primary:** GLM 5.2. **Fallback:** Qwen3 235B. Both are hardcoded constants — there is no model chooser in the UI; Open WebUI exposes a single model, "Shilpi Architect".
+- **Primary:** Claude Sonnet 5. **Fallback:** GLM 5.2. Defaults live in code; `SHILPI_PRIMARY_MODEL` / `SHILPI_FALLBACK_MODEL` override them, and any override is logged at startup and reported by `GET /health` so it is never silent. There is no model chooser in the UI; Open WebUI exposes a single model, "Shilpi Architect".
+- **Why Sonnet over GLM:** measured, not assumed. Same 22 inputs, model as the only variable. GLM produced 4 degenerate paragraphs including two single-pass thesaurus walks of 645 and 677 words with no full stop; Sonnet produced 0, with a worst case of 104. Verbosity and em-dash habit barely moved, which is what identified them as template and prompt problems rather than model problems.
 - Fallback applies at all five LLM call sites (chat drafting, section drafting, compliance classification, open-router raw drafting, and diagram-spec generation).
 - **Why no DeepSeek:** it spiraled on ambiguous compliance requirements, generating hundreds of thousands of characters and multi-minute hangs. Removed in favor of GLM/Qwen with per-call token caps, frequency penalty, and truncation guards.
 - **Why no image-generation model for diagrams:** image-gen models mangle precise text labels and break schematic consistency, and editing labels onto a raster diagram is unreliable. D2 (with Graphviz fallback) renders the DiagramSpec deterministically — no model failure point — and the only model involved (GLM spec generation) already has the Qwen fallback.

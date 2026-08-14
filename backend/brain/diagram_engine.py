@@ -72,12 +72,46 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
 # DiagramSpec schema (the ONLY thing the LLM is allowed to emit)
 # ---------------------------------------------------------------------------
 
+# Node roles -> D2 shapes. IV's own workflow diagrams use a decision diamond
+# ("Employee? -> YES / CONTRACTOR") and distinguish stores from process steps.
+# Everything Shilpi drew before was a rectangle, so a joiner flow read as a
+# chain of boxes with no branch point.
+NODE_SHAPES = {
+    "process": "rectangle",
+    "decision": "diamond",
+    "datastore": "cylinder",
+    "external": "package",
+    "start": "oval",
+    "end": "oval",
+    "person": "person",
+    "queue": "queue",
+}
+DEFAULT_NODE_SHAPE = "process"
+
+
 class DiagramNode(BaseModel):
     id: str = Field(..., description="Stable node identifier, e.g. 'idp' or 'hr_source'. Short, alphanumeric.")
     label: str = Field(..., description="Human-readable node label shown in the diagram.")
     group: Optional[str] = Field(
-        None, description="Optional logical grouping/zone, e.g. 'On-prem', 'Cloud', 'Client'."
+        None,
+        description="Logical grouping. In an architecture or network diagram this is a "
+                    "zone (e.g. 'DMZ', 'Production Data Centre'). In a FLOW diagram it is "
+                    "the SWIMLANE: the system or actor that performs this step "
+                    "(e.g. 'HRMS', 'SailPoint IdentityIQ', 'Manager', 'Active Directory').",
     )
+    shape: str = Field(
+        DEFAULT_NODE_SHAPE,
+        description="Node role, one of: " + ", ".join(NODE_SHAPES) +
+                    ". Use 'decision' for any branch point (a question with two or more "
+                    "outcomes), 'datastore' for databases and directories, 'external' for "
+                    "third-party systems, 'start'/'end' for flow terminators.",
+    )
+
+    @field_validator("shape")
+    @classmethod
+    def _coerce_shape(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        return v if v in NODE_SHAPES else DEFAULT_NODE_SHAPE
 
 
 class DiagramEdge(BaseModel):
@@ -322,7 +356,14 @@ def _iv_style(indent: str, *, fill: str, stroke: str, font_color: str,
     return out
 
 
-def build_d2(spec: DiagramSpec) -> str:
+# Diagram types whose groups are SWIMLANES (an actor per lane) rather than
+# zones. IV's joiner-flow diagram is four horizontal lanes -- HRMS, SailPoint
+# IIQ, Manager, Active Directory -- with the process running left to right and
+# edges crossing between lanes.
+_LANE_TYPES = frozenset({"flow", "sequence"})
+
+
+def build_d2(spec: DiagramSpec, *, direction: Optional[str] = None) -> str:
     """Render a DiagramSpec as D2 source, styled to the IV light theme.
 
     D2 is used in preference to Graphviz because it draws ``group`` as a real
@@ -333,8 +374,13 @@ def build_d2(spec: DiagramSpec) -> str:
     themes paint containers as saturated slabs; IV's own decks are near-white
     with restrained accent colour, and the labels have to stay legible.
     """
+    lanes = spec.diagram_type in _LANE_TYPES
+    # Lane diagrams stack lanes DOWN and run the process RIGHT inside each one.
+    # `direction` overrides this: the renderer re-runs a diagram that came out
+    # too tall for the page with the axis flipped, and keeps whichever fits.
+    root_dir = direction or "down"
     lines: list[str] = [
-        "direction: down",
+        f"direction: {root_dir}",
         "",
         "style: {",
         f'  fill: "{IV_WHITE}"',
@@ -351,8 +397,11 @@ def build_d2(spec: DiagramSpec) -> str:
             loose.append(n)
 
     def emit_node(n: DiagramNode, indent: str) -> list[str]:
-        accent = _is_accent(n.label)
+        accent = _is_accent(n.label) or n.shape == "decision"
         out = [f'{indent}{_d2_id(n.id)}: "{_d2_label(n.label)}" {{']
+        d2_shape = NODE_SHAPES.get(n.shape, "rectangle")
+        if d2_shape != "rectangle":
+            out.append(f"{indent}  shape: {d2_shape}")
         out += _iv_style(indent + "  ",
                          fill=IV_CLEARANCE_TINT if accent else IV_WHITE,
                          stroke=IV_CLEARANCE if accent else IV_COSMOS,
@@ -364,6 +413,9 @@ def build_d2(spec: DiagramSpec) -> str:
     for group, members in grouped.items():
         gid = _d2_id(group)
         lines.append(f'{gid}: "{_d2_label(_pretty_group(group))}" {{')
+        if lanes:
+            # The lane itself runs across the page; the lanes stack down.
+            lines.append(f"  direction: {'right' if root_dir == 'down' else 'down'}")
         # A zone should read as a boundary, not a coloured slab competing with
         # its own contents: near-white fill, hairline border.
         lines += _iv_style("  ", fill=IV_PAPER, stroke=IV_ASH,
@@ -417,24 +469,96 @@ def _svg_to_png(svg: bytes, width: int) -> Optional[bytes]:
         return None
 
 
+_SVG_SIZE_RE = re.compile(rb'<svg[^>]*?width="(\d+(?:\.\d+)?)"[^>]*?height="(\d+(?:\.\d+)?)"')
+
+# A letter page with IV's margins leaves a text column about 5.9in wide and 9in
+# tall, so anything past ~1.5:1 tall-to-wide renders as a sliver. Amlak runs 3
+# to 5 embedded diagrams at 1800x4217 and 1800x3644 (2.3:1 and 2.0:1), which
+# scaled down to 3.2in wide to fit the height. Unreadable.
+MAX_ASPECT_RATIO = float(os.environ.get("SHILPI_DIAGRAM_MAX_ASPECT", "1.5"))
+# The flip can overshoot badly: an 8-zone deployment diagram went from 3.49
+# (a sliver) to 0.09 (an 11:1 strip that scales to nothing). Both are unusable,
+# so candidates are scored against a BAND rather than "smaller wins".
+MIN_ASPECT_RATIO = float(os.environ.get("SHILPI_DIAGRAM_MIN_ASPECT", "0.4"))
+
+
+def _aspect_penalty(aspect: Optional[float]) -> float:
+    """How far outside the usable band this aspect sits. 0.0 means it fits."""
+    if aspect is None:
+        return float("inf")
+    if aspect > MAX_ASPECT_RATIO:
+        return aspect / MAX_ASPECT_RATIO
+    if aspect < MIN_ASPECT_RATIO:
+        return MIN_ASPECT_RATIO / aspect
+    return 0.0
+
+
+def _svg_aspect(svg: bytes) -> Optional[float]:
+    """Height / width of a rendered SVG, or None if it cannot be measured."""
+    m = _SVG_SIZE_RE.search(svg[:2000])
+    if not m:
+        return None
+    w, h = float(m.group(1)), float(m.group(2))
+    return (h / w) if w else None
+
+
+def _d2_run(source: str, timeout: float, layout: Optional[str] = None) -> Optional[bytes]:
+    try:
+        proc = subprocess.run(
+            ["d2", "--theme", D2_THEME, "--layout", layout or D2_LAYOUT,
+             "--pad", "40", "-", "-"],
+            input=source.encode("utf-8"),
+            capture_output=True, timeout=timeout, check=True,
+        )
+        return proc.stdout
+    except (subprocess.SubprocessError, OSError) as e:  # noqa: BLE001
+        log.warning("D2 render failed (%s); falling back to Graphviz.", e)
+        return None
+
+
 def _render_with_d2(spec: DiagramSpec, fmt: str, timeout: float) -> Optional[bytes]:
     """Render via D2. SVG is native; PNG goes through librsvg.
 
     D2's own PNG export shells out to a headless browser, which we deliberately
     avoid in the container — SVG plus librsvg keeps the image path dependency-
     light and offline.
+
+    A diagram that comes out too tall for the page is re-laid-out with the axis
+    flipped and the WIDER result kept. This is measured, not guessed: the aspect
+    ratio is read from the rendered SVG, both candidates are compared, and the
+    flip is discarded when it does not actually help.
     """
-    source = build_d2(spec)
-    try:
-        proc = subprocess.run(
-            ["d2", "--theme", D2_THEME, "--layout", D2_LAYOUT, "--pad", "40", "-", "-"],
-            input=source.encode("utf-8"),
-            capture_output=True, timeout=timeout, check=True,
-        )
-        svg = proc.stdout
-    except (subprocess.SubprocessError, OSError) as e:  # noqa: BLE001
-        log.warning("D2 render failed (%s); falling back to Graphviz.", e)
+    svg = _d2_run(build_d2(spec), timeout)
+    if svg is None:
         return None
+
+    aspect = _svg_aspect(svg)
+    best_penalty = _aspect_penalty(aspect)
+    if best_penalty > 0:
+        # Try a small set of alternative layouts and KEEP THE BEST MEASURED one.
+        # Flipping the axis is not reliably an improvement: an 8-zone chain goes
+        # from 3.49 (sliver) to 0.09 (an 11:1 strip), which is worse. Scoring
+        # every candidate against the band and keeping the winner means a
+        # candidate that does not help is simply discarded.
+        for alt_dir, alt_layout in (("right", None), (None, "dagre"), ("right", "dagre")):
+            alt = _d2_run(build_d2(spec, direction=alt_dir), timeout, layout=alt_layout)
+            if alt is None:
+                continue
+            alt_aspect = _svg_aspect(alt)
+            penalty = _aspect_penalty(alt_aspect)
+            if penalty < best_penalty:
+                svg, aspect, best_penalty = alt, alt_aspect, penalty
+            if best_penalty == 0:
+                break
+        if best_penalty > 0:
+            # Honest log rather than a silent near-miss: some diagrams simply
+            # have too many zones in a chain for ANY layout to fit the page.
+            # That is a spec-content problem, not a renderer one.
+            log.warning("diagram '%s' still outside the usable aspect band "
+                        "(%.2f); consider fewer zones per diagram",
+                        spec.title, aspect or -1)
+        else:
+            log.info("diagram '%s' re-laid out to aspect %.2f", spec.title, aspect)
 
     if fmt == "svg":
         return svg

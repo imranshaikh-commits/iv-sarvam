@@ -482,6 +482,29 @@ GROUP_LABEL_RULE = (
 )
 
 
+# Without these two, the shape and swimlane support added to DiagramSpec would
+# be decorative: the model would keep emitting plain rectangles with zone groups
+# and nothing would change. IV's joiner-flow diagram is four horizontal lanes
+# (HRMS / SailPoint IIQ / Manager / Active Directory) with a decision diamond
+# branching Employee versus Contractor.
+SWIMLANE_MANDATE = (
+    "This is a SWIMLANE process diagram. Set each node's `group` to the SYSTEM OR "
+    "ACTOR that performs that step (e.g. 'HRMS', 'SailPoint IdentityIQ', 'Manager', "
+    "'Active Directory'), NOT to a network zone. Every lane must contain at least "
+    "one step, and the process must cross lanes: a step handed from one actor to "
+    "another is an edge between nodes in different groups. Include at least one "
+    "decision node with labelled outgoing edges for each outcome."
+)
+
+SHAPE_MANDATE = (
+    " Set each node's `shape`: 'decision' for any branch point (a question with two "
+    "or more outcomes; label every outgoing edge with its outcome), 'datastore' for "
+    "databases and directories, 'external' for third-party or client-owned systems, "
+    "'start' and 'end' for process terminators, otherwise 'process'. A diagram in "
+    "which every node is 'process' has almost certainly missed a decision point."
+)
+
+
 def deployment_guidance_for(title: str, engine_type: str) -> str:
     """Extra spec guidance, refined by the requested title.
 
@@ -501,7 +524,10 @@ def deployment_guidance_for(title: str, engine_type: str) -> str:
             "This is a SECURITY diagram: emphasise trust boundaries, encryption in "
             "transit, key storage, WAF placement, audit/SIEM paths and privileged access."
         )
-    return base + EDGE_MANDATE + GROUP_LABEL_RULE
+    if any(k in low for k in ("flow", "joiner", "lifecycle", "jml", "process",
+                              "mover", "leaver", "workflow", "request")):
+        base = DIAGRAM_TYPE_GUIDANCE.get("flow", base) + " " + SWIMLANE_MANDATE
+    return base + EDGE_MANDATE + GROUP_LABEL_RULE + SHAPE_MANDATE
 
 
 def _requested_count(answers: dict) -> int:

@@ -508,3 +508,84 @@ def test_group_labels_are_humanised():
                       ("dmz_zone", "DMZ Zone"),
                       ("Identity Sources", "Identity Sources")):
         assert de._pretty_group(raw) == want, f"{raw} -> {de._pretty_group(raw)}"
+
+
+import diagram_engine  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Swimlanes, decision nodes and page fit.
+#
+# IV's joiner-flow diagram is four horizontal lanes (HRMS / SailPoint IIQ /
+# Manager / Active Directory) with a decision diamond branching Employee vs
+# Contractor. Shilpi drew every node as a rectangle in a single column, and
+# embedded diagrams at 1800x4217 (2.34:1) that scaled to 3.2in wide slivers.
+# ---------------------------------------------------------------------------
+
+def _flow_spec():
+    return diagram_engine.DiagramSpec(
+        diagram_type="flow", title="Joiner Flow",
+        nodes=[
+            diagram_engine.DiagramNode(id="hr", label="HRMS", group="HRMS", shape="external"),
+            diagram_engine.DiagramNode(id="agg", label="Aggregation Task", group="SailPoint IIQ"),
+            diagram_engine.DiagramNode(id="q", label="Employee?", group="SailPoint IIQ", shape="decision"),
+            diagram_engine.DiagramNode(id="ap", label="Manager Approval", group="Manager"),
+            diagram_engine.DiagramNode(id="ad", label="Active Directory", group="Active Directory", shape="datastore"),
+        ],
+        edges=[
+            diagram_engine.DiagramEdge(source="hr", target="agg"),
+            diagram_engine.DiagramEdge(source="agg", target="q"),
+            diagram_engine.DiagramEdge(source="q", target="ad", label="YES"),
+            diagram_engine.DiagramEdge(source="q", target="ap", label="CONTRACTOR"),
+        ],
+    )
+
+
+def test_decision_node_renders_as_a_diamond():
+    d2 = diagram_engine.build_d2(_flow_spec())
+    assert "shape: diamond" in d2, "decision node did not become a diamond"
+    assert "shape: cylinder" in d2, "datastore did not become a cylinder"
+    assert "shape: package" in d2, "external system did not become a package"
+
+
+def test_unknown_shape_falls_back_to_process():
+    n = diagram_engine.DiagramNode(id="a", label="X", shape="banana")
+    assert n.shape == diagram_engine.DEFAULT_NODE_SHAPE
+
+
+def test_flow_groups_become_swimlanes():
+    """Each lane runs across the page; lanes stack down."""
+    d2 = diagram_engine.build_d2(_flow_spec())
+    assert d2.count("direction: right") >= 4, "lanes did not get their own direction"
+    assert d2.startswith("direction: down"), d2[:40]
+
+
+def test_architecture_groups_are_zones_not_lanes():
+    spec = diagram_engine.DiagramSpec(
+        diagram_type="architecture", title="Deployment",
+        nodes=[diagram_engine.DiagramNode(id="a", label="Node", group="DMZ")],
+        edges=[],
+    )
+    assert "direction: right" not in diagram_engine.build_d2(spec)
+
+
+def test_aspect_penalty_scores_a_band_not_a_ceiling():
+    """A flip that overshoots must score WORSE, not better.
+
+    An 8-zone chain went from 3.49 (sliver) to 0.09 (an 11:1 strip). Both are
+    unusable, so 'smaller wins' would have picked the worse one.
+    """
+    p = diagram_engine._aspect_penalty
+    assert p(1.0) == 0.0
+    assert p(3.49) > 0
+    assert p(0.09) > p(3.49), "over-wide scored better than over-tall"
+    assert p(None) == float("inf")
+
+
+def test_guidance_actually_asks_for_lanes_and_shapes():
+    """CALL-SITE check: the spec fields are useless if nothing requests them."""
+    import chat_state
+    flow = chat_state.deployment_guidance_for("Integration / Joiner Flow", "flow")
+    assert "SWIMLANE" in flow
+    assert "decision" in flow
+    arch = chat_state.deployment_guidance_for("Deployment", "architecture")
+    assert "decision" in arch, "shape mandate missing from non-flow diagrams"

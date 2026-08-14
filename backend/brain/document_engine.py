@@ -564,9 +564,10 @@ async def draft_section(
 
     # Reuse the brain's evidence/system-prompt builder, then layer section-specific
     # drafting instructions on top so the model drafts THIS section.
+    section_title = section_spec.render_title(context)
     evidence_block = build_grounded_system_fn(chunks)
     system_prompt = _SECTION_SYSTEM_TEMPLATE.format(
-        title=section_spec.title,
+        title=section_title,
         proposal_type=context.get("proposal_type", "implementation"),
         client_name=context.get("client_name", "the client"),
         vendor_clause=_vendor_clause(context.get("iam_vendor")),
@@ -583,10 +584,23 @@ async def draft_section(
                     f"replace them with generic statements, and do not claim they are "
                     f"unavailable:\n{discovery_ctx}\n\n") if discovery_ctx else ""
 
-    # Plan the subsection facets. subsections<=1 keeps the original single-call
-    # behaviour (facet list empty -> one whole-section draft).
-    n_sub = max(1, min(int(subsections), len(SUBSECTION_FACETS)))
-    facets = SUBSECTION_FACETS[:n_sub] if n_sub > 1 else []
+    # Plan the subsection facets.
+    #
+    # A section that defines its OWN subsections uses all of them, ignoring the
+    # depth tier's subsection count: those headings are the section's structure,
+    # not a knob. "Proposed Production Hardware Sizing" is not an optional
+    # elaboration of "Proposed Solution", it is part of what that section IS.
+    #
+    # Only sections without their own subsections fall back to the generic
+    # Overview / Detailed Design / Considerations triple, which is what every
+    # section used to get and why the table of contents repeated three headings
+    # seven times.
+    own = section_spec.render_subsections(context)
+    if own:
+        facets = own
+    else:
+        n_sub = max(1, min(int(subsections), len(SUBSECTION_FACETS)))
+        facets = SUBSECTION_FACETS[:n_sub] if n_sub > 1 else []
 
     async def _draft_once(user_prompt: str) -> Optional[str]:
         return await _draft_with_retry(client, system_prompt, user_prompt, max_tokens)
@@ -595,7 +609,7 @@ async def draft_section(
     drafting_failed = False
     if not facets:
         user_prompt = (
-            f"Draft the \"{section_spec.title}\" section now, grounded in the EVIDENCE and citing inline as [N].\n\n"
+            f"Draft the \"{section_title}\" section now, grounded in the EVIDENCE and citing inline as [N].\n\n"
             f"{client_facts}"
             f"RFP / requirement context:\n{rfp_ctx}"
         )
@@ -613,14 +627,14 @@ async def draft_section(
         if _is_blank(content):
             log.warning("draft_section produced empty content for %s; using grounded placeholder",
                         section_spec.id)
-            content = _assumption_placeholder(context, section_spec.title)
+            content = _assumption_placeholder(context, section_title)
             needs_sme_review = True
     else:
         # Independent drafting call per facet (the structured fan-out).
         parts: list[str] = []
         for sub_title, facet in facets:
             user_prompt = (
-                f"Draft the \"{sub_title}\" subsection of the \"{section_spec.title}\" section, "
+                f"Draft the \"{sub_title}\" subsection of the \"{section_title}\" section, "
                 f"focusing specifically on {facet}. Ground every claim in the EVIDENCE and cite "
                 f"inline as [N]. Do not repeat content that belongs in other subsections.\n\n"
                 f"{client_facts}"
@@ -641,7 +655,7 @@ async def draft_section(
             if _is_blank(sub_content):
                 log.warning("draft_section subsection %s empty for %s; using grounded placeholder",
                             sub_title, section_spec.id)
-                sub_content = _assumption_placeholder(context, section_spec.title, sub_title, facet)
+                sub_content = _assumption_placeholder(context, section_title, sub_title, facet)
                 needs_sme_review = True
             subsection_results.append({"title": sub_title, "content": sub_content})
             parts.append(f"### {sub_title}\n\n{sub_content}")
@@ -661,7 +675,7 @@ async def draft_section(
 
     return {
         "id": section_spec.id,
-        "title": section_spec.title,
+        "title": section_title,
         "content": content,
         "subsections": subsection_results,
         "citations": chunks,
@@ -873,41 +887,96 @@ def _add_body_with_tables(document: Document, text: str) -> None:
 
 
 def _add_prose_paragraphs(document: Document, text: str) -> None:
-    """Add body text, preserving [N] citation markers, splitting on blank lines."""
-    for block in re.split(r"\n\s*\n", text.strip()):
+    """Render body text into real Word paragraph styles.
+
+    This used to decide per BLOCK: if a block began with "- " the whole block
+    became bullets, otherwise the whole block became one paragraph. Drafted text
+    is not shaped that way. A block like
+
+        Assumptions & Open Questions:
+        - The deployment model is not specified
+        - Volumetrics are not provided
+
+    begins with a label, so the label AND both dashes landed in a single
+    paragraph as literal text. Measured on Amlak run 4: 42 paragraphs carried
+    embedded newlines and 52 dash-lines rendered as body text, with List Bullet
+    used zero times in the entire document.
+
+    The decision is now per LINE, so each line gets the style it deserves.
+    """
+    for block in re.split(r"\n\s*\n", (text or "").strip()):
         block = block.strip()
         if not block:
             continue
-        para = document.add_paragraph()
-        # Bullet-ify simple leading dashes/bullets for readability.
-        if block.lstrip().startswith(("- ", "* ", "•")):
-            for line in block.splitlines():
-                # Strip ONLY the bullet marker. A blunt lstrip("-*• ") also ate the
-                # opening ** of "- **Label:** text", leaving an unmatched closing
-                # marker and losing the bold entirely.
-                line = _BULLET_MARKER_RE.sub("", line.strip()).strip()
-                if line:
-                    bullet = document.add_paragraph(style="List Bullet")
-                    _add_inline_runs(bullet, line)
-            # remove the empty placeholder paragraph we created above
-            p = para._element
-            p.getparent().remove(p)
-            continue
-        # A leading "### Heading" inside a block would otherwise print as literal
-        # hashes; promote it rather than emitting the markup.
-        heading_match = re.match(r"^(#{1,6})\s+(.*)$", block.splitlines()[0])
-        if heading_match:
-            rest = "\n".join(block.splitlines()[1:]).strip()
-            hpara = document.add_paragraph()
-            _add_inline_runs(hpara, heading_match.group(2).strip())
-            for r in hpara.runs:
-                r.bold = True
-            p = para._element
-            p.getparent().remove(p)
-            if rest:
-                _add_body_paragraphs(document, rest)
-            continue
-        _add_inline_runs(para, block)
+        pending: list[str] = []
+
+        def _flush() -> None:
+            if not pending:
+                return
+            para = document.add_paragraph()
+            _add_inline_runs(para, " ".join(pending))
+            pending.clear()
+
+        for raw in block.splitlines():
+            line = raw.strip()
+            if not line:
+                _flush()
+                continue
+
+            heading = re.match(r"^(#{1,6})\s+(.*)$", line)
+            if heading:
+                _flush()
+                _add_subheading(document, heading.group(2).strip(),
+                                level=min(3, len(heading.group(1)) + 1))
+                continue
+
+            if _BULLET_MARKER_RE.match(line):
+                _flush()
+                # Strip ONLY the bullet marker. A blunt lstrip("-*• ") also ate
+                # the opening ** of "- **Label:** text", leaving an unmatched
+                # closing marker and losing the bold entirely.
+                body = _BULLET_MARKER_RE.sub("", line).strip()
+                if body:
+                    _add_inline_runs(document.add_paragraph(style="List Bullet"), body)
+                continue
+
+            numbered = re.match(r"^\d+[.)]\s+(.*)$", line)
+            if numbered and len(line.split()) <= _MAX_LIST_LINE_WORDS:
+                _flush()
+                _add_inline_runs(document.add_paragraph(style="List Number"),
+                                 numbered.group(1).strip())
+                continue
+
+            if _is_pseudo_heading(line):
+                _flush()
+                _add_subheading(document, line.rstrip(":").strip(), level=3)
+                continue
+
+            pending.append(line)
+        _flush()
+
+
+# A numbered line longer than this is prose that happens to open with "1.", not
+# a list item. Amlak run 3 contained a 783-word "list item".
+_MAX_LIST_LINE_WORDS = 40
+
+# A short line ending in a colon that introduces what follows. The model writes
+# these as plain text ("Risks to Manage:", "Assumptions & Open Questions:") and
+# they must become headings, not body prose. Bounded by length so a real
+# sentence containing a colon is not promoted.
+_PSEUDO_HEADING_RE = re.compile(r"^[A-Z][^.!?]{2,70}:$")
+
+
+def _is_pseudo_heading(line: str) -> bool:
+    return bool(_PSEUDO_HEADING_RE.match(line)) and len(line.split()) <= 10
+
+
+def _add_subheading(document: Document, text: str, *, level: int = 3) -> None:
+    """A bold sub-heading that is a real Word heading, so it reaches the TOC."""
+    para = document.add_heading("", level=level)
+    _add_inline_runs(para, text)
+    for run in para.runs:
+        run.bold = True
 
 
 def _add_picture_fitted(document: Document, stream, *, max_w, max_h) -> None:
@@ -1022,7 +1091,8 @@ def assemble_docx(
 
     document = Document()
     branding.configure_base_styles(document)
-    branding.apply_header_footer(document, metadata.get("client_name") or "Client")
+    branding.apply_header_footer(document, metadata.get("client_name") or "Client",
+                                 client_logo_path=client_logo_path)
 
     # --- Title page (IV branding) ------------------------------------------
     branding.add_title_page(document, metadata, client_logo_path=client_logo_path)
@@ -1034,7 +1104,6 @@ def assemble_docx(
         "Solution Architecture Diagrams" if _embeddable_diagrams(diagrams) else None,
         "Compliance Matrix" if any(
             s.get("id") == COMPLIANCE_SECTION_ID for s in sections) else None,
-        "Citation Appendix",
     ) if t]
     _add_static_toc(document, sections, _toc_extra)
     document.add_page_break()
@@ -1086,38 +1155,16 @@ def assemble_docx(
         branding.add_section_heading(document, "Compliance Matrix")
         _add_markdown_ish(document, compliance_markdown)
 
-    # --- Citation Appendix --------------------------------------------------
-    document.add_page_break()
-    branding.add_section_heading(document, "Citation Appendix")
-    intro = document.add_paragraph()
-    irun = intro.add_run(
-        "Each [N] marker in the draft above maps to a source chunk from Inspirit Vision's "
-        "past-proposal corpus. Citations restart per section."
-    )
-    irun.italic = True
-    irun.font.size = Pt(10)
-
-    any_citation = False
-    for sec in sections:
-        citations = sec.get("citations") or []
-        if not citations:
-            continue
-        any_citation = True
-        document.add_heading(sec.get("title", "Untitled"), level=2)
-        for i, c in enumerate(citations, 1):
-            para = document.add_paragraph(style="List Number")
-            src = (
-                f"{c.get('client_name') or 'unknown client'} "
-                f"({c.get('iam_vendor') or 'n/a'}) — "
-                f"{c.get('heading') or 'untitled section'}"
-            )
-            if c.get("similarity") is not None:
-                src += f"  [similarity {float(c.get('similarity') or 0):.2f}]"
-            para.add_run(src)
-    if not any_citation:
-        document.add_paragraph(
-            "No corpus citations were available for this draft — all content requires SME sourcing."
-        )
+    # --- Citation Appendix: REMOVED -----------------------------------------
+    # This listed every retrieved corpus chunk by CLIENT NAME with a similarity
+    # score. In the Amlak run 3 document it named Al Qadsiah Club 51 times, plus
+    # Ministry of Energy and National Water Company: three other IV clients, in
+    # a document addressed to a fourth. 78 paragraphs of it.
+    #
+    # The directive was already "citations are removed completely" — the inline
+    # [N] markers were stripped but the appendix they pointed at was left
+    # behind, which is the same built-but-never-finished shape as the rest.
+    # Retrieval provenance belongs in logs, not in a client deliverable.
 
     # --- Appendices (full depth only) --------------------------------------
     if include_appendices:

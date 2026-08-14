@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
+from typing import Optional
 
 log = logging.getLogger("shilpi.qa")
 
@@ -69,12 +70,101 @@ _META_SENTENCE_RE = re.compile(
     re.I,
 )
 
-# "needs SME confirmation" style trailers appended to otherwise fine sentences.
-_SME_TRAILER_RE = re.compile(
-    r"\s*[—–-]{1,2}\s*(?:this\s+)?(?:would\s+)?needs?\s+SME\s+"
-    r"(?:confirmation|input|review|clarification)[^.!?]*[.!?]",
+# NOTE: the old _SME_TRAILER_RE lived here. It required a dash prefix and was
+# superseded by _REVIEW_ASIDE_RE below, which matches bracketed asides too.
+
+
+# Review asides appended to otherwise fine sentences. Matched by SHAPE — a
+# bracketed or dash-led aside whose content is about confirming/verifying rather
+# than about the client's solution — not by phrasing.
+#
+# The previous version required a DASH prefix, so it removed
+# "— needs SME confirmation" and left "(needs SME confirmation)" untouched: 45
+# survived into the run-3 document. Same lesson as the meta-commentary blocklist,
+# one level down. Brackets, dashes and bare trailing clauses are all covered.
+_REVIEW_ASIDE_RE = re.compile(
+    r"(?:"
+    r"\s*[\(\[\{][^)\]\}]{0,400}?"                      # bracketed aside
+    r"\b(?:SME|to\s+be\s+confirmed|TBC|TBD|needs?\s+confirmation|"
+    r"requires?\s+confirmation|not\s+confirmed|unverified)\b"
+    r"[^)\]\}]{0,400}?[\)\]\}]"
+    r"|"
+    r"\s*[—–,-]{1,2}\s*(?:this\s+)?(?:would\s+|will\s+)?"  # dash/comma-led aside
+    r"(?:needs?|requires?|pending|subject\s+to)\s+"
+    r"(?:SME|client|customer|human)?\s*"
+    r"(?:confirmation|input|review|clarification|validation|verification)"
+    r"[^.!?]{0,120}"
+    r"|"
+    # Bare clause with no bracket or dash at all. These appear inside prose that
+    # has already lost its punctuation, so the block is usually caught by the
+    # degeneracy check too — but the marker must not survive if it is not.
+    r"\s*\b(?:needs?|requires?)\s+SME\s+"
+    r"(?:confirmation|input|review|clarification|validation|verification)"
+    r"[^.!?]{0,140}"
+    r")",
     re.I,
 )
+
+
+# Shilpi's OWN structural marker, inserted by the engine when a section could
+# not be drafted at all. It must survive the aside stripper: the draft goes to an
+# IV reviewer first, and silently deleting the flag that says "this section
+# failed, write it yourself" would hide a hole rather than surface it.
+SME_REVIEW_SENTINEL = "[SME REVIEW]"
+_SENTINEL_GUARD = "\x00SMEREVIEW\x00"
+
+
+def strip_review_markers(text: str) -> str:
+    """Remove internal review asides from client-facing prose.
+
+    Genuine gaps still need flagging, but in a review appendix rather than
+    inline in a document going to a client. Callers collect what is removed.
+    """
+    if not text:
+        return text
+    out = text.replace(SME_REVIEW_SENTINEL, _SENTINEL_GUARD)
+    out = _REVIEW_ASIDE_RE.sub("", out)
+    out = re.sub(r"\s+([.,;:!?])", r"\1", out)
+    out = re.sub(r"\(\s*\)|\[\s*\]", "", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return out.replace(_SENTINEL_GUARD, SME_REVIEW_SENTINEL)
+
+
+def count_review_markers(text: str) -> int:
+    guarded = (text or "").replace(SME_REVIEW_SENTINEL, _SENTINEL_GUARD)
+    return len(_REVIEW_ASIDE_RE.findall(guarded))
+
+
+# --- em-dashes ---------------------------------------------------------------
+# IV's own proposals use 2 em-dashes in 9,900 words (0.2 per 1,000). Run 3 used
+# 203 in 15,551 (13.1 per 1,000), roughly 65x the house rate. Product directive:
+# never use them.
+_EM_DASH_RE = re.compile(r"\s*[—–]\s*")
+
+
+def strip_em_dashes(text: str) -> str:
+    """Replace em/en dashes with house-style punctuation.
+
+    A dash between two clauses becomes a comma; a dash used as a label separator
+    ("Tranche 2 — Life Cycle Management") becomes a colon-free space-hyphen-space
+    so headings keep their shape. Distinguishing the two cases by whether the
+    dash is followed by a capitalised word is imperfect, but a comma inside a
+    heading reads far worse than a hyphen inside a sentence.
+    """
+    if not text:
+        return text
+
+    def _replace(match: re.Match) -> str:
+        after = text[match.end():match.end() + 40].lstrip()
+        # Label separator: next token starts a capitalised phrase or a digit.
+        if after[:1].isupper() or after[:1].isdigit():
+            return " - "
+        return ", "
+
+    out = _EM_DASH_RE.sub(_replace, text)
+    out = re.sub(r",\s*,", ",", out)
+    out = re.sub(r"\s+([.,;:!?])", r"\1", out)
+    return re.sub(r"[ \t]{2,}", " ", out)
 
 
 def strip_meta_commentary(text: str) -> str:
@@ -92,7 +182,7 @@ def strip_meta_commentary(text: str) -> str:
     if not text:
         return text
     out = _META_SENTENCE_RE.sub("", text)
-    out = _SME_TRAILER_RE.sub(".", out)
+    out = strip_review_markers(out)
     out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip()
 
@@ -115,6 +205,83 @@ DEGENERATE_REPEATS = 3      # this many occurrences of one phrase = degenerate
 DEGENERATE_MIN_WORDS = 25
 
 
+# A second and third signal, because the phrase-repetition check was defeated by
+# a failure mode that never repeats anything. Measured on Amlak run 3 against the
+# human original as the control:
+#
+#                        IV control (n=51)      Shilpi run 3 (n=109)
+#   longest run          max 75                 677, 645, then 119
+#   function-word ratio  min 0.109, median .34  .028, .070, .098, .102, then .116
+#
+# THE FLOOR IS SET FOR ZERO FALSE POSITIVES, NOT MAXIMUM CATCH. A floor of 0.105
+# would also catch the two marginal blocks at .098/.102, but leaves only 4/1000
+# of margin below the control minimum on a 51-block sample — not enough evidence
+# to justify it. A false positive triggers a pointless re-draft of good prose,
+# which is worse than leaving a 43-word dense paragraph in place. Known miss,
+# deliberately accepted; revisit when more human proposals are available to
+# widen the control sample.
+DEGENERATE_MAX_RUN = 120        # words with no sentence-ending punctuation
+DEGENERATE_MIN_FUNCTION = 0.085  # share of tokens that are function words
+DEGENERATE_MIN_WORDS_RATIO = 40  # ratio is meaningless on short blocks
+
+# Function words. Not a content blocklist: these are the words English prose
+# cannot do without. A thesaurus walk or a comma-less noun stack drops them,
+# which is what makes their ABSENCE structural evidence rather than a guess.
+_FUNCTION_WORDS = frozenset("""
+the of and to a in is are for with on that by as be will from at this it or an
+we our their its has have was were which not but can may all each per these
+those such into than then there they them he she his her you your if when while
+about across after before between during over under within without through
+""".split())
+
+# Structural lines that are not prose and must not be scored as prose. A GFM
+# table row has almost no function words by construction and repeats its column
+# shape on every line.
+_TABLE_LINE_RE = re.compile(r"^\s*[|>]")
+_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]\s|\d+[.)]\s)")
+# A genuine bullet is telegraphic and short. A 783-word line that merely OPENS
+# with "1. " is prose, and dropping it hid the worst paragraph in Amlak run 3
+# from the gate entirely. Length is what separates the two.
+_MAX_LIST_ITEM_WORDS = 30
+
+
+def _prose_only(text: str) -> str:
+    """Drop table rows and genuine list items, leaving running prose."""
+    kept: list[str] = []
+    for line in (text or "").splitlines():
+        if not line.strip():
+            continue
+        if _TABLE_LINE_RE.match(line):
+            continue
+        if _LIST_MARKER_RE.match(line) and len(line.split()) <= _MAX_LIST_ITEM_WORDS:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def longest_unpunctuated_run(text: str) -> int:
+    """Longest span of words containing no sentence-ending punctuation.
+
+    Prose comes in sentences. Text that runs hundreds of words without a full
+    stop has stopped being prose, whatever the words are.
+    """
+    best = current = 0
+    for token in (text or "").split():
+        current += 1
+        if re.search(r"[.!?][\"')\]]?$", token):
+            best = max(best, current)
+            current = 0
+    return max(best, current)
+
+
+def function_word_ratio(text: str) -> Optional[float]:
+    """Share of tokens that are function words, or None if the block is short."""
+    words = re.findall(r"[A-Za-z][A-Za-z'\-]*", _prose_only(text).lower())
+    if len(words) < DEGENERATE_MIN_WORDS_RATIO:
+        return None
+    return sum(1 for w in words if w in _FUNCTION_WORDS) / len(words)
+
+
 def repetition_score(text: str, n: int = DEGENERATE_NGRAM) -> tuple[int, str]:
     """Return (max repeat count, the offending phrase) for any n-gram in text."""
     words = re.findall(r"[A-Za-z][A-Za-z\-']*", (text or "").lower())
@@ -128,45 +295,92 @@ def repetition_score(text: str, n: int = DEGENERATE_NGRAM) -> tuple[int, str]:
 
 
 def is_degenerate(text: str) -> tuple[bool, str]:
-    """Is this text padded with repeated phrases? Returns (verdict, reason).
+    """Is this text padded, collapsed or otherwise not prose? (verdict, reason).
 
-    Measured against the live Amlak run: 4 of 117 body paragraphs tripped this,
-    and all 4 were genuinely degenerate — no false positives. The two worst were
-    992 and 1054 words, i.e. paragraphs that ran to the token cap and padded.
+    Three INDEPENDENT structural signals, because each previous fix was defeated
+    by a failure mode one level more general than the one it caught:
+
+      1. repetition   — a phrase repeats (the run-2 failure)
+      2. run length   — hundreds of words with no full stop (the run-3 failure:
+                        a single-pass thesaurus walk that never repeats, so
+                        signal 1 scored it a clean zero)
+      3. word density — function words vanish, leaving a noun stack
+
+    Adding a fourth signal later is expected. Adding a list of banned words is
+    not: a generative model routes around a blocklist and the next failure looks
+    different again.
     """
     if not text or len(text.split()) < DEGENERATE_MIN_WORDS:
         return False, ""
-    count, phrase = repetition_score(text)
+
+    # Every check runs on PROSE ONLY. A 30-row markdown table repeats its column
+    # shape on every line and has almost no function words, so scoring the raw
+    # block flagged legitimate tables as degenerate and re-drafted them away.
+    # That became reachable the moment drafted sections were allowed to contain
+    # tables at all, which is exactly what IV's house style needs them to do.
+    prose = _prose_only(text)
+    if len(prose.split()) < DEGENERATE_MIN_WORDS:
+        return False, ""
+
+    count, phrase = repetition_score(prose)
     if count >= DEGENERATE_REPEATS:
         return True, f'phrase "{phrase[:60]}" repeats {count}x'
+
+    run = longest_unpunctuated_run(prose)
+    if run > DEGENERATE_MAX_RUN:
+        return True, f"{run} words with no sentence-ending punctuation"
+
+    ratio = function_word_ratio(prose)
+    if ratio is not None and ratio < DEGENERATE_MIN_FUNCTION:
+        return True, f"function-word ratio {ratio:.3f} (prose floor {DEGENERATE_MIN_FUNCTION})"
+
     return False, ""
 
 
 def truncate_at_degeneration(text: str) -> str:
-    """Cut text at the point repetition begins, keeping the good prose before it.
+    """Cut text at the point it stops being prose, keeping the good part.
 
     Last-resort fallback when a re-draft also comes back degenerate. Cuts at a
     sentence boundary so the section never ends mid-clause.
+
+    Handles collapse with NO repeated phrase (the run-3 failure) by walking
+    sentences and stopping at the first one that is itself over-long or
+    function-word starved. Both degenerate paragraphs in run 3 opened with
+    legitimate content and collapsed part-way, so keeping the head is worth more
+    than discarding the block.
     """
     degenerate, _ = is_degenerate(text)
     if not degenerate:
         return text
+
     _, phrase = repetition_score(text)
-    if not phrase:
-        return text
-    first_word = phrase.split()[0]
-    # Find the SECOND occurrence of the phrase's opening word after the first —
-    # the repetition onset — then back off to the preceding sentence end.
-    positions = [m.start() for m in re.finditer(
-        r"\b" + re.escape(first_word) + r"\b", text, re.I)]
-    if len(positions) < 2:
-        return text
-    cut_at = positions[1]
-    head = text[:cut_at]
-    sentence_ends = list(re.finditer(r"[.!?](?:\s|$)", head))
-    if sentence_ends:
-        return head[: sentence_ends[-1].end()].rstrip()
-    return head.rstrip()
+    if phrase and repetition_score(text)[0] >= DEGENERATE_REPEATS:
+        first_word = phrase.split()[0]
+        # Find the SECOND occurrence of the phrase's opening word after the
+        # first — the repetition onset — then back off to the preceding
+        # sentence end.
+        positions = [m.start() for m in re.finditer(
+            r"\b" + re.escape(first_word) + r"\b", text, re.I)]
+        if len(positions) >= 2:
+            head = text[:positions[1]]
+            sentence_ends = list(re.finditer(r"[.!?](?:\s|$)", head))
+            if sentence_ends:
+                return head[: sentence_ends[-1].end()].rstrip()
+            return head.rstrip()
+
+    # No repetition to anchor on: keep sentences while they still look like prose.
+    kept: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        if not sentence.strip():
+            continue
+        words = sentence.split()
+        if len(words) > DEGENERATE_MAX_RUN:
+            break
+        ratio = function_word_ratio(sentence)
+        if ratio is not None and ratio < DEGENERATE_MIN_FUNCTION:
+            break
+        kept.append(sentence)
+    return " ".join(kept).rstrip() if kept else ""
 
 
 # --- combined gate ----------------------------------------------------------
@@ -184,6 +398,9 @@ def qa_text(text: str, *, strip_cites: bool = True) -> tuple[str, list[str]]:
     meta = extract_meta_commentary(text)
     if meta:
         issues.append(f"removed {len(meta)} meta-commentary sentence(s)")
+    n_review = count_review_markers(text)
+    if n_review:
+        issues.append(f"removed {n_review} review aside(s)")
     out = strip_meta_commentary(text)
 
     if strip_cites:
@@ -191,6 +408,11 @@ def qa_text(text: str, *, strip_cites: bool = True) -> tuple[str, list[str]]:
         if n_cites:
             issues.append(f"stripped {n_cites} citation marker(s)")
         out = strip_citations(out)
+
+    n_dashes = len(_EM_DASH_RE.findall(out))
+    if n_dashes:
+        issues.append(f"replaced {n_dashes} em-dash(es)")
+    out = strip_em_dashes(out)
 
     degenerate, reason = is_degenerate(out)
     if degenerate:

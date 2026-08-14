@@ -142,7 +142,12 @@ def test_generate_proposal_docx():
     assert CLIENT_NAME in text, "client name missing"
     assert "DRAFT" in text, "DRAFT safety banner missing"
     assert "Executive Summary" in text, "expected a section heading"
-    assert "Citation Appendix" in text, "citation appendix heading missing"
+    # The Citation Appendix was REMOVED (2026-08-14). It listed retrieved corpus
+    # chunks by client name and similarity score, so the Amlak document named
+    # three OTHER IV clients across 78 paragraphs. Its absence is now the
+    # correct behaviour, and no corpus client name may appear anywhere.
+    assert "Citation Appendix" not in text, "citation appendix is back"
+    assert "similarity" not in text.lower(), "retrieval provenance leaked into the document"
     assert SME_MARKER in text, "SME REVIEW marker missing"
     # The scaffold supplies the headings, banner and appendix on its own, so
     # every other assertion here passes even when drafting fails outright.
@@ -152,7 +157,12 @@ def test_generate_proposal_docx():
         "called (check its signature against draft_with_openrouter)"
     )
     # A citation source from the fake corpus should appear in the appendix.
-    assert "Northwind Insurance" in text, "citation source missing from appendix"
+    # Northwind Insurance is the OTHER client in the fixture's retrieved corpus
+    # chunk. This used to assert its name appeared, because the Citation
+    # Appendix listed retrieval sources by client. That is exactly the leak the
+    # Amlak run shipped, so the assertion is now inverted: a corpus client's
+    # name must never reach a document addressed to a different client.
+    assert "Northwind Insurance" not in text, "another client's name leaked into the document"
 
     print("SMOKE TEST PASSED")
     print(f"  wrote {OUTPUT_PATH} ({os.path.getsize(OUTPUT_PATH)} bytes)")
@@ -505,3 +515,190 @@ def test_compliance_matrix_still_renders_tables():
     )
     assert len(doc.tables) == 1
     assert doc.tables[0].rows[1].cells[1].text == "Met"
+
+
+# ---------------------------------------------------------------------------
+# Template rebuild to IV's house structure, and the formatting that goes with it.
+#
+# Run 4 (Sonnet) produced byte-identical structure to run 3 (GLM): 7 sections,
+# 32 subsections of which only 14 were unique, "Overview / Detailed Design /
+# Considerations & Dependencies" seven times each. No model can change that,
+# because it came from a module-level list applied to every section.
+# ---------------------------------------------------------------------------
+
+def test_every_subsection_heading_is_unique():
+    """THE table-of-contents complaint, as an assertion."""
+    from proposal_templates import get_template
+    ctx = {"client_name": "Amlak International", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    headings = [h for spec in get_template("implementation")
+                for h, _ in spec.render_subsections(ctx)]
+    dupes = {h for h in headings if headings.count(h) > 1}
+    assert not dupes, f"repeated subsection headings: {sorted(dupes)}"
+    assert len(headings) >= 40, f"only {len(headings)} subsections; IV's has 53"
+
+
+def test_the_generic_triple_is_gone_from_the_implementation_template():
+    from proposal_templates import get_template
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    headings = [h for spec in get_template("implementation")
+                for h, _ in spec.render_subsections(ctx)]
+    for banned in ("Overview", "Detailed Design", "Considerations & Dependencies"):
+        assert banned not in headings, f"{banned!r} is still a subsection heading"
+
+
+def test_ivs_section_skeleton_is_present():
+    from proposal_templates import get_template
+    titles = {s.id for s in get_template("implementation")}
+    for required in ("company_profile", "similar_experience", "solution_overview",
+                     "proposed_solution", "implementation_approach",
+                     "project_timeline", "knowledge_transfer", "commercial"):
+        assert required in titles, f"IV section {required!r} missing"
+
+
+def test_vendor_name_substitutes_into_titles_and_headings():
+    from proposal_templates import get_template
+    ctx = {"client_name": "Amlak International", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    specs = {s.id: s for s in get_template("implementation")}
+    assert specs["proposed_solution"].render_title(ctx) == "Proposed Solution - SailPoint"
+    headings = [h for h, _ in specs["solution_overview"].render_subsections(ctx)]
+    assert "Why SailPoint" in headings
+    assert "{{" not in " ".join(headings), "unrendered Jinja leaked into a heading"
+
+
+def test_section_subsections_override_the_depth_tier_count():
+    """A section's own headings are its structure, not a depth knob."""
+    from proposal_templates import get_template
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    specs = {s.id: s for s in get_template("implementation")}
+    assert len(specs["proposed_solution"].render_subsections(ctx)) >= 8
+
+
+# --- formatting -------------------------------------------------------------
+
+def test_label_then_dashes_becomes_a_heading_and_bullets():
+    """Run 4 had 42 paragraphs with embedded newlines and 0 List Bullet uses."""
+    from docx import Document as _Doc
+    doc = _Doc()
+    document_engine._add_body_paragraphs(doc, (
+        "Risks to Manage:\n"
+        "- Keycloak migration gaps could break SSO\n"
+        "- HR data quality may delay onboarding\n"
+    ))
+    styles = [(p.style.name, p.text) for p in doc.paragraphs if p.text.strip()]
+    assert styles[0][0].startswith("Heading"), styles
+    assert styles[0][1] == "Risks to Manage"
+    assert all(s == "List Bullet" for s, _ in styles[1:]), styles
+    assert not any("\n" in t for _, t in styles), "embedded newline survived"
+
+
+def test_bold_markup_inside_a_bullet_survives():
+    from docx import Document as _Doc
+    doc = _Doc()
+    document_engine._add_body_paragraphs(
+        doc, "- **Keycloak risk:** incomplete mapping could break SSO\n")
+    bullet = [p for p in doc.paragraphs if p.style.name == "List Bullet"][0]
+    assert "**" not in bullet.text
+    assert any(r.bold for r in bullet.runs), "bold lost inside the bullet"
+
+
+def test_a_long_numbered_line_stays_prose():
+    """A 783-word 'list item' is prose that happens to start with '1.'."""
+    from docx import Document as _Doc
+    doc = _Doc()
+    long_line = "1. " + " ".join(["word"] * 60) + "."
+    document_engine._add_body_paragraphs(doc, long_line)
+    assert not [p for p in doc.paragraphs if p.style.name == "List Number"]
+
+
+def test_a_sentence_containing_a_colon_is_not_promoted_to_a_heading():
+    from docx import Document as _Doc
+    doc = _Doc()
+    document_engine._add_body_paragraphs(
+        doc, "The position today is simply this: nobody can say who has access.")
+    assert not [p for p in doc.paragraphs if p.style.name.startswith("Heading")]
+
+
+def test_client_logo_reaches_the_running_header():
+    """Point 4: IV runs the client mark on every page, not just the cover."""
+    import base64, tempfile, os as _os
+    from docx import Document as _Doc
+    import branding
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+    fd, path = tempfile.mkstemp(suffix=".png")
+    with _os.fdopen(fd, "wb") as fh:
+        fh.write(png)
+    doc = _Doc()
+    branding.configure_base_styles(doc)
+    branding.apply_header_footer(doc, "Amlak International", client_logo_path=path)
+    header_xml = doc.sections[0].header.paragraphs[0]._p.xml
+    assert header_xml.count("<a:blip") == 2, "client logo missing beside the IV logo"
+
+
+def test_header_still_renders_without_a_client_logo():
+    from docx import Document as _Doc
+    import branding
+    doc = _Doc()
+    branding.configure_base_styles(doc)
+    branding.apply_header_footer(doc, "Amlak International")
+    assert "Amlak International" in doc.sections[0].header.paragraphs[0].text
+
+
+# ---------------------------------------------------------------------------
+# CALL-SITE tests. The four tests above assert that SectionSpec.render_subsections
+# and branding.apply_header_footer behave correctly in isolation — and a negative
+# control proved that BOTH still pass when the call sites are unwired. That is
+# the "built but never wired" failure this project has hit four times, reproduced
+# in its own regression suite. These tests drive the real pipeline instead.
+# ---------------------------------------------------------------------------
+
+def test_generated_document_has_unique_subsection_headings():
+    """Drive the whole pipeline; assert the DOCX itself, not the template."""
+    docx_bytes = asyncio.run(_run())
+    doc = Document(io.BytesIO(docx_bytes))
+    h2 = [p.text.strip() for p in doc.paragraphs
+          if p.style.name == "Heading 2" and p.text.strip()]
+    assert h2, "no subsection headings in the generated document"
+    dupes = {h for h in h2 if h2.count(h) > 1}
+    assert not dupes, f"repeated subsection headings in the DOCX: {sorted(dupes)}"
+    for banned in ("Overview", "Detailed Design", "Considerations & Dependencies"):
+        assert banned not in h2, f"generic facet {banned!r} reached the document"
+
+
+def test_generated_document_carries_ivs_section_skeleton():
+    docx_bytes = asyncio.run(_run())
+    doc = Document(io.BytesIO(docx_bytes))
+    h1 = [p.text.strip() for p in doc.paragraphs
+          if p.style.name == "Heading 1" and p.text.strip()]
+    joined = " | ".join(h1)
+    for required in ("Company Profile", "Similar Experience", "Commercial",
+                     "Knowledge Transfer"):
+        assert required in joined, f"{required!r} missing from the document: {joined}"
+
+
+def test_assemble_docx_puts_the_client_logo_in_the_running_header():
+    """assemble_docx must PASS the logo through, not merely accept it."""
+    import base64, tempfile, os as _os
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+    fd, path = tempfile.mkstemp(suffix=".png")
+    with _os.fdopen(fd, "wb") as fh:
+        fh.write(png)
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "Amlak International", "proposal_type": "implementation"},
+        sections=[{"id": "executive_summary", "title": "Executive Summary",
+                   "content": "Body text."}],
+        client_logo_path=path,
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    # The IV logo is ALSO an image in this header, so presence of "blip" proves
+    # nothing — an earlier version of this assertion passed with the call site
+    # unwired. Count images instead: IV mark + client mark = 2.
+    header_xml = doc.sections[0].header.paragraphs[0]._p.xml
+    assert header_xml.count("<a:blip") == 2, (
+        f"expected IV logo + client logo in the header, found "
+        f"{header_xml.count('<a:blip')} image(s)")

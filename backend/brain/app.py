@@ -17,6 +17,7 @@ Endpoints:
 
 import asyncio
 import base64
+import functools
 import json
 import logging
 import os
@@ -1405,18 +1406,62 @@ async def run_compliance_matrix(
     return ComplianceMatrix(entries=list(entries), overall_notes=overall, truncated=truncated)
 
 
-def render_matrix_markdown(matrix: ComplianceMatrix) -> str:
-    out = ["# DRAFT Compliance Matrix", "", matrix.overall_notes, "",
-           "| Req | Requirement | Status | Evidence | Summary | Next step |",
-           "|---|---|---|---|---|---|"]
-    label = {"covered": "Covered", "partial": "Partial", "missing": "Missing", "needs-human": "Needs human"}
+def render_matrix_markdown(matrix: ComplianceMatrix, *, client_facing: bool = False) -> str:
+    """Render the compliance matrix.
+
+    Two audiences, two renders. The internal one (chat, default) keeps the
+    Evidence column and the downgrade banners, because that is the whole point
+    of it as a review aid.
+
+    The CLIENT-FACING one drops both. In Amlak run 3 this table shipped inside
+    the proposal carrying 4 cells of verbatim quotes from other clients'
+    proposals and 11 cells of an internal QA note beginning "[DOWNGRADED to
+    needs-human...]". A status of "Needs human" is also internal vocabulary;
+    a client reads "To be confirmed".
+    """
+    header = ["| Req | Requirement | Status | Evidence | Summary | Next step |",
+              "|---|---|---|---|---|---|"]
+    if client_facing:
+        header = ["| Req | Requirement | Status | Summary | Next step |",
+                  "|---|---|---|---|---|"]
+    title = "Compliance Matrix" if client_facing else "# DRAFT Compliance Matrix"
+    notes = "" if client_facing else matrix.overall_notes
+    out = [title, "", notes, ""] + header
+    label = {"covered": "Covered", "partial": "Partial", "missing": "Missing",
+             "needs-human": "To be confirmed" if client_facing else "Needs human"}
     for e in matrix.entries:
         clean = lambda s: (s or "").replace("|", "/").replace("\n", " ").strip()
         req = clean(e.requirement_text)[:100]
-        ev = "; ".join(f'[{r.evidence_id}] \"{clean(r.quote)[:90]}\"' for r in e.evidence_refs) or "—"
-        out.append(f"| {e.requirement_id} | {req} | {label[e.status]} | {ev} | {clean(e.summary)[:200]} | {clean(e.recommendation)[:200]} |")
-    out += ["", "> Draft internal aid. Every 'covered'/'partial' must be verified by a human against the cited evidence before any client-facing use."]
+        summary = clean(e.summary)
+        recommendation = clean(e.recommendation)
+        if client_facing:
+            summary = _strip_internal_notes(summary)
+            recommendation = _strip_internal_notes(recommendation)
+            out.append(f"| {e.requirement_id} | {req} | {label[e.status]} | "
+                       f"{summary[:200]} | {recommendation[:200]} |")
+            continue
+        ev = "; ".join(f'[{r.evidence_id}] \"{clean(r.quote)[:90]}\"'
+                       for r in e.evidence_refs) or "—"
+        out.append(f"| {e.requirement_id} | {req} | {label[e.status]} | {ev} | "
+                   f"{summary[:200]} | {recommendation[:200]} |")
+    if not client_facing:
+        out += ["", "> Draft internal aid. Every 'covered'/'partial' must be verified by a human "
+                    "against the cited evidence before any client-facing use."]
     return "\n".join(out)
+
+
+# Internal QA annotations that must never reach a client document.
+_INTERNAL_NOTE_RE = re.compile(r"\[\s*(?:DOWNGRADED|UNVERIFIED|INTERNAL)\b[^\]]*\]", re.I)
+_ESCALATE_RE = re.compile(
+    r"Escalate to SME[^.]*\.\s*|the model could not[^.]*\.\s*|"
+    r"re-check retrieval[^.]*\.\s*", re.I)
+
+
+def _strip_internal_notes(text: str) -> str:
+    """Remove bracketed internal annotations and SME-escalation instructions."""
+    out = _INTERNAL_NOTE_RE.sub("", text or "")
+    out = _ESCALATE_RE.sub("", out)
+    return re.sub(r"\s{2,}", " ", out).strip()
 
 
 def _sse_chunk(content: str, resp_id: str = "chatcmpl-shilpi-compliance") -> str:
@@ -1668,7 +1713,12 @@ async def generate_proposal_endpoint(request: Request):
                 retrieve_fn=retrieve_chunks,
                 build_grounded_system_fn=build_grounded_system,
                 run_compliance_matrix_fn=run_compliance_matrix,
-                render_matrix_markdown_fn=render_matrix_markdown,
+                # client_facing=True: this render goes into a DOCX that leaves
+                # the building. It drops the Evidence column (verbatim quotes
+                # from OTHER clients' proposals) and the internal downgrade
+                # banners. The chat path above keeps both deliberately.
+                render_matrix_markdown_fn=functools.partial(
+                    render_matrix_markdown, client_facing=True),
                 sections=sections,
                 include_compliance_matrix=include_compliance_matrix,
                 top_k=top_k,

@@ -22,7 +22,10 @@ the one accent, everything else is neutral (design-foundations: restraint,
 from __future__ import annotations
 
 import os
+import logging
 from typing import Optional
+
+log = logging.getLogger("shilpi-brain.branding")
 
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
@@ -228,11 +231,14 @@ def add_section_heading(document: Document, text: str):
 # ---------------------------------------------------------------------------
 # public: running header & footer
 # ---------------------------------------------------------------------------
-def apply_header_footer(document: Document, client_name: str) -> None:
+def apply_header_footer(document: Document, client_name: str,
+                        client_logo_path: Optional[str] = None) -> None:
     """Install the running header/footer and restart content page numbering.
 
-    Header: small IV logo (left) + "Technical Proposal — {client}" (right),
-            thin navy rule under.
+    Header: small IV logo (left), "Technical Proposal - {client}" (centre-right)
+            and the CLIENT logo (far right) when one was supplied, thin navy
+            rule under. IV's own proposals run the client mark in the header on
+            every page; Shilpi previously used it only in the title-page box.
     Footer: "Inspirit Vision — Confidential" (left) + "Page N" (right),
             thin navy rule above.
     The title page (first page) is left blank via different-first-page.
@@ -255,9 +261,16 @@ def apply_header_footer(document: Document, client_name: str) -> None:
         brand.bold = True
         brand.font.color.rgb = NAVY
         brand.font.size = Pt(10)
-    right = hpara.add_run(f"\tTechnical Proposal — {client_name}")
+    right = hpara.add_run(f"\tTechnical Proposal - {client_name}")
     right.font.size = Pt(9)
     right.font.color.rgb = NAVY
+    # Client mark on the right of the running header. Height-capped so a tall
+    # or square logo cannot inflate the header band and push the body down.
+    if client_logo_path and os.path.exists(client_logo_path):
+        try:
+            hpara.add_run("  ").add_picture(client_logo_path, height=Inches(0.28))
+        except Exception as e:  # noqa: BLE001 - a bad logo must not fail the document
+            log.warning("client logo could not be placed in the header: %s", e)
     _paragraph_border(hpara, {"bottom": {"sz": 6, "color": _NAVY_HEX, "space": 4}})
 
     # --- footer -------------------------------------------------------------

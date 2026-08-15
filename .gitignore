@@ -61,3 +61,8 @@ generated/
 # the source proposals. Only docs/evals/README.md (the convention) is tracked.
 docs/evals/*
 !docs/evals/README.md
+
+# Secrets — host-only env file (public repo)
+sarvam.env
+**/sarvam.env
+*.env

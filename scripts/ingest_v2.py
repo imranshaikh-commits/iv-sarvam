@@ -106,6 +106,9 @@ class Proposal:
     deal_size_bucket: Optional[str] = None
     year: Optional[int] = None
     notes: Optional[str] = None
+    # Provenance from the reviewed manifest (see sarvam_006 migration).
+    source_sha256: Optional[str] = None
+    source_tier: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +555,8 @@ def sb_insert_proposal(proposal: Proposal) -> str:
         "outcome": "unknown",
         "year": proposal.year,
         "notes": proposal.notes,
+        "source_sha256": proposal.source_sha256,
+        "source_tier": proposal.source_tier,
     }
     resp = requests.post(
         f"{SUPABASE_URL}/rest/v1/proposals",
@@ -603,7 +608,149 @@ def slugify(name: str) -> str:
     return s[:60]
 
 
-def process_file(path: Path, output_dir: Path, skip_ocr: bool = False, skip_vision: bool = False) -> Optional[Proposal]:
+# ---------------------------------------------------------------------------
+# Manifest-driven selection
+#
+# Ingestion used to be a directory glob. That is unsafe now: the Sales-SoWs bank
+# is a sales working folder, and a content review of its 421 files moved 68 of
+# 197 candidates OUT of the ingest tier -- among them the STC RFP (client-
+# authored, doc properties name Saudi Telecom Company), a competitor's proposal
+# authored by Smpl ID whose corporate boilerplate would have landed in IV's
+# voice bank, 22 consultant CVs, 2 NDAs and four vendor marketing PDFs.
+#
+# A glob discards that review silently. So selection now comes from the reviewed
+# manifest CSV and nothing else, and the metadata on each row -- verified by
+# reading the documents -- WINS over anything the LLM infers.
+# ---------------------------------------------------------------------------
+
+MANIFEST_REQUIRED_COLUMNS = {"path", "filename", "tier", "sha256_16"}
+
+
+@dataclass
+class ManifestRow:
+    path: str
+    filename: str
+    tier: str
+    sha256_16: str
+    iam_vendor: str = ""
+    client_name: str = ""
+    proposal_type: str = ""
+    year: str = ""
+    reason: str = ""
+
+
+def load_manifest(csv_path: Path, root: Path, tier: str = "ingest",
+                  vendor: Optional[str] = None) -> list[tuple[Path, ManifestRow]]:
+    """Rows of the requested tier, paired with the file each refers to.
+
+    A row whose file is missing on disk is reported and skipped rather than
+    silently dropped: a manifest that has drifted from the folder is a problem
+    to surface, not to route around.
+    """
+    import csv as _csv
+
+    with open(csv_path, newline="", encoding="utf-8-sig") as fh:
+        reader = _csv.DictReader(fh)
+        missing_cols = MANIFEST_REQUIRED_COLUMNS - set(reader.fieldnames or [])
+        if missing_cols:
+            raise SystemExit(
+                f"manifest {csv_path} is missing required columns: "
+                f"{', '.join(sorted(missing_cols))}")
+        raw = list(reader)
+
+    selected: list[tuple[Path, ManifestRow]] = []
+    absent: list[str] = []
+    skipped_tier = 0
+    for r in raw:
+        if (r.get("tier") or "").strip() != tier:
+            skipped_tier += 1
+            continue
+        row = ManifestRow(
+            path=r["path"], filename=r["filename"], tier=r["tier"],
+            sha256_16=r["sha256_16"],
+            iam_vendor=(r.get("iam_vendor") or "").strip(),
+            client_name=(r.get("client_name") or "").strip(),
+            proposal_type=(r.get("proposal_type") or "").strip(),
+            year=(r.get("year") or "").strip(),
+            reason=(r.get("reason") or "").strip(),
+        )
+        if vendor and vendor.lower() not in row.iam_vendor.lower():
+            continue
+        full = root / row.path
+        if not full.exists():
+            absent.append(row.path)
+            continue
+        selected.append((full, row))
+
+    log.info("manifest: %d rows total, %d not tier=%s, %d selected%s",
+             len(raw), skipped_tier, tier, len(selected),
+             f" (vendor filter: {vendor})" if vendor else "")
+    if absent:
+        log.warning("manifest references %d file(s) not found on disk; first 5: %s",
+                    len(absent), ", ".join(absent[:5]))
+    return selected
+
+
+def already_ingested(hashes: list[str]) -> set[str]:
+    """Content hashes already present in `proposals` for this org.
+
+    Without this, re-running ingestion inserts a second copy of every proposal
+    and a second full set of embeddings. Retrieval then silently favours the
+    duplicated document.
+    """
+    if not hashes:
+        return set()
+    seen: set[str] = set()
+    for i in range(0, len(hashes), 50):
+        batch = hashes[i:i + 50]
+        quoted = ",".join(f'"{h}"' for h in batch)
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/proposals",
+            headers=sb_headers(),
+            params={"select": "source_sha256", "org_id": f"eq.{ORG_ID}",
+                    "source_sha256": f"in.({quoted})"},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"dedup check failed HTTP {resp.status_code}: {resp.text}. "
+                "Refusing to continue -- ingesting without it risks duplicates.")
+        seen.update(r["source_sha256"] for r in resp.json() if r.get("source_sha256"))
+    return seen
+
+
+def apply_manifest_metadata(proposal: "Proposal", row: ManifestRow) -> list[str]:
+    """Overlay verified manifest metadata onto LLM-inferred values.
+
+    The manifest WINS wherever it has a value. The LLM reads the first ~6,000
+    characters, which is exactly where a partner's name sits on a cover page --
+    that is how "CIAM_Mannai_IV_Technical_Proposal_V3_0.docx" reads as a Mannai
+    proposal when the client is Ahlibank. The same review also corrected
+    Netpolean -> ABB India and PNB -> PNB MetLife. Those corrections came from
+    reading whole documents and must not be re-guessed here.
+
+    Returns a list of human-readable overrides for the run log.
+    """
+    overrides: list[str] = []
+    for field_name, value in (("client_name", row.client_name),
+                              ("iam_vendor", row.iam_vendor),
+                              ("proposal_type", row.proposal_type)):
+        if not value or value.lower() in ("n/a", "none", "unknown"):
+            continue
+        current = getattr(proposal, field_name, None)
+        if current and str(current).strip().lower() != value.strip().lower():
+            overrides.append(f"{field_name}: {current!r} -> {value!r}")
+        setattr(proposal, field_name, value)
+    if row.year.isdigit():
+        if proposal.year and int(row.year) != proposal.year:
+            overrides.append(f"year: {proposal.year} -> {row.year}")
+        proposal.year = int(row.year)
+    return overrides
+
+
+def process_file(path: Path, output_dir: Path, skip_ocr: bool = False,
+                 skip_vision: bool = False, row: Optional[ManifestRow] = None,
+                 dry_run: bool = False) -> Optional[Proposal]:
     log.info("═" * 70)
     log.info("Processing: %s (%.1f MB)", path.name, path.stat().st_size / 1_048_576)
     t0 = time.time()
@@ -653,10 +800,20 @@ def process_file(path: Path, output_dir: Path, skip_ocr: bool = False, skip_visi
         log.info("  Image processing took %.1fs, added %d sections", 
                  time.time() - t_img, len(image_sections))
 
-    # Metadata extraction
+    # Metadata extraction. The LLM fills in what the manifest does not carry
+    # (industry, country, volumetrics, deal size); the manifest then overrides
+    # the fields a human verified by reading the document.
     log.info("  Extracting metadata with DeepSeek...")
     intro_text = "\n\n".join(s.text for s in proposal.sections[:5])
     extract_metadata(proposal, intro_text)
+    if row is not None:
+        proposal.source_sha256 = row.sha256_16
+        proposal.source_tier = row.tier
+        overrides = apply_manifest_metadata(proposal, row)
+        for o in overrides:
+            log.info("  manifest override -> %s", o)
+        if not overrides:
+            log.info("  manifest metadata agreed with the model")
 
     # Chunking
     all_chunks: list[Section] = []
@@ -671,12 +828,24 @@ def process_file(path: Path, output_dir: Path, skip_ocr: bool = False, skip_visi
             "chunks": [asdict(c) for c in all_chunks],
         }, f, indent=2, ensure_ascii=False)
 
-    # Embed
-    log.info("  Embedding %d chunks via OpenRouter...", len(all_chunks))
-    t_emb = time.time()
-    texts = [c.text for c in all_chunks]
-    embeddings = embed_texts(texts)
-    log.info("  Embedded in %.1fs", time.time() - t_emb)
+    # Embed. Skipped under --dry-run: embedding is a paid call and a dry run
+    # exists to check SELECTION and METADATA, not to spend money proving the
+    # embedding endpoint still works.
+    if dry_run:
+        embeddings = []
+    else:
+        log.info("  Embedding %d chunks via OpenRouter...", len(all_chunks))
+        t_emb = time.time()
+        texts = [c.text for c in all_chunks]
+        embeddings = embed_texts(texts)
+        log.info("  Embedded in %.1fs", time.time() - t_emb)
+
+    if dry_run:
+        log.info("  DRY RUN: %d chunks prepared, nothing written to Supabase "
+                 "(client=%s vendor=%s type=%s year=%s)",
+                 len(all_chunks), proposal.client_name, proposal.iam_vendor,
+                 proposal.proposal_type, proposal.year)
+        return proposal
 
     # Write to Supabase
     log.info("  Writing to Supabase...")
@@ -691,47 +860,103 @@ def process_file(path: Path, output_dir: Path, skip_ocr: bool = False, skip_visi
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True, help="Directory of proposals")
+    ap = argparse.ArgumentParser(
+        description="Ingest IV proposals into the Shilpi RAG corpus. Selection "
+                    "comes from a reviewed manifest CSV, never from a directory "
+                    "walk.")
+    ap.add_argument("--manifest", help="Reviewed manifest CSV (corpus_manifest_reviewed.csv)")
+    ap.add_argument("--root", help="Folder the manifest paths are relative to (e.g. ~/Downloads/Sales-SoWs)")
+    ap.add_argument("--tier", default="ingest", help="Manifest tier to ingest (default: ingest)")
+    ap.add_argument("--vendor", help="Only this vendor, for batched ingestion (e.g. ForgeRock)")
+    ap.add_argument("--input", help="DEPRECATED directory mode. Requires --i-know-this-skips-the-manifest.")
+    ap.add_argument("--i-know-this-skips-the-manifest", action="store_true",
+                    help="Required to use --input. Ingests every file found, "
+                         "including client RFPs and third-party proposals.")
     ap.add_argument("--output", default="./out", help="Staging output directory")
     ap.add_argument("--limit", type=int, default=None, help="Only process first N files")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Extract, classify and report. No embedding calls, no writes.")
     ap.add_argument("--skip-ocr", action="store_true", help="Skip Tesseract OCR")
     ap.add_argument("--skip-vision", action="store_true", help="Skip Qwen VL")
     args = ap.parse_args()
 
-    # Validate env
-    missing = [k for k in ["OPENROUTER_API_KEY", "SUPABASE_URL", "SUPABASE_KEY", "ORG_ID"] if not os.getenv(k)]
+    if not args.manifest and not args.input:
+        ap.error("one of --manifest (recommended) or --input is required")
+    if args.input and not args.i_know_this_skips_the_manifest:
+        ap.error(
+            "--input walks a directory and ingests everything it finds. A content "
+            "review of the Sales-SoWs bank moved 68 of 197 candidate files out of "
+            "the ingest tier, including a client-authored RFP and a competitor's "
+            "proposal. Use --manifest, or pass "
+            "--i-know-this-skips-the-manifest if you really mean it.")
+
+    # Validate env. Embedding and Supabase are not needed for a dry run.
+    required = ["OPENROUTER_API_KEY"] if args.dry_run else [
+        "OPENROUTER_API_KEY", "SUPABASE_URL", "SUPABASE_KEY", "ORG_ID"]
+    missing = [k for k in required if not os.getenv(k)]
     if missing:
         log.error("Missing env vars: %s", ", ".join(missing))
         sys.exit(1)
 
-    input_dir = Path(args.input)
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    files = sorted(list(input_dir.glob("*.docx")) + list(input_dir.glob("*.pdf")))
-    if args.limit:
-        files = files[:args.limit]
-    log.info("Processing %d files from %s", len(files), input_dir)
+    rows: list[tuple[Path, Optional[ManifestRow]]] = []
+    if args.manifest:
+        if not args.root:
+            ap.error("--root is required with --manifest (manifest paths are relative)")
+        root = Path(os.path.expanduser(args.root))
+        if not root.is_dir():
+            ap.error(f"--root {root} is not a directory")
+        rows = [(f, r) for f, r in load_manifest(
+            Path(os.path.expanduser(args.manifest)), root,
+            tier=args.tier, vendor=args.vendor)]
+    else:
+        input_dir = Path(os.path.expanduser(args.input))
+        found = sorted(list(input_dir.rglob("*.docx")) + list(input_dir.rglob("*.pdf")))
+        log.warning("DIRECTORY MODE: %d files, manifest review NOT applied", len(found))
+        rows = [(f, None) for f in found]
 
-    results = []
-    for f in files:
+    # Skip anything already in the corpus BEFORE spending time extracting it.
+    if args.manifest and not args.dry_run:
+        hashes = [r.sha256_16 for _, r in rows if r]
+        seen = already_ingested(hashes)
+        if seen:
+            before = len(rows)
+            rows = [(f, r) for f, r in rows if not (r and r.sha256_16 in seen)]
+            log.info("dedup: %d of %d already ingested, skipping them",
+                     before - len(rows), before)
+
+    if args.limit:
+        rows = rows[:args.limit]
+    log.info("Processing %d file(s)%s", len(rows), " [DRY RUN]" if args.dry_run else "")
+
+    results, failures = [], []
+    for f, row in rows:
         try:
-            p = process_file(f, output_dir, args.skip_ocr, args.skip_vision)
+            p = process_file(f, output_dir, args.skip_ocr, args.skip_vision,
+                             row=row, dry_run=args.dry_run)
             if p:
                 results.append({
-                    "file": f.name,
-                    "slug": p.slug,
-                    "client": p.client_name,
+                    "file": f.name, "slug": p.slug, "client": p.client_name,
+                    "vendor": p.iam_vendor, "proposal_type": p.proposal_type,
+                    "year": p.year, "sha256_16": p.source_sha256,
                     "chunks_estimated": len(p.sections),
                 })
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - one bad file must not end the batch
             log.exception("FAILED on %s: %s", f.name, e)
+            failures.append({"file": f.name, "error": str(e)})
 
-    with open(output_dir / "run_summary.json", "w") as f:
-        json.dump(results, f, indent=2)
-    log.info("═" * 70)
-    log.info("DONE. Summary saved to %s", output_dir / "run_summary.json")
+    summary = {"processed": len(results), "failed": len(failures),
+               "dry_run": args.dry_run, "vendor_filter": args.vendor,
+               "results": results, "failures": failures}
+    with open(output_dir / "run_summary.json", "w") as fh:
+        json.dump(summary, fh, indent=2)
+    log.info("=" * 70)
+    log.info("DONE. %d processed, %d failed. Summary: %s",
+             len(results), len(failures), output_dir / "run_summary.json")
+    if failures:
+        log.warning("Failures: %s", ", ".join(x["file"] for x in failures[:10]))
 
 
 if __name__ == "__main__":

@@ -66,3 +66,6 @@ docs/evals/*
 sarvam.env
 **/sarvam.env
 *.env
+
+# ingestion run artefacts
+scripts/out/

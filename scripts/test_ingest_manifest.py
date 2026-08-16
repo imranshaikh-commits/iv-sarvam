@@ -152,6 +152,47 @@ def test_real_reviewed_manifest_selects_exactly_the_ingest_tier():
         assert banned not in paths, f"{banned!r} survived into the ingest set"
 
 
+# ---------------------------------------------------------------------------
+# Slug truncation. The bare s[:60] destroyed content: IV names revisions by
+# suffix, so _1.3 .. _1.6 of the TASNEE MSS proposal all truncated to the same
+# slug and four of six revisions were rejected by the unique constraint.
+# ---------------------------------------------------------------------------
+
+_TASNEE = ("TASNEE_IV__Techno Commercial Proposal_SailPoint_BeyondTrust_Support_%s.docx")
+
+
+def test_long_names_differing_only_in_version_get_distinct_slugs():
+    slugs = [I.slugify(_TASNEE % v) for v in ("1.3", "1.4", "1.5", "1.6")]
+    assert len(set(slugs)) == 4, f"revision suffix lost to truncation: {slugs}"
+
+
+def test_slugs_stay_within_the_column_budget():
+    for v in ("1.3", "1.4"):
+        assert len(I.slugify(_TASNEE % v)) <= 60
+
+
+def test_slugify_is_deterministic():
+    """Re-running ingestion must produce the same slug, or dedup breaks."""
+    name = _TASNEE % "1.3"
+    assert I.slugify(name) == I.slugify(name)
+
+
+def test_short_names_keep_a_clean_readable_slug():
+    """No hash suffix where truncation never happened."""
+    assert I.slugify("Amlak Technical Proposal V1.0.docx") == \
+        "amlak-technical-proposal-v1-0-docx"
+
+
+def test_docx_and_pdf_of_the_same_document_still_collide():
+    """Genuine duplicates must STILL be caught -- that behaviour is wanted.
+
+    A .docx and its .pdf export are the same proposal, and ingesting both would
+    double its weight in retrieval. Only the extension differs, so the slug is
+    identical below the truncation threshold.
+    """
+    assert I.slugify("SOW_IS_T&M_1.0_11052025.docx".rsplit(".", 1)[0]) == \
+           I.slugify("SOW_IS_T&M_1.0_11052025.pdf".rsplit(".", 1)[0])
+
 if __name__ == "__main__":
     passed = 0
     for name, fn in sorted(globals().items()):
@@ -159,3 +200,5 @@ if __name__ == "__main__":
             fn()
             passed += 1
     print(f"ALL {passed} INGEST MANIFEST TESTS PASSED")
+
+

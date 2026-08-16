@@ -603,9 +603,30 @@ def sb_insert_chunks(proposal_id: str, chunks_with_embeddings: list[tuple[Sectio
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def slugify(name: str) -> str:
-    s = re.sub(r"[^a-zA-Z0-9]+", "-", name.lower()).strip("-")
-    return s[:60]
+def slugify(name: str, unique_on: Optional[str] = None) -> str:
+    """URL-safe slug, kept distinct even when the first 60 characters collide.
+
+    The bare `s[:60]` truncation silently destroyed content. IV names revisions
+    by suffix, so six different documents
+
+        TASNEE_IV__Techno Commercial Proposal_SailPoint_BeyondTrust_Support_1.3
+        ... _1.4, _1.5, _1.6
+
+    all truncated to `tasnee-iv-techno-commercial-proposal-sailpoint-beyondtrust-s`
+    and every revision after the first was rejected by the slug unique
+    constraint. In the SailPoint batch that lost four of the six revisions of
+    the TASNEE MSS proposal, one of only six MSS engagements in the bank.
+
+    Appending a short hash of the FULL name keeps colliding slugs apart while
+    remaining deterministic, so re-running ingestion produces the same slug and
+    the dedup check still works. Only applied when truncation actually happened;
+    short names keep their clean readable slug.
+    """
+    base = re.sub(r"[^a-zA-Z0-9]+", "-", (name or "").lower()).strip("-")
+    if len(base) <= 60:
+        return base
+    digest = hashlib.sha256((unique_on or name or "").encode("utf-8")).hexdigest()[:8]
+    return f"{base[:51].rstrip('-')}-{digest}"
 
 
 # ---------------------------------------------------------------------------

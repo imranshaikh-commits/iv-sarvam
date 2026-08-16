@@ -373,9 +373,249 @@ MSS_SECTIONS: list[SectionSpec] = [
 ]
 
 
+# A migration proposal is NOT an implementation proposal with a different title.
+# The client already has a working identity platform and people logging in with
+# it every day. The questions a reviewer asks are therefore different: what
+# happens to the data, what happens to sessions during cutover, how do we get
+# back if it fails, and what stays behind. Those sections have no counterpart in
+# a greenfield implementation, and drafting a migration off the implementation
+# template would silently omit every one of them.
+#
+# The intake template has offered `migration` since it was written, but no
+# template existed here, so `get_template("migration")` raised ValueError AFTER
+# a consultant had answered all 22 discovery areas. The corpus now holds 39
+# migration files across 12 engagements (NWC Oracle Access Manager, ForgeRock
+# upgrades, BTPN, Maxis, KAU, TVS, DFCC, Brunei Shell, East West Bank), so this
+# type finally has grounding to draft from.
+MIGRATION_SECTIONS: list[SectionSpec] = [
+    SectionSpec(
+        id="executive_summary",
+        title="Executive Summary",
+        purpose="The migration in one page: from what, to what, why now, and what changes for users.",
+        query_template=f"executive summary, platform migration drivers, business case for replacing an incumbent identity platform {_CTX}. {{{{ rfp_text[:400] }}}}",
+    ),
+    SectionSpec(
+        id="company_profile",
+        title="Company Profile",
+        purpose="Introduce Inspirit Vision: who we are, where we operate, what we can field.",
+        query_template="Inspirit Vision company profile, branch locations, service offices, workforce capabilities and certifications",
+        static_from_corpus=True,
+        subsections=(
+            ("Inspirit Vision",
+             "who IV is, the focus on identity and access management, and market position."),
+            ("Branch Locations and Service Offices",
+             "where IV operates from and which regions each office serves."),
+            ("Migration Delivery Capability",
+             "IV's specific track record moving clients BETWEEN identity platforms, "
+             "as distinct from greenfield implementation."),
+        ),
+    ),
+    SectionSpec(
+        id="similar_experience",
+        title="Similar Migration Experience",
+        purpose="Evidence of comparable platform moves.",
+        query_template="platform migration case studies, identity platform replacement, upgrade and re-platforming engagements",
+        static_from_corpus=True,
+        subsections=(
+            ("Comparable Migrations",
+             "past engagements moving between identity platforms. State the source "
+             "platform, target platform, scale and sector. Naming past clients is "
+             "permitted."),
+            ("Lessons Applied",
+             "what IV learned on those engagements that shapes the approach here."),
+        ),
+    ),
+    SectionSpec(
+        id="current_state",
+        title="Current State Assessment",
+        purpose="What exists today. A migration is defined by its starting point.",
+        query_template=f"current state assessment, incumbent identity platform, existing integrations, technical debt {_CTX}. {{{{ rfp_text[:400] }}}}",
+        subsections=(
+            ("Incumbent Platform",
+             "the platform being replaced, its version, and what it currently does. "
+             "Use the platform named at discovery; never guess a version."),
+            ("Existing Integrations and Dependencies",
+             "the applications, directories and authoritative sources connected today, "
+             "as a markdown TABLE with columns System, Integration Type, Owner, "
+             "Migration Complexity."),
+            ("Identity and Entitlement Data Today",
+             "what identity data exists, where it lives, and its known quality issues. "
+             "Data quality is the usual cause of migration overrun, so be specific."),
+            ("Constraints Carried Forward",
+             "what about the current estate constrains the target design."),
+        ),
+    ),
+    SectionSpec(
+        id="target_state",
+        title="Target State Architecture",
+        purpose="What the client ends up with.",
+        query_template=f"target state architecture, {{{{ iam_vendor }}}} deployment architecture, cluster topology, environments {_CTX}",
+        subsections=(
+            ("Proposed Target Architecture",
+             "the target platform architecture, zones and components."),
+            ("Proposed Production Hardware Sizing",
+             "production sizing as a markdown TABLE with columns Component, Role, "
+             "vCPU, Memory, Storage, Operating System. Use the discovery figures exactly."),
+            ("Proposed DR and Non-Production Sizing",
+             "DR, UAT and development sizing as a markdown TABLE, same columns."),
+            ("Capability Mapping - Current to Target",
+             "a markdown TABLE with columns Current Capability, Target Capability, "
+             "Gap, Notes. This is the section a client reads most closely: it proves "
+             "nothing they rely on today is being dropped."),
+        ),
+    ),
+    SectionSpec(
+        id="migration_strategy",
+        title="Migration Strategy and Approach",
+        purpose="How the move is executed without breaking access.",
+        query_template=f"migration strategy, phased cutover, big bang versus parallel run, coexistence, user migration approach {_CTX}",
+        subsections=(
+            ("Migration Pattern",
+             "the chosen pattern (phased, parallel run, or cutover) and why it suits "
+             "this estate. State the trade-off honestly rather than asserting one is best."),
+            ("Coexistence Period",
+             "how the incumbent and target platforms operate side by side, which is "
+             "authoritative for what, and for how long."),
+            ("Identity and Credential Migration",
+             "how identities, entitlements and credentials move. Address password "
+             "migration explicitly: whether hashes can be carried across or users "
+             "must re-enrol, because this is the decision that most affects users."),
+            ("Application Cutover Sequencing",
+             "the order applications move and what determines it, as a markdown TABLE "
+             "with columns Wave, Applications, Rationale, Dependencies."),
+            ("Data Quality and Remediation",
+             "how data issues found during migration are handled, and what is "
+             "explicitly NOT in scope for cleansing."),
+        ),
+    ),
+    SectionSpec(
+        id="rollback_risk",
+        title="Rollback and Risk Management",
+        purpose="What happens when something goes wrong mid-cutover.",
+        query_template=f"rollback plan, cutover risk, fallback to incumbent platform, migration risk register {_CTX}",
+        subsections=(
+            ("Rollback Position",
+             "at each cutover point, what the fallback is and how long it takes. A "
+             "migration proposal without a credible rollback is not credible."),
+            ("Migration Risk Register",
+             "risks as a markdown TABLE with columns Risk, Likelihood, Impact, "
+             "Mitigation, Owner. Focus on migration-specific risks: data quality, "
+             "credential carry-over, integration drift, cutover window overrun."),
+            ("Business Continuity During Cutover",
+             "what users experience during the move and what downtime, if any, is required."),
+        ),
+    ),
+    SectionSpec(
+        id="decommissioning",
+        title="Decommissioning and Transition",
+        purpose="What happens to the old platform. Usually forgotten, always asked about.",
+        query_template=f"decommissioning legacy identity platform, licence retirement, data retention and archival {_CTX}",
+        subsections=(
+            ("Legacy Platform Decommissioning",
+             "the steps to retire the incumbent, and who performs each. State clearly "
+             "if decommissioning is out of scope, as it often is."),
+            ("Data Retention and Archival",
+             "what audit history and identity data is retained from the old platform, "
+             "in what form, and for how long. Compliance usually drives this."),
+            ("Licence and Contract Implications",
+             "what happens to incumbent licences and support contracts. Structure only; "
+             "figures stay with the commercial owner."),
+        ),
+    ),
+    SectionSpec(
+        id="implementation_approach",
+        title="Delivery Approach",
+        purpose="How delivery is run: phases, deliverables, responsibilities.",
+        query_template=f"migration delivery approach, project deliverables, RACI matrix, testing strategy {_CTX}",
+        subsections=(
+            ("Delivery Phases",
+             "the phases from assessment through cutover to hypercare."),
+            ("Project Deliverables",
+             "deliverables as a markdown TABLE with columns Deliverable, Description, Phase."),
+            ("Testing and Validation Strategy",
+             "how the migration is proved before cutover: data reconciliation, "
+             "functional parity testing, and UAT. Reconciliation matters most - the "
+             "client needs evidence that no identity or entitlement was lost."),
+            ("RACI Matrix",
+             "responsibilities as a markdown TABLE with columns Activity, "
+             "Inspirit Vision, {{ client_name }}, Vendor, using R/A/C/I values."),
+        ),
+    ),
+    SectionSpec(
+        id="project_timeline",
+        title="Project Management and Timeline",
+        purpose="The plan, structured around cutover events rather than build phases.",
+        query_template=f"migration timeline, cutover windows, phased delivery plan, wave planning {_CTX}",
+        subsections=(
+            ("High-Level Migration Plan",
+             "the plan as a markdown TABLE with columns Phase, Key Activities, "
+             "Duration. Use the engagement duration supplied at discovery exactly."),
+            ("Cutover Windows and Milestones",
+             "the cutover events, what each moves, and the decision gate before each."),
+        ),
+    ),
+    SectionSpec(
+        id="assumptions_responsibilities",
+        title="Key Assumptions and Responsibilities",
+        purpose="The assumptions the plan rests on and what the client must provide.",
+        query_template=f"migration assumptions, client responsibilities, incumbent platform access, dependencies {_CTX}",
+        subsections=(
+            ("Access to the Incumbent Platform",
+             "what access, documentation and vendor support IV requires for the "
+             "platform being replaced. Migrations stall here more than anywhere else."),
+            ("{{ client_name }} Resource Commitments",
+             "the client roles and time required, as a bulleted list."),
+            ("Working Assumptions",
+             "the delivery assumptions the plan depends on, as a bulleted list."),
+            ("Dependencies",
+             "external dependencies and the plan impact if each slips."),
+        ),
+    ),
+    SectionSpec(
+        id="knowledge_transfer",
+        title="Knowledge Transfer and Training",
+        purpose="Leaving the client able to run the new platform.",
+        query_template=f"knowledge transfer, administrator training on the target platform, handover, hypercare {_CTX}",
+        subsections=(
+            ("Knowledge Transfer Plan",
+             "the KT plan as a markdown TABLE with columns Audience, Topic, Format, Timing."),
+            ("Training on the Target Platform",
+             "training for administrators moving from the incumbent, framed around "
+             "the differences from what they use today."),
+            ("Hypercare and Post-Cutover Support",
+             "the hypercare period and support model named at discovery."),
+        ),
+    ),
+    SectionSpec(
+        id="commercial",
+        title="Commercial",
+        purpose="Commercial structure and basis. Figures belong to the commercial owner.",
+        query_template=f"commercial structure, migration pricing basis, licence bill of quantities, payment milestones {_CTX}",
+        subsections=(
+            ("Licence Bill of Quantities",
+             "licence line items as a markdown TABLE with columns Item, Description, "
+             "Quantity, Unit, Basis. Leave price cells as 'To be confirmed'."),
+            ("Payment Milestones",
+             "milestones as a markdown TABLE with columns Milestone, Trigger, "
+             "Percentage, tied to cutover events rather than build phases."),
+            ("Commercial Assumptions",
+             "travel, taxes, support terms and validity, from the discovery answers."),
+        ),
+    ),
+    SectionSpec(
+        id=COMPLIANCE_SECTION_ID,
+        title="Compliance Matrix",
+        purpose="Requirement-by-requirement coverage assessment against the RFP.",
+        query_template="{{ rfp_text }}",
+        optional=True,
+    ),
+]
+
+
 _TEMPLATES: dict[str, list[SectionSpec]] = {
     "implementation": IMPLEMENTATION_SECTIONS,
     "mss": MSS_SECTIONS,
+    "migration": MIGRATION_SECTIONS,
 }
 
 VALID_PROPOSAL_TYPES = frozenset(_TEMPLATES.keys())

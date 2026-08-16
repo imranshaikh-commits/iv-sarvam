@@ -101,5 +101,73 @@ def main():
     print(f"ALL {len(tests)} INTAKE TEMPLATE TESTS PASSED (proposal types: {PROPOSAL_TYPES})")
 
 
+
+
+# ---------------------------------------------------------------------------
+# Migration proposals.
+#
+# The intake template has offered `migration` since it was written, but
+# proposal_templates had no entry for it, so get_template("migration") raised
+# ValueError AFTER a consultant had answered all 22 discovery areas. The corpus
+# now holds 39 migration files across 12 engagements, so the type has grounding.
+# ---------------------------------------------------------------------------
+
+def test_every_intake_proposal_type_has_a_template():
+    """THE bug: intake offered a type the drafting engine could not build.
+
+    Written as an invariant over ALL types rather than a check for 'migration',
+    so adding a fourth type to the intake without a template fails here instead
+    of at generation time in front of a user.
+    """
+    import proposal_templates
+    import intake_template
+    for ptype in intake_template.PROPOSAL_TYPES:
+        try:
+            sections = proposal_templates.get_template(ptype)
+        except ValueError as e:
+            raise AssertionError(
+                f"intake offers proposal_type {ptype!r} but no template exists: {e}")
+        assert sections, f"template for {ptype!r} is empty"
+
+
+def test_migration_template_covers_what_implementation_cannot():
+    """A migration is not an implementation with a different title."""
+    import proposal_templates
+    ids = {s.id for s in proposal_templates.get_template("migration")}
+    for required in ("current_state", "migration_strategy", "rollback_risk",
+                     "decommissioning"):
+        assert required in ids, f"migration template missing {required!r}"
+    impl_ids = {s.id for s in proposal_templates.get_template("implementation")}
+    assert "rollback_risk" not in impl_ids
+    assert "decommissioning" not in impl_ids
+
+
+def test_migration_subsection_headings_are_unique():
+    import proposal_templates
+    ctx = {"client_name": "NWC", "iam_vendor": "Oracle Access Manager",
+           "proposal_type": "migration", "rfp_text": ""}
+    headings = [h for s in proposal_templates.get_template("migration")
+                for h, _ in s.render_subsections(ctx)]
+    dupes = {h for h in headings if headings.count(h) > 1}
+    assert not dupes, f"repeated headings: {sorted(dupes)}"
+    assert len(headings) >= 35
+    for banned in ("Overview", "Detailed Design", "Considerations & Dependencies"):
+        assert banned not in headings
+
+
+def test_migration_asks_for_tables_where_a_reviewer_expects_them():
+    import proposal_templates, document_engine
+    ctx = {"client_name": "NWC", "iam_vendor": "Oracle", "proposal_type": "migration",
+           "rfp_text": ""}
+    wants = [h for s in proposal_templates.get_template("migration")
+             for h, f in s.render_subsections(ctx)
+             if document_engine._WANTS_TABLE_RE.search(f)]
+    assert len(wants) >= 8, f"only {len(wants)} table subsections: {wants}"
+    joined = " | ".join(wants)
+    # The capability map and the risk register are the two a migration reviewer
+    # goes to first: one proves nothing is lost, the other proves it can be undone.
+    assert "Capability Mapping" in joined
+    assert "Risk Register" in joined
+
 if __name__ == "__main__":
     main()

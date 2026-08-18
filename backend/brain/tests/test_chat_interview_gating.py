@@ -1392,5 +1392,50 @@ def test_health_reports_the_active_model():
     assert body["fallback_model"] == app.FALLBACK_LLM_MODEL
 
 
+
+
+# ---------------------------------------------------------------------------
+# Compliance classification budgets.
+#
+# A migration requirement failed entirely with "The output is incomplete due to
+# a max_tokens length limit". Diagnosis: retrieve_chunks returns k*4 chunks (32
+# at TOP_K=8) which was ~70,000 characters of evidence for a single yes/no/
+# partial coverage decision. That volume pushes the model to cite more sources
+# than the 768-token response allowed, truncating the structured output
+# mid-JSON so Instructor exhausted its retries and the requirement was lost.
+#
+# Measured that this was NOT caused by the retrieval change that preceded it:
+# evidence volume was 69,582 chars before and 71,609 after (+2.9%), which
+# cannot tip a completion over a cap. A latent bug, newly exposed.
+# ---------------------------------------------------------------------------
+
+def test_compliance_evidence_is_capped_below_the_retrieval_fanout():
+    """The cap must actually be smaller than what retrieval returns."""
+    assert app.COMPLIANCE_EVIDENCE_CHUNKS < app.TOP_K * 4, (
+        f"cap {app.COMPLIANCE_EVIDENCE_CHUNKS} does not reduce the fan-out "
+        f"of {app.TOP_K * 4}; the change is a no-op")
+    assert app.COMPLIANCE_EVIDENCE_CHUNKS >= 5, "too few to judge coverage"
+
+
+def test_compliance_response_budget_has_headroom():
+    assert app.COMPLIANCE_MAX_TOKENS >= 1500, (
+        "768 truncated structured output mid-JSON once the corpus grew")
+
+
+def test_evidence_block_shrinks_with_the_cap():
+    """The cap has to reach build_evidence_block, not just exist as a constant."""
+    chunks = [{"heading": f"Section {i}", "client_name": "X", "iam_vendor": "Ping",
+               "chunk_text": "word " * 300} for i in range(32)]
+    full = app.build_evidence_block(chunks)
+    capped = app.build_evidence_block(chunks[:app.COMPLIANCE_EVIDENCE_CHUNKS])
+    assert len(capped) < len(full) * 0.6, (
+        f"capped block is {len(capped)} vs full {len(full)}; not a real reduction")
+
+
+def test_evidence_block_handles_no_evidence():
+    """An empty block must be explicit, never blank -- a blank EVIDENCE section
+    reads to the model as 'evidence exists and says nothing'."""
+    assert "no relevant evidence" in app.build_evidence_block([]).lower()
+
 if __name__ == "__main__":
     main()

@@ -72,6 +72,10 @@ EMBED_MODEL = "openai/text-embedding-3-small"   # must match scripts/ingest_v2.p
 PRIMARY_LLM_MODEL = os.environ.get("SHILPI_PRIMARY_MODEL", "").strip() or "z-ai/glm-5.2"
 FALLBACK_LLM_MODEL = os.environ.get("SHILPI_FALLBACK_MODEL", "").strip() or "qwen/qwen3-235b-a22b-2507"
 TOP_K = int(os.environ.get("TOP_K", "8"))
+# Compliance classification is per-requirement and needs the best few pieces of
+# evidence, not the whole fan-out. See classify_coverage for the measurement.
+COMPLIANCE_EVIDENCE_CHUNKS = int(os.environ.get("SHILPI_COMPLIANCE_EVIDENCE_CHUNKS", "12"))
+COMPLIANCE_MAX_TOKENS = int(os.environ.get("SHILPI_COMPLIANCE_MAX_TOKENS", "2000"))
 MODEL_ID = "shilpi-architect"
 
 # Single Inspirit Vision organisation. Hard-coded until real multi-tenant auth
@@ -1293,7 +1297,13 @@ async def classify_coverage(req: Requirement, chunks: list[dict]) -> CoverageEnt
             {"role": "user", "content": f"REQUIREMENT {req.id}:\n{req.text}\n\n=== EVIDENCE (from IV's past proposals) ===\n{build_evidence_block(chunks)}"},
         ],
         temperature=0,
-        max_tokens=768,
+        # Was 768, tuned when the corpus was 11 proposals and evidence was thin.
+        # At 114 proposals a requirement can match several quotable sources, and
+        # the model then truncates mid-JSON: Instructor reports "The output is
+        # incomplete due to a max_tokens length limit" and the requirement fails
+        # entirely. The response is a small object with a handful of quotes, so
+        # the headroom is cheap; the evidence cap above is the substantive fix.
+        max_tokens=COMPLIANCE_MAX_TOKENS,
         # LOW frequency_penalty: caps runaway repetition without penalizing the
         # repeated vendor/product/evidence terms that verbatim-quote grounding
         # relies on. A degenerate spiral shouldn't be retried (it just multiplies
@@ -1393,7 +1403,17 @@ async def run_compliance_matrix(
             try:
                 emb = await embed_query(client, req.text)
                 chunks = await retrieve_chunks(client, emb, req.text, k=top_k)
-                log.info("Compliance %s: retrieved %d chunks", req.id, len(chunks))
+                # Classifying ONE requirement does not need the full fan-out.
+                # retrieve_chunks returns k*4 (32 at TOP_K=8), which was ~70,000
+                # characters of evidence -- roughly 18,000 tokens of input for a
+                # yes/no/partial coverage decision. That volume also pushes the
+                # model to cite more sources than the response budget allows,
+                # which is what truncated the structured output mid-JSON and
+                # failed the whole requirement. Retrieval is better targeted now
+                # (content dedup, per-proposal cap, proposal-type reservation),
+                # so the best evidence is at the top and the tail is noise.
+                chunks = chunks[:COMPLIANCE_EVIDENCE_CHUNKS]
+                log.info("Compliance %s: classifying against %d chunks", req.id, len(chunks))
                 return await classify_coverage(req, chunks)
             except Exception as e:
                 log.error("Compliance classify failed for %s: %s", req.id, e)

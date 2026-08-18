@@ -124,7 +124,8 @@ HEADING_RULES: list[tuple[str, str]] = [
                            r"weekly\s*report|reporting\s*deck|"
                            r"escalation|change\s*(management|"
                            r"request|control)|risk\s*(management|register|log)|"
-                           r"issue\s*(management|log)|status\s*report|steering"),
+                           r"issue\s*(management|log)|status\s*report|steering|"
+                           r"risks?\s*(and|&)\s*mitigation|mitigation\s*plan"),
     ("team_roles", r"^(project\s*manager|technical\s*lead|developer|architect|"
                    r"consultant|engineer|analyst|resident\s*engineer)$|"
                    r"team\s*(structure|composition)|resource\s*(plan|profile)|"
@@ -141,6 +142,7 @@ HEADING_RULES: list[tuple[str, str]] = [
                 r"payment\s*(milestone|term|schedule)|licen[cs]e\s*(fee|cost|boq)|"
                 r"investment|effort\s*estimat|rate\s*card"),
     ("deliverables", r"deliverable|artefact|artifact|document\s*list|"
+                     r"high\s*level\s*task|task\s*(list|breakdown)|\bwbs\b|"
                      r"benefits?$|value\s*delivered|outcomes?$"),
     ("delivery_process", r"build\s*(and|&)?\s*infrastructure|logistics|"
                          r"environment\s*(build|setup|provisioning)|"
@@ -173,6 +175,11 @@ BODY_RULES: list[tuple[str, list[str], int]] = [
               r"\binformed\b"], 3),
     ("pricing", [r"\bboq\b|bill of quantit", r"quantity|qty", r"unit\s*(price|cost)",
                  r"total|subtotal|amount"], 3),
+    # Payment-milestone tables read "Milestone | Trigger | Percentage", where
+    # the heading regex fails because it needs the phrase "payment milestone"
+    # adjacent. Column signatures are the reliable signal for tables.
+    ("pricing", [r"milestone", r"percent|%|\btrigger\b",
+                 r"payment|invoice|licen[cs]e|amount"], 3),
     ("timeline", [r"week\s*\d|month\s*\d", r"phase|tranche|milestone",
                   r"duration|start|end|complete"], 3),
     ("governance", [r"certification|attestation", r"reviewer|manager|owner",
@@ -187,19 +194,73 @@ _BODY_COMPILED = [(t, [re.compile(p, re.I) for p in pats], n)
 UNCLASSIFIED = "unclassified"
 
 
-def classify(heading: str, text: str) -> str:
-    """Semantic topic for a chunk. Heading first, body only as a fallback."""
-    head = (heading or "").strip()
-    # Strip the fragment suffix the extractor adds: "Table 6 (part 44)".
-    head = re.sub(r"\s*\((?:part|cont\.?)\s*\d+\)\s*$", "", head, flags=re.I)
+# A heading carrying no semantic signal at all. 4,530 chunks are headed
+# "Table 1", "Diagram #5", "Page 26" -- the extractor's own numbering, not
+# IV's words. For these the body has to do all the work.
+_GENERIC_HEADING_RE = re.compile(
+    r"^\s*(table|diagram|figure|image|page|exhibit|annex)\s*#?\s*\d*\s*$", re.I)
+
+# Minimum distinct pattern matches in the body before a topic is accepted.
+# One keyword is noise; two independent signals is evidence.
+_BODY_SCORE_MIN = 2
+
+
+def _score_body(text: str) -> str:
+    """Best topic by running the HEADING patterns over the body text.
+
+    Reuses the same vocabulary rather than inventing a second one, so a topic
+    is described in exactly one place. Requires at least _BODY_SCORE_MIN
+    distinct matches, and requires a clear winner: when the top two topics tie,
+    the content genuinely is ambiguous and stays unclassified rather than being
+    assigned by list order.
+    """
+    body = (text or "")[:2000]
+    if not body.strip():
+        return UNCLASSIFIED
+    scores: dict[str, int] = {}
     for topic, pattern in _COMPILED:
-        if pattern.search(head):
-            return topic
-    body = (text or "")[:1500]
+        n = len(pattern.findall(body))
+        if n:
+            scores[topic] = scores.get(topic, 0) + n
+    if not scores:
+        return UNCLASSIFIED
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    top, top_n = ranked[0]
+    if top_n < _BODY_SCORE_MIN:
+        return UNCLASSIFIED
+    if len(ranked) > 1 and ranked[1][1] == top_n:
+        return UNCLASSIFIED
+    return top
+
+
+def classify(heading: str, text: str, section_type: str | None = None) -> str:
+    """Semantic topic for a chunk.
+
+    Order: high-precision body rules -> heading -> body scoring. The body rules
+    come FIRST because a sizing or RACI table is unmistakable from its columns
+    and may sit under a heading like "Proposed Solution" that would otherwise
+    win and lose the detail.
+    """
+    body = (text or "")[:2000]
+
+    # 1. High-precision structural signatures (column headers, R/A/C/I cells).
     for topic, patterns, need in _BODY_COMPILED:
         if sum(1 for p in patterns if p.search(body)) >= need:
             return topic
-    return UNCLASSIFIED
+
+    # 2. The heading, unless it is the extractor's own numbering.
+    head = re.sub(r"\s*\((?:part|cont\.?)\s*\d+\)\s*$", "",
+                  (heading or "").strip(), flags=re.I)
+    if head and not _GENERIC_HEADING_RE.match(head):
+        for topic, pattern in _COMPILED:
+            if pattern.search(head):
+                return topic
+
+    # 3. Body scoring. This is what reaches the 4,530 chunks headed "Table 1"
+    #    and "Diagram #5", where the heading is the extractor's numbering and
+    #    carries no meaning. Without it the residue was 60% -- WORSE than the
+    #    46% 'other' this replaces.
+    return _score_body(body)
 
 
 def fetch_all() -> list[dict]:
@@ -261,7 +322,7 @@ def main() -> int:
     before = Counter(r.get("section_type") or "null" for r in rows)
     topics, updates, residue = Counter(), [], Counter()
     for r in rows:
-        topic = classify(r.get("heading"), r.get("text"))
+        topic = classify(r.get("heading"), r.get("text"), r.get("section_type"))
         topics[topic] += 1
         if topic == UNCLASSIFIED:
             residue[(r.get("heading") or "(none)")[:60]] += 1

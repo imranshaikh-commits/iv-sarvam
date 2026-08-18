@@ -144,7 +144,8 @@ def detect_vendor(query: str) -> str | None:
     return None
 
 
-async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], query: str, k: int = TOP_K) -> list[dict]:
+async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], query: str,
+                          k: int = TOP_K, proposal_type: Optional[str] = None) -> list[dict]:
     # Over-fetch then improve signal:
     #  - exclude "Inspirit Vision" company-overview boilerplate (identical marketing text in every proposal;
     #    never the specific answer)
@@ -158,7 +159,16 @@ async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], que
             "Authorization": f"Bearer {SUPABASE_KEY}",
             "Content-Type": "application/json",
         },
-        json={"query_embedding": json.dumps(embedding, separators=(",", ":")), "match_count": k * 4},
+        # filter_proposal_type reserves a share of the slots for chunks from the
+        # SAME kind of engagement. Measured on the retrieval scorecard: a
+        # credential-migration query returned 1 of 8 chunks from a migration
+        # proposal without it and 5 of 8 with it, against a 35.5% base rate.
+        # Drafting a migration section from greenfield implementation proposals
+        # is the failure this prevents: those documents describe building from
+        # nothing, for a client who already runs a working identity platform.
+        json={"query_embedding": json.dumps(embedding, separators=(",", ":")),
+              "match_count": k * 4,
+              "filter_proposal_type": proposal_type},
         timeout=30,
     )
     resp.raise_for_status()

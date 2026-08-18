@@ -68,7 +68,11 @@ def _fake_chunks():
     ]
 
 
-async def stub_retrieve(client, embedding, query, k=8):
+# NOTE: must accept whatever draft_section passes. When `max_tokens` was added
+# to draft_with_openrouter this same class of mismatch silently routed every
+# section into the drafting-failure path while the test stayed green. **kw keeps
+# the stub tolerant of new keyword arguments; the CALLER is asserted separately.
+async def stub_retrieve(client, embedding, query, k=8, **kw):
     return _fake_chunks()
 
 
@@ -753,3 +757,67 @@ def test_prose_subsections_get_a_tighter_token_budget_than_tables():
         f"prose subsection got {prose_budget}, expected "
         f"<= {document_engine.PROSE_SUBSECTION_TOKENS}")
     assert prose_budget < table_budget
+
+
+def test_proposal_type_is_passed_to_retrieval():
+    """CALL-SITE test: draft_section must tell retrieval which type it is drafting.
+
+    Measured on the retrieval scorecard: a credential-migration query returned
+    1 of 8 chunks from a migration proposal without this, and 5 of 8 with it,
+    against a 35.5% base rate. Retrieval was performing WORSE than random on
+    proposal type, so every migration section would have been drafted from
+    greenfield implementation proposals.
+
+    The stub above takes **kw, which makes it tolerant of new arguments but also
+    blind to their absence -- hence this test asserts what was actually passed.
+    """
+    import proposal_templates
+    seen: list[dict] = []
+
+    async def spy_retrieve(client, embedding, query, k=8, **kw):
+        seen.append(kw)
+        return []
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    spec = proposal_templates.SectionSpec(
+        id="t", title="T", purpose="p", query_template="migration cutover")
+
+    asyncio.run(document_engine.draft_section(
+        None, spec,
+        {"client_name": "NWC", "iam_vendor": "Oracle",
+         "proposal_type": "migration", "rfp_text": ""},
+        embed_fn=stub_embed, retrieve_fn=spy_retrieve,
+        build_grounded_system_fn=lambda chunks: "EVIDENCE",
+        top_k=8, subsections=1, max_tokens=500,
+    ))
+
+    assert seen, "retrieve_fn was never called"
+    assert all("proposal_type" in kw for kw in seen), \
+        f"proposal_type never reached retrieval: {seen}"
+    assert seen[0]["proposal_type"] == "migration", seen[0]
+
+
+def test_absent_proposal_type_passes_none_not_empty_string():
+    """An empty string would filter to a type that does not exist, returning
+    nothing. None means 'no preference', which is the correct fallback."""
+    seen: list[dict] = []
+
+    async def spy_retrieve(client, embedding, query, k=8, **kw):
+        seen.append(kw)
+        return []
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    import proposal_templates
+    spec = proposal_templates.SectionSpec(id="t", title="T", purpose="p",
+                                          query_template="anything")
+    asyncio.run(document_engine.draft_section(
+        None, spec, {"client_name": "X", "iam_vendor": "Ping", "rfp_text": ""},
+        embed_fn=stub_embed, retrieve_fn=spy_retrieve,
+        build_grounded_system_fn=lambda chunks: "EVIDENCE",
+        top_k=8, subsections=1, max_tokens=500,
+    ))
+    assert seen[0]["proposal_type"] is None, seen[0]

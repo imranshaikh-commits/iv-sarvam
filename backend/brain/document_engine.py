@@ -352,7 +352,13 @@ async def _retrieve_fanout(
     for query in _fanout_queries(section_spec, context, fanout):
         try:
             embedding = await embed_fn(client, query)
-            chunks = await retrieve_fn(client, embedding, query, k=top_k)
+            # Pass the proposal type through so retrieval reserves slots for
+            # the same kind of engagement. Without it a migration section is
+            # drafted from greenfield implementation proposals: measured at 1 of
+            # 8 chunks from a migration proposal, against a 35.5% base rate.
+            chunks = await retrieve_fn(
+                client, embedding, query, k=top_k,
+                proposal_type=context.get("proposal_type") or None)
         except Exception as e:  # fail soft: one failed query must not sink the section
             log.error("draft_section retrieval failed for %s: %s", section_spec.id, e)
             chunks = []

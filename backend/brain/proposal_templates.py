@@ -13,13 +13,87 @@ This module has NO dependency on app.py or the network — it is pure data +
 Jinja2 rendering, safe to import from the smoke test without any secrets.
 """
 
+import re
 from dataclasses import dataclass
+from typing import Optional
 
 from jinja2 import Template
 
 # Sentinel section id: this section is produced by the compliance-matrix
 # pipeline (run_compliance_matrix) rather than by free-form LLM drafting.
 COMPLIANCE_SECTION_ID = "compliance_matrix"
+
+
+# Section id -> the corpus `section_topic` that section should draw on.
+#
+# Retrieval reserves half the evidence slots for chunks carrying this topic
+# (sarvam_010), with a topic-scoped second query for topics too small to appear
+# in a general candidate pool (sarvam_011). Measured: why_vendor went from 1 of
+# 8 on-topic results to 4 of 8 when seeded from an unrelated query.
+#
+# The topics that matter most here are the BANK-SOURCED sections -- Company
+# Profile, Why-Vendor, Similar Experience -- which are 1-3% of the corpus and
+# have been thin in every generated proposal precisely because a general vector
+# search rarely surfaces them.
+#
+# A section with no entry passes None and retrieval behaves as before, so the
+# mapping can stay partial without breaking anything.
+SECTION_TOPICS: dict[str, str] = {
+    "executive_summary": "executive_summary",
+    "company_profile": "company_profile",
+    "similar_experience": "similar_experience",
+    "scope_understanding": "scope",
+    "solution_overview": "why_vendor",
+    "proposed_solution": "architecture",
+    "implementation_approach": "raci",
+    "project_timeline": "timeline",
+    "assumptions_responsibilities": "assumptions",
+    "knowledge_transfer": "knowledge_transfer",
+    "commercial": "pricing",
+    # migration template
+    "current_state": "scope",
+    "target_state": "architecture",
+    "migration_strategy": "migration",
+    "rollback_risk": "migration",
+    "decommissioning": "migration",
+}
+
+# Subsection heading -> topic, where the SECTION topic is too coarse. A sizing
+# table and a joiner-flow description sit in the same section but want
+# completely different evidence.
+SUBSECTION_TOPICS: tuple[tuple[str, str], ...] = (
+    (r"sizing|hardware", "sizing"),
+    (r"raci|responsibilit", "raci"),
+    (r"bill of quantit|boq|payment milestone|commercial assumption", "pricing"),
+    (r"why ", "why_vendor"),
+    (r"certification|segregation|who (has|should have|had) access", "governance"),
+    (r"integration|connector|onboard|provisioning|joiner|hrms|active directory|sso",
+     "integration"),
+    (r"knowledge transfer|training|hypercare|support", "knowledge_transfer"),
+    (r"timeline|tranche|milestone|plan|cutover window", "timeline"),
+    (r"case stud|relevant engagement|lessons applied", "similar_experience"),
+    (r"rollback|decommission|migration|coexistence|credential", "migration"),
+    (r"test|validation|reconciliation", "testing"),
+    (r"risk", "project_management"),
+    (r"out of scope|assumption|dependenc|prerequisite", "assumptions"),
+)
+
+_SUBSECTION_TOPIC_RE = tuple(
+    (re.compile(pat, re.I), topic) for pat, topic in SUBSECTION_TOPICS)
+
+
+def topic_for(section_id: str, subsection_heading: str | None = None) -> Optional[str]:
+    """The corpus topic to bias retrieval toward. Subsection wins when it matches.
+
+    The subsection is checked FIRST because it is the more specific signal:
+    "Proposed Production Hardware Sizing" wants sizing tables, not the
+    architecture prose its parent section maps to.
+    """
+    if subsection_heading:
+        for pattern, topic in _SUBSECTION_TOPIC_RE:
+            if pattern.search(subsection_heading):
+                return topic
+    return SECTION_TOPICS.get(section_id)
 
 
 @dataclass(frozen=True)

@@ -149,7 +149,8 @@ def detect_vendor(query: str) -> str | None:
 
 
 async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], query: str,
-                          k: int = TOP_K, proposal_type: Optional[str] = None) -> list[dict]:
+                          k: int = TOP_K, proposal_type: Optional[str] = None,
+                          section_topic: Optional[str] = None) -> list[dict]:
     # Over-fetch then improve signal:
     #  - exclude "Inspirit Vision" company-overview boilerplate (identical marketing text in every proposal;
     #    never the specific answer)
@@ -172,7 +173,14 @@ async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], que
         # nothing, for a client who already runs a working identity platform.
         json={"query_embedding": json.dumps(embedding, separators=(",", ":")),
               "match_count": k * 4,
-              "filter_proposal_type": proposal_type},
+              "filter_proposal_type": proposal_type,
+              # Reserves half the slots for chunks carrying this topic, with a
+              # topic-scoped second query for topics too small to appear in a
+              # general candidate pool. Measured: why_vendor went from 1 of 8
+              # on-topic results to 4 of 8. Company Profile, Why-Vendor and
+              # Similar Experience are each 1-3% of the corpus, which is why
+              # they were thin in every generated proposal.
+              "filter_section_topic": section_topic},
         timeout=30,
     )
     resp.raise_for_status()

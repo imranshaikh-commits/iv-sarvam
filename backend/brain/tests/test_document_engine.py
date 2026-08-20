@@ -821,3 +821,57 @@ def test_absent_proposal_type_passes_none_not_empty_string():
         top_k=8, subsections=1, max_tokens=500,
     ))
     assert seen[0]["proposal_type"] is None, seen[0]
+
+
+def test_section_topic_is_passed_to_retrieval():
+    """CALL-SITE test: draft_section must tell retrieval which TOPIC it needs.
+
+    Company Profile, Why-Vendor and Similar Experience are each 1-3% of the
+    corpus, so a general vector search rarely surfaces them -- which is why
+    those sections were thin in every generated proposal. Measured: why_vendor
+    went from 1 of 8 on-topic results to 4 of 8 with the filter passed.
+    """
+    seen: list[dict] = []
+
+    async def spy_retrieve(client, embedding, query, k=8, **kw):
+        seen.append(kw)
+        return []
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    import proposal_templates
+    spec = proposal_templates.SectionSpec(
+        id="company_profile", title="Company Profile", purpose="p",
+        query_template="Inspirit Vision company profile offices workforce")
+
+    asyncio.run(document_engine.draft_section(
+        None, spec,
+        {"client_name": "X", "iam_vendor": "SailPoint",
+         "proposal_type": "implementation", "rfp_text": ""},
+        embed_fn=stub_embed, retrieve_fn=spy_retrieve,
+        build_grounded_system_fn=lambda chunks: "EVIDENCE",
+        top_k=8, subsections=1, max_tokens=500,
+    ))
+
+    assert seen, "retrieve_fn was never called"
+    assert all("section_topic" in kw for kw in seen), \
+        f"section_topic never reached retrieval: {seen}"
+    assert seen[0]["section_topic"] == "company_profile", seen[0]
+
+
+def test_subsection_words_in_the_query_beat_the_section_topic():
+    """A sizing query inside the solution section must ask for sizing evidence,
+    not the architecture prose the parent section maps to."""
+    import proposal_templates as P
+    assert P.topic_for("proposed_solution", "Proposed Production Hardware Sizing") == "sizing"
+    assert P.topic_for("proposed_solution", "Proposed Target Architecture") == "architecture"
+    assert P.topic_for("commercial", "Payment Milestones") == "pricing"
+    assert P.topic_for("solution_overview", "Why SailPoint") == "why_vendor"
+
+
+def test_unmapped_section_passes_none():
+    """A section with no topic must not filter at all, rather than filtering to
+    a topic that does not exist and returning nothing."""
+    import proposal_templates as P
+    assert P.topic_for("no_such_section") is None

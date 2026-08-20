@@ -40,6 +40,7 @@ from proposal_templates import (
     SectionSpec,
     get_depth_tier,
     get_template,
+    topic_for,
 )
 
 log = logging.getLogger("shilpi-brain.doc-engine")
@@ -358,7 +359,14 @@ async def _retrieve_fanout(
             # 8 chunks from a migration proposal, against a 35.5% base rate.
             chunks = await retrieve_fn(
                 client, embedding, query, k=top_k,
-                proposal_type=context.get("proposal_type") or None)
+                proposal_type=context.get("proposal_type") or None,
+                # Retrieval runs ONCE per section, before subsections are
+                # drafted, so there is no subsection heading here. The fan-out
+                # QUERY text is used instead: it is derived from the section's
+                # subsections and carries their content words ("sizing", "RACI",
+                # "why SailPoint"), which is what topic_for matches on. Coarser
+                # than a true per-subsection retrieval, and cheap.
+                section_topic=topic_for(section_spec.id, query))
         except Exception as e:  # fail soft: one failed query must not sink the section
             log.error("draft_section retrieval failed for %s: %s", section_spec.id, e)
             chunks = []

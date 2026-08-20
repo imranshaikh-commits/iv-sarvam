@@ -74,66 +74,66 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 # ---------------------------------------------------------------------------
 PROBES = [
     # --- implementation: the sections most often drafted ---
-    {"id": "sizing_prod", "section": "Proposed Production Hardware Sizing",
+    {"id": "sizing_prod", "expect_topic": "sizing", "section": "Proposed Production Hardware Sizing",
      "query": "production hardware sizing CPU cores memory RAM storage application servers database server",
      "expect_type": "implementation"},
-    {"id": "sizing_dr", "section": "Proposed DR Hardware Sizing",
+    {"id": "sizing_dr", "expect_topic": "sizing", "section": "Proposed DR Hardware Sizing",
      "query": "disaster recovery environment sizing replication between primary and standby data centre",
      "expect_type": "implementation"},
-    {"id": "raci", "section": "RACI Matrix",
+    {"id": "raci", "expect_topic": "raci", "section": "RACI Matrix",
      "query": "RACI matrix responsible accountable consulted informed activity workstream client vendor",
      "expect_type": None},
-    {"id": "why_vendor_sp", "section": "Why SailPoint",
+    {"id": "why_vendor_sp", "expect_topic": "why_vendor", "section": "Why SailPoint",
      "query": "why SailPoint IdentityIQ leading identity governance platform analyst position advantages",
      "expect_type": None, "expect_vendor": "SailPoint"},
-    {"id": "why_vendor_ping", "section": "Why Ping",
+    {"id": "why_vendor_ping", "expect_topic": "why_vendor", "section": "Why Ping",
      "query": "why Ping Identity advantages customer identity access management platform",
      "expect_type": None, "expect_vendor": "Ping"},
-    {"id": "cert_campaigns", "section": "Access Certification",
+    {"id": "cert_campaigns", "expect_topic": "governance", "section": "Access Certification",
      "query": "access certification campaigns manager application owner entitlement owner attestation review",
      "expect_type": None},
-    {"id": "provisioning", "section": "Provisioning and Lifecycle Management",
+    {"id": "provisioning", "expect_topic": "integration", "section": "Provisioning and Lifecycle Management",
      "query": "joiner mover leaver automated provisioning deprovisioning lifecycle events birthright roles",
      "expect_type": None},
-    {"id": "sod", "section": "Segregation of Duties",
+    {"id": "sod", "expect_topic": "governance", "section": "Segregation of Duties",
      "query": "segregation of duties SoD policy violations detective preventive controls",
      "expect_type": None},
-    {"id": "connectors", "section": "Connectors and Integrations",
+    {"id": "connectors", "expect_topic": "integration", "section": "Connectors and Integrations",
      "query": "connector coverage target systems Active Directory LDAP database SaaS application onboarding",
      "expect_type": None},
-    {"id": "company_profile", "section": "Company Profile",
+    {"id": "company_profile", "expect_topic": "company_profile", "section": "Company Profile",
      "query": "Inspirit Vision company profile offices workforce certified consultants delivery capability",
      "expect_type": None},
-    {"id": "similar_exp", "section": "Similar Experience",
+    {"id": "similar_exp", "expect_topic": "similar_experience", "section": "Similar Experience",
      "query": "similar experience customer references case studies comparable engagements sector",
      "expect_type": None},
-    {"id": "timeline", "section": "High-Level Implementation Plan",
+    {"id": "timeline", "expect_topic": "timeline", "section": "High-Level Implementation Plan",
      "query": "implementation timeline phases duration weeks tranche milestones project plan",
      "expect_type": None},
-    {"id": "kt", "section": "Knowledge Transfer Plan",
+    {"id": "kt", "expect_topic": "knowledge_transfer", "section": "Knowledge Transfer Plan",
      "query": "knowledge transfer plan administrator training handover support team hypercare",
      "expect_type": None},
-    {"id": "boq", "section": "Licence Bill of Quantities",
+    {"id": "boq", "expect_topic": "pricing", "section": "Licence Bill of Quantities",
      "query": "licence bill of quantities line items quantity unit basis commercial structure",
      "expect_type": None},
-    {"id": "milestones", "section": "Payment Milestones",
+    {"id": "milestones", "expect_topic": "pricing", "section": "Payment Milestones",
      "query": "payment milestones trigger percentage licence delivery implementation completion",
      "expect_type": None},
     # --- migration: the newest proposal type, 39 proposals, never tested ---
-    {"id": "mig_strategy", "section": "Migration Pattern",
+    {"id": "mig_strategy", "expect_topic": "migration", "section": "Migration Pattern",
      "query": "migration approach phased cutover parallel run coexistence between old and new identity platform",
      "expect_type": "migration"},
-    {"id": "mig_credentials", "section": "Identity and Credential Migration",
+    {"id": "mig_credentials", "expect_topic": "migration", "section": "Identity and Credential Migration",
      "query": "migrating user credentials password hashes re-enrolment during platform migration",
      "expect_type": "migration"},
-    {"id": "mig_rollback", "section": "Rollback Position",
+    {"id": "mig_rollback", "expect_topic": "migration", "section": "Rollback Position",
      "query": "rollback plan fallback to incumbent platform if cutover fails business continuity",
      "expect_type": "migration"},
-    {"id": "mig_decommission", "section": "Legacy Platform Decommissioning",
+    {"id": "mig_decommission", "expect_topic": "migration", "section": "Legacy Platform Decommissioning",
      "query": "decommissioning legacy identity platform data retention archival licence retirement",
      "expect_type": "migration"},
     # --- mss ---
-    {"id": "mss_sla", "section": "Support Model and SLA",
+    {"id": "mss_sla", "expect_topic": "support", "section": "Support Model and SLA",
      "query": "managed services support model L1 L2 L3 severity levels response resolution SLA",
      "expect_type": "mss"},
 ]
@@ -151,15 +151,31 @@ def embed(text: str) -> list[float]:
     return resp.json()["data"][0]["embedding"]
 
 
-def retrieve(embedding: list[float], k: int) -> list[dict]:
-    """Call the same RPC the brain calls, so the harness measures production."""
+def retrieve(embedding: list[float], k: int,
+             proposal_type: str | None = None,
+             section_topic: str | None = None) -> list[dict]:
+    """Call the same RPC the brain calls, WITH the same arguments.
+
+    `proposal_type` matters: since sarvam_008 the brain passes the type of the
+    proposal being drafted, and retrieval reserves a share of the slots for
+    matching-type chunks. A harness that omitted it would score a version of
+    retrieval nobody uses, and would have reported no gain from a change
+    measured at 1-of-8 to 5-of-8 on migration content.
+    """
+    payload = {"query_embedding": json.dumps(embedding, separators=(",", ":")),
+               "match_count": k}
+    if proposal_type:
+        payload["filter_proposal_type"] = proposal_type
+    # Since sarvam_010 retrieval also reserves slots for the SECTION TOPIC being
+    # drafted. Omitting it here would score a version of retrieval nobody uses.
+    if section_topic:
+        payload["filter_section_topic"] = section_topic
     resp = requests.post(
         f"{SUPABASE_URL}/rest/v1/rpc/match_proposal_chunks",
         headers={"apikey": SUPABASE_KEY,
                  "Authorization": f"Bearer {SUPABASE_KEY}",
                  "Content-Type": "application/json"},
-        json={"query_embedding": json.dumps(embedding, separators=(",", ":")),
-              "match_count": k},
+        json=payload,
         timeout=60,
     )
     resp.raise_for_status()
@@ -224,6 +240,12 @@ def score_probe(probe: dict, rows: list[dict], meta: dict[str, dict]) -> dict:
         if want_vendor else None
     )
 
+    want_topic = probe.get("expect_topic")
+    topic_match = (
+        sum(1 for r in rows if r.get("section_topic") == want_topic) / n
+        if want_topic else None
+    )
+
     years = [meta.get(r["proposal_id"], {}).get("year") for r in rows]
     recent = sum(1 for y in years if y and int(y) >= RECENT_FROM_YEAR) / n
 
@@ -234,6 +256,7 @@ def score_probe(probe: dict, rows: list[dict], meta: dict[str, dict]) -> dict:
         "proposals": len(by_proposal),
         "max_from_one": max(by_proposal.values()),
         "type_match": round(type_match, 3) if type_match is not None else None,
+        "topic_match": round(topic_match, 3) if topic_match is not None else None,
         "vendor_match": round(vendor_match, 3) if vendor_match is not None else None,
         "fragment_pct": round(sum(1 for r in rows if _is_fragment(r.get("heading"))) / n, 3),
         "recent_pct": round(recent, 3),
@@ -242,16 +265,22 @@ def score_probe(probe: dict, rows: list[dict], meta: dict[str, dict]) -> dict:
     }
 
 
-def run(k: int) -> dict:
+def run(k: int, no_type_filter: bool = False) -> dict:
     meta = proposal_metadata()
     print(f"corpus: {len(meta)} proposals\n", file=sys.stderr)
     results = []
     for probe in PROBES:
-        rows = retrieve(embed(probe["query"]), k)
+        # Mirror the brain: pass the proposal type when the probe stands for a
+        # section of a typed proposal. `--no-type-filter` reproduces the old
+        # behaviour so the two can be compared directly.
+        ptype = None if no_type_filter else probe.get("expect_type")
+        rows = retrieve(embed(probe["query"]), k, proposal_type=ptype,
+                        section_topic=probe.get("expect_topic"))
         s = score_probe(probe, rows, meta)
         results.append(s)
         print(f"  {s['id']:18s} props={s['proposals']:2d} maxone={s['max_from_one']:2d} "
-              f"type={s['type_match']} frag={s['fragment_pct']:.2f} "
+              f"type={s['type_match']} topic={s['topic_match']} "
+              f"frag={s['fragment_pct']:.2f} "
               f"recent={s['recent_pct']:.2f} sim={s['mean_sim']:.3f}", file=sys.stderr)
 
     def avg(field):
@@ -261,11 +290,13 @@ def run(k: int) -> dict:
     return {
         "run_at": datetime.now(timezone.utc).isoformat(),
         "top_k": k,
+        "type_filter": not no_type_filter,
         "corpus_proposals": len(meta),
         "totals": {
             "mean_proposals_per_probe": avg("proposals"),
             "mean_max_from_one": avg("max_from_one"),
             "mean_type_match": avg("type_match"),
+            "mean_topic_match": avg("topic_match"),
             "mean_vendor_match": avg("vendor_match"),
             "mean_fragment_pct": avg("fragment_pct"),
             "mean_recent_pct": avg("recent_pct"),
@@ -283,7 +314,7 @@ def compare(baseline: dict, current: dict) -> int:
     """
     print(f"\n{'metric':28s} {'baseline':>10s} {'current':>10s} {'delta':>10s}")
     print("-" * 62)
-    higher_better = {"mean_proposals_per_probe", "mean_type_match",
+    higher_better = {"mean_proposals_per_probe", "mean_type_match", "mean_topic_match",
                      "mean_vendor_match", "mean_recent_pct", "mean_similarity"}
     lower_better = {"mean_max_from_one", "mean_fragment_pct"}
     regressed = []
@@ -327,6 +358,9 @@ def main() -> int:
                     help="Write the result as the baseline to compare against later")
     ap.add_argument("--compare", metavar="BASELINE_JSON",
                     help="Compare this run against a saved baseline")
+    ap.add_argument("--no-type-filter", action="store_true",
+                    help="Do not pass proposal_type (pre-sarvam_008 behaviour). "
+                         "Use to isolate what the type reservation contributes.")
     args = ap.parse_args()
 
     missing = [k for k in ("OPENROUTER_API_KEY", "SUPABASE_URL", "SUPABASE_KEY")
@@ -335,7 +369,7 @@ def main() -> int:
         print(f"Missing env vars: {', '.join(missing)}", file=sys.stderr)
         return 1
 
-    result = run(args.k)
+    result = run(args.k, no_type_filter=args.no_type_filter)
     out = "retrieval_baseline.json" if args.baseline else args.out
     with open(out, "w") as fh:
         json.dump(result, fh, indent=2)

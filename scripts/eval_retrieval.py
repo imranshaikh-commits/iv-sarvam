@@ -205,6 +205,28 @@ def proposal_metadata() -> dict[str, dict]:
     return out
 
 
+def _looks_tabular(text: str) -> bool:
+    """Does this chunk carry TABLE structure the drafter can turn into a table?
+
+    IV proposals are table-heavy; Shilpi has been prose-heavy. Evidence that is
+    already tabular is what lets a drafter produce a table rather than a
+    paragraph about one. Detected by pipe-delimited rows or by several short
+    lines that look like column values.
+    """
+    t = (text or "")
+    if not t.strip():
+        return False
+    lines = [ln for ln in t.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    piped = sum(1 for ln in lines if ln.count("|") >= 2)
+    if piped >= 2:
+        return True
+    # Column-ish: several short lines, few sentences.
+    short = sum(1 for ln in lines if 0 < len(ln.split()) <= 8)
+    return len(lines) >= 4 and short / len(lines) >= 0.6 and t.count(".") < len(lines)
+
+
 def _is_fragment(heading: str) -> bool:
     """A slice of a table or figure, e.g. 'Table 6 (part 44)'.
 
@@ -240,6 +262,14 @@ def score_probe(probe: dict, rows: list[dict], meta: dict[str, dict]) -> dict:
         if want_vendor else None
     )
 
+    # Share of results that are TABULAR. Run 7 lost three sizing tables and
+    # rows from every surviving one, and the scorecard approved the change that
+    # caused it -- because it measured relevance and not the thing IV proposals
+    # are actually made of (25 tables, 3,252 table words in the human original).
+    # A metric that does not measure what you care about will happily approve a
+    # regression in it.
+    tabular = sum(1 for r in rows if _looks_tabular(r.get("chunk_text"))) / n
+
     want_topic = probe.get("expect_topic")
     topic_match = (
         sum(1 for r in rows if r.get("section_topic") == want_topic) / n
@@ -259,6 +289,7 @@ def score_probe(probe: dict, rows: list[dict], meta: dict[str, dict]) -> dict:
         "topic_match": round(topic_match, 3) if topic_match is not None else None,
         "vendor_match": round(vendor_match, 3) if vendor_match is not None else None,
         "fragment_pct": round(sum(1 for r in rows if _is_fragment(r.get("heading"))) / n, 3),
+        "tabular_pct": round(tabular, 3),
         "recent_pct": round(recent, 3),
         "mean_sim": round(statistics.mean(float(r.get("similarity") or 0) for r in rows), 3),
         "top_clients": sorted({(r.get("client_name") or "?")[:28] for r in rows})[:5],
@@ -280,7 +311,7 @@ def run(k: int, no_type_filter: bool = False) -> dict:
         results.append(s)
         print(f"  {s['id']:18s} props={s['proposals']:2d} maxone={s['max_from_one']:2d} "
               f"type={s['type_match']} topic={s['topic_match']} "
-              f"frag={s['fragment_pct']:.2f} "
+              f"frag={s['fragment_pct']:.2f} tab={s['tabular_pct']:.2f} "
               f"recent={s['recent_pct']:.2f} sim={s['mean_sim']:.3f}", file=sys.stderr)
 
     def avg(field):
@@ -299,6 +330,7 @@ def run(k: int, no_type_filter: bool = False) -> dict:
             "mean_topic_match": avg("topic_match"),
             "mean_vendor_match": avg("vendor_match"),
             "mean_fragment_pct": avg("fragment_pct"),
+            "mean_tabular_pct": avg("tabular_pct"),
             "mean_recent_pct": avg("recent_pct"),
             "mean_similarity": avg("mean_sim"),
         },
@@ -315,6 +347,7 @@ def compare(baseline: dict, current: dict) -> int:
     print(f"\n{'metric':28s} {'baseline':>10s} {'current':>10s} {'delta':>10s}")
     print("-" * 62)
     higher_better = {"mean_proposals_per_probe", "mean_type_match", "mean_topic_match",
+                     "mean_tabular_pct",
                      "mean_vendor_match", "mean_recent_pct", "mean_similarity"}
     lower_better = {"mean_max_from_one", "mean_fragment_pct"}
     regressed = []

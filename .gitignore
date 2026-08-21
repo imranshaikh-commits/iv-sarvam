@@ -73,3 +73,9 @@ scripts/out/
 # retrieval scorecards (contain client names)
 retrieval_*.json
 scripts/retrieval_*.json
+
+# Asset review artefacts — embed client proposal imagery and client names
+asset_review.html
+ids.txt
+scripts/asset_review.html
+scripts/ids.txt

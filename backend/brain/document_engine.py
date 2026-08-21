@@ -557,8 +557,20 @@ def _assumption_placeholder(
 # it fills whatever budget it is given. The budget is therefore the lever.
 #
 # Table subsections keep the full budget - a 25-row RACI needs it.
-PROSE_SUBSECTION_TOKENS = int(os.environ.get("SHILPI_PROSE_SUBSECTION_TOKENS", "420"))
+# 420 tokens for a 220-word instruction left no headroom: dense technical prose
+# tokenizes above 1.35x per word, so the model wrote to its word target, began
+# an [SME REVIEW] marker and was guillotined mid-word. Run 8 shipped "[SME REV",
+# "[SME RE" and "[SME REVIEW: specific SoD rule s".
+#
+# A hard cap should be a SAFETY NET against runaway generation, never the
+# binding constraint on normal output. The word instruction does the shaping.
+PROSE_SUBSECTION_TOKENS = int(os.environ.get("SHILPI_PROSE_SUBSECTION_TOKENS", "900"))
 PROSE_SUBSECTION_WORDS = int(os.environ.get("SHILPI_PROSE_SUBSECTION_WORDS", "220"))
+# IV's own proposals have a MEDIAN body paragraph of 29 words and a longest of
+# 108. Run 8's median was 55 with twenty paragraphs over 100 and a longest of
+# 180 -- because the instruction capped the SUBSECTION and said nothing about
+# paragraphs, so the model wrote one 180-word block instead of four short ones.
+PROSE_PARAGRAPH_WORDS = int(os.environ.get("SHILPI_PROSE_PARAGRAPH_WORDS", "60"))
 _WANTS_TABLE_RE = re.compile(r"\bmarkdown\s+TABLE\b|\bas a (?:markdown )?TABLE\b", re.I)
 
 
@@ -671,9 +683,12 @@ async def draft_section(
             length_rule = (
                 "Output the table and one short lead-in line, nothing else."
                 if wants_table else
-                f"Write NO MORE than {PROSE_SUBSECTION_WORDS} words. IV's own proposals "
-                f"average about 125 words per subsection; density beats length. If you "
-                f"run out of grounded material, stop - do not pad."
+                f"Write NO MORE than {PROSE_SUBSECTION_WORDS} words in total, and "
+                f"keep every paragraph under {PROSE_PARAGRAPH_WORDS} words - break "
+                f"longer thoughts into separate short paragraphs. IV's proposals have "
+                f"a median paragraph of 29 words; short paragraphs are the house style, "
+                f"not a constraint. Density beats length. If you run out of grounded "
+                f"material, stop - do not pad."
             )
             user_prompt = (
                 f"Draft the \"{sub_title}\" subsection of the \"{section_title}\" section, "
@@ -1138,22 +1153,13 @@ async def _attach_assets(client, sections: list[dict], context: dict,
             if stream is None:
                 continue
             used.add(a["storage_path"])
-            attached.append({"id": a["id"], "stream": stream,
-                             "caption": _asset_caption(a)})
+            attached.append({"id": a["id"], "stream": stream})
         if attached:
             sec["assets"] = attached
             placed += len(attached)
     log.info("assets: %d image(s) placed across %d section(s)",
              placed, sum(1 for s in sections if s.get("assets")))
 
-
-def _asset_caption(asset: dict) -> str:
-    """A short caption from the vision description's first sentence."""
-    desc = re.sub(r"^\[[^\]]*\]\s*", "", (asset.get("vision_description") or ""))
-    desc = desc.replace("\n", " ").strip()
-    first = re.split(r"(?<=[.!?])\s", desc)[0] if desc else ""
-    first = re.sub(r"^This is (an?|the)\s*", "", first, flags=re.I).strip()
-    return (first[:1].upper() + first[1:])[:160] if first else ""
 
 
 def assemble_docx(
@@ -1237,10 +1243,14 @@ def assemble_docx(
             try:
                 _add_picture_fitted(document, stream,
                                     max_w=_IMAGE_MAX_W, max_h=_IMAGE_MAX_H)
-                cap = document.add_paragraph()
-                crun = cap.add_run(asset.get("caption") or "")
-                crun.italic = True
-                crun.font.size = Pt(9)
+                # NO CAPTION. Captions were generated from the image's vision
+                # description, which produced two failures at once in run 8:
+                #   "Gantt chart, a type of project management diagram that
+                #    visualizes the schedule and dependencies for the
+                #    'Sistem-BTPN ProjectPL'. It details tasks broken into ph"
+                # It explained what a Gantt chart is to an IAM audience, named
+                # ANOTHER CLIENT'S project, and truncated mid-word at the 160
+                # character cap. IV's own proposals caption almost nothing.
             except Exception as e:  # noqa: BLE001 - a bad image must not sink a section
                 log.warning("could not embed asset %s: %s", asset.get("id"), e)
 

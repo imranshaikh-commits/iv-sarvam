@@ -896,15 +896,12 @@ def test_assemble_embeds_section_assets():
                   "proposal_type": "implementation"},
         sections=[{"id": "company_profile", "title": "Company Profile",
                    "content": "Body text.",
-                   "assets": [{"id": "a1", "stream": stream,
-                               "caption": "Skill matrix across certified resources"}]}],
+                   "assets": [{"id": "a1", "stream": stream}]}],
     )
     doc = Document(io.BytesIO(docx_bytes))
     images = [r for r in doc.part.rels.values() if "image" in r.reltype]
     # IV logo on the cover + the placed asset.
     assert len(images) >= 2, f"asset not embedded, only {len(images)} image(s)"
-    text = "\n".join(p.text for p in doc.paragraphs)
-    assert "Skill matrix across certified resources" in text, "caption missing"
 
 
 def test_a_broken_asset_does_not_sink_the_section():
@@ -914,8 +911,7 @@ def test_a_broken_asset_does_not_sink_the_section():
         metadata={"client_name": "X", "proposal_type": "implementation"},
         sections=[{"id": "company_profile", "title": "Company Profile",
                    "content": "Body text that must survive.",
-                   "assets": [{"id": "bad", "stream": io.BytesIO(b"not an image"),
-                               "caption": "x"}]}],
+                   "assets": [{"id": "bad", "stream": io.BytesIO(b"not an image")}]}],
     )
     text = "\n".join(p.text for p in Document(io.BytesIO(docx_bytes)).paragraphs)
     assert "Body text that must survive." in text
@@ -971,9 +967,39 @@ def test_attach_assets_survives_an_unavailable_library():
     assert not sections[0].get("assets")
 
 
-def test_caption_is_readable_prose():
-    cap = document_engine._asset_caption({
-        "vision_description": "[Diagram description from embedded image #5]\n\n"
-                              "This is a bar chart titled Skill Matrix. It shows counts."})
-    assert cap.startswith("Bar chart titled Skill Matrix"), cap
-    assert "[" not in cap and "\n" not in cap
+def test_no_caption_text_is_written_beside_an_image():
+    """Captions were REMOVED (run 8). They were generated from the vision
+    description and produced, verbatim:
+
+      "Gantt chart, a type of project management diagram that visualizes the
+       schedule and dependencies for the 'Sistem-BTPN ProjectPL'. It details
+       tasks broken into ph"
+
+    Three faults at once: it explained what a Gantt chart is to an IAM
+    audience, it named ANOTHER CLIENT'S project, and it truncated mid-word.
+    """
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "Amlak International",
+                  "proposal_type": "implementation"},
+        sections=[{"id": "company_profile", "title": "Company Profile",
+                   "content": "Body text.",
+                   "assets": [{"id": "a1", "stream": io.BytesIO(_png_bytes()),
+                               "caption": "Gantt chart for Sistem-BTPN ProjectPL"}]}],
+    )
+    text = "\n".join(p.text for p in Document(io.BytesIO(docx_bytes)).paragraphs)
+    assert "Sistem-BTPN" not in text, "a caption leaked another client's project name"
+    assert "Gantt" not in text
+
+
+def test_paragraph_length_is_instructed_not_just_section_length():
+    """IV's median body paragraph is 29 words; run 8's was 55 with twenty over
+    100, because only the SUBSECTION length was capped."""
+    assert document_engine.PROSE_PARAGRAPH_WORDS <= 80
+
+
+def test_the_token_cap_is_not_the_binding_constraint():
+    """420 tokens against a 220-word instruction truncated [SME REVIEW] markers
+    mid-word. The cap must leave headroom above the word target."""
+    assert document_engine.PROSE_SUBSECTION_TOKENS > \
+        document_engine.PROSE_SUBSECTION_WORDS * 2, (
+        "token cap too close to the word target; it will truncate mid-sentence")

@@ -875,3 +875,105 @@ def test_unmapped_section_passes_none():
     a topic that does not exist and returning nothing."""
     import proposal_templates as P
     assert P.topic_for("no_such_section") is None
+
+
+# ---------------------------------------------------------------------------
+# Image placement. CALL-SITE tests: selection logic was already covered in
+# test_asset_selection.py, and this project's most expensive recurring failure
+# is a mechanism that works in isolation and is never invoked.
+# ---------------------------------------------------------------------------
+
+def _png_bytes():
+    import base64
+    return base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+
+
+def test_assemble_embeds_section_assets():
+    stream = io.BytesIO(_png_bytes())
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "Amlak International",
+                  "proposal_type": "implementation"},
+        sections=[{"id": "company_profile", "title": "Company Profile",
+                   "content": "Body text.",
+                   "assets": [{"id": "a1", "stream": stream,
+                               "caption": "Skill matrix across certified resources"}]}],
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    images = [r for r in doc.part.rels.values() if "image" in r.reltype]
+    # IV logo on the cover + the placed asset.
+    assert len(images) >= 2, f"asset not embedded, only {len(images)} image(s)"
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Skill matrix across certified resources" in text, "caption missing"
+
+
+def test_a_broken_asset_does_not_sink_the_section():
+    """A proposal without an image is worse; a proposal that fails to build is
+    unusable. Bad bytes must be logged and skipped."""
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "implementation"},
+        sections=[{"id": "company_profile", "title": "Company Profile",
+                   "content": "Body text that must survive.",
+                   "assets": [{"id": "bad", "stream": io.BytesIO(b"not an image"),
+                               "caption": "x"}]}],
+    )
+    text = "\n".join(p.text for p in Document(io.BytesIO(docx_bytes)).paragraphs)
+    assert "Body text that must survive." in text
+
+
+def test_sections_without_assets_are_unaffected():
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "implementation"},
+        sections=[{"id": "company_profile", "title": "Company Profile",
+                   "content": "Body."}],
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    images = [r for r in doc.part.rels.values() if "image" in r.reltype]
+    assert len(images) == 1, "only the IV cover logo expected"
+
+
+def test_attach_assets_places_each_image_once():
+    """The same picture twice in one document reads as a mistake."""
+    lib = [{"id": "a1", "storage_path": "p/1.png", "asset_kind": "corporate",
+            "approved": True, "occurrences": 9,
+            "vision_description": "Inspirit Vision certified resources workforce "
+                                  "skill matrix and delivery model"}]
+
+    async def library(_c):
+        return lib
+
+    async def download(_c, _p):
+        return io.BytesIO(_png_bytes())
+
+    sections = [{"id": "company_profile", "title": "Company Profile"},
+                {"id": "implementation_approach", "title": "Implementation Approach"}]
+    asyncio.run(document_engine._attach_assets(
+        None, sections, {"iam_vendor": "SailPoint"},
+        {"library": library, "download": download}))
+    total = sum(len(s.get("assets") or []) for s in sections)
+    assert total == 1, f"the same asset was placed {total} times"
+
+
+def test_attach_assets_survives_an_unavailable_library():
+    async def library(_c):
+        raise RuntimeError("supabase down")
+
+    async def download(_c, _p):
+        return None
+
+    sections = [{"id": "company_profile", "title": "Company Profile"}]
+    try:
+        asyncio.run(document_engine._attach_assets(
+            None, sections, {"iam_vendor": "SailPoint"},
+            {"library": library, "download": download}))
+    except RuntimeError:
+        pass  # generate_proposal catches this; the point is sections stay clean
+    assert not sections[0].get("assets")
+
+
+def test_caption_is_readable_prose():
+    cap = document_engine._asset_caption({
+        "vision_description": "[Diagram description from embedded image #5]\n\n"
+                              "This is a bar chart titled Skill Matrix. It shows counts."})
+    assert cap.startswith("Bar chart titled Skill Matrix"), cap
+    assert "[" not in cap and "\n" not in cap

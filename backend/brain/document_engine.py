@@ -42,6 +42,11 @@ from proposal_templates import (
     get_template,
     topic_for,
 )
+import asset_selection
+
+# Two per section: IV's proposals carry 37 images across 11 sections, and a
+# third of those are per-deal architecture drawings we cannot reuse.
+_ASSETS_PER_SECTION = int(os.environ.get("SHILPI_ASSETS_PER_SECTION", "2"))
 
 log = logging.getLogger("shilpi-brain.doc-engine")
 
@@ -1038,6 +1043,13 @@ def _add_picture_fitted(document: Document, stream, *, max_w, max_h) -> None:
     document.add_picture(stream, width=max_w)
 
 
+# Reusable assets are supporting material, not the point of the page: sized
+# smaller than a generated architecture diagram so they illustrate rather than
+# dominate. The text column is 5.9in wide with IV's margins.
+_IMAGE_MAX_W = Inches(4.5)
+_IMAGE_MAX_H = Inches(3.2)
+
+
 def _embeddable_diagrams(diagrams: Optional[list[dict]]) -> list[dict]:
     """Diagrams that will actually be embedded: approved AND carrying an image.
 
@@ -1092,6 +1104,56 @@ def _add_approved_diagrams(document: Document, diagrams: Optional[list[dict]]) -
                                 max_w=Inches(6.0), max_h=Inches(7.5))
         except Exception as e:  # noqa: BLE001 — a bad image must not break the doc
             log.error("failed to embed diagram '%s' (skipping): %s", item["title"], e)
+
+
+async def _attach_assets(client, sections: list[dict], context: dict,
+                         asset_fns: dict) -> None:
+    """Put approved, section-appropriate images on each drafted section.
+
+    `asset_fns` supplies {"library": async () -> list[dict],
+                          "download": async (storage_path) -> stream|None}.
+
+    Every image that reaches a document has been approved by a human, matched
+    to the section by its vision description, and checked against the vendor
+    being proposed. `architecture` assets are excluded upstream because they
+    depict a single client's estate.
+    """
+    library = await asset_fns["library"](client)
+    if not library:
+        return
+
+    vendor = context.get("iam_vendor")
+    used: set[str] = set()
+    placed = 0
+    for sec in sections:
+        chosen = asset_selection.select_assets(
+            library, sec.get("id") or "", vendor, limit=_ASSETS_PER_SECTION)
+        attached = []
+        for a in chosen:
+            # One image appears once per document, however many sections it
+            # suits -- the same picture twice reads as a mistake.
+            if a["storage_path"] in used:
+                continue
+            stream = await asset_fns["download"](client, a["storage_path"])
+            if stream is None:
+                continue
+            used.add(a["storage_path"])
+            attached.append({"id": a["id"], "stream": stream,
+                             "caption": _asset_caption(a)})
+        if attached:
+            sec["assets"] = attached
+            placed += len(attached)
+    log.info("assets: %d image(s) placed across %d section(s)",
+             placed, sum(1 for s in sections if s.get("assets")))
+
+
+def _asset_caption(asset: dict) -> str:
+    """A short caption from the vision description's first sentence."""
+    desc = re.sub(r"^\[[^\]]*\]\s*", "", (asset.get("vision_description") or ""))
+    desc = desc.replace("\n", " ").strip()
+    first = re.split(r"(?<=[.!?])\s", desc)[0] if desc else ""
+    first = re.sub(r"^This is (an?|the)\s*", "", first, flags=re.I).strip()
+    return (first[:1].upper() + first[1:])[:160] if first else ""
 
 
 def assemble_docx(
@@ -1163,6 +1225,24 @@ def assemble_docx(
                 _add_body_paragraphs(document, sub.get("content", ""))
         else:
             _add_body_paragraphs(document, sec.get("content", ""))
+
+        # Reusable images from the asset library, placed after the section body.
+        # Only assets a human has approved reach this point, and only
+        # `corporate` and `product` kinds -- `architecture` assets depict a
+        # specific client's estate and are excluded in asset_selection.py.
+        for asset in sec.get("assets") or []:
+            stream = asset.get("stream")
+            if not stream:
+                continue
+            try:
+                _add_picture_fitted(document, stream,
+                                    max_w=_IMAGE_MAX_W, max_h=_IMAGE_MAX_H)
+                cap = document.add_paragraph()
+                crun = cap.add_run(asset.get("caption") or "")
+                crun.italic = True
+                crun.font.size = Pt(9)
+            except Exception as e:  # noqa: BLE001 - a bad image must not sink a section
+                log.warning("could not embed asset %s: %s", asset.get("id"), e)
 
         # Opportunistically collect assumption-ish lines for the aggregate section.
         if "assumption" not in (sec.get("id") or "").lower():
@@ -1487,6 +1567,7 @@ async def generate_proposal(
     diagrams: Optional[list[dict]] = None,
     discovery_answers: Optional[dict] = None,
     client_logo_path: Optional[str] = None,
+    asset_fns: Optional[dict] = None,
 ) -> dict:
     """Orchestrate: pick template, draft sections concurrently, assemble DOCX.
 
@@ -1563,6 +1644,17 @@ async def generate_proposal(
         # over data the consultant already supplied.
         "discovery_answers": discovery_answers or {},
     }
+    # Attach reusable images to each section before assembly. Selection is
+    # pure (asset_selection.py); fetching bytes is the caller's job, passed in
+    # as `asset_fns` so document_engine keeps no Supabase dependency -- the same
+    # arrangement as retrieve_fn and embed_fn.
+    if asset_fns:
+        try:
+            await _attach_assets(client, list(drafted), context, asset_fns)
+        except Exception as e:  # noqa: BLE001
+            # A proposal without images is a worse proposal, not a failed one.
+            log.warning("asset attachment failed, drafting without images: %s", e)
+
     docx_bytes = assemble_docx(
         metadata, list(drafted), compliance_markdown,
         client_logo_path=client_logo_path,

@@ -18,6 +18,7 @@ Endpoints:
 import asyncio
 import base64
 import functools
+import io
 import json
 import logging
 import os
@@ -146,6 +147,71 @@ def detect_vendor(query: str) -> str | None:
         if kw in q:
             return kw
     return None
+
+
+# ---------------------------------------------------------------------------
+# Reusable image assets
+#
+# 341 approved assets (235 corporate, 106 product) recovered from the proposal
+# bank. `architecture` assets are never approved and never placed: they depict
+# a specific client's zones, node counts and integrations, so one in another
+# client's proposal is a leak. That exclusion lives in asset_selection.py, in
+# code rather than in a reviewer's judgement.
+# ---------------------------------------------------------------------------
+ASSET_BUCKET = os.environ.get("SHILPI_ASSET_BUCKET", "visual-assets")
+# Off by default. Turning this on changes what lands in a client document, so
+# it is an explicit choice rather than something that arrives with a deploy.
+ASSETS_ENABLED = os.environ.get("SHILPI_ASSETS_ENABLED", "0") not in ("0", "", "false")
+
+
+async def fetch_approved_assets(client: httpx.AsyncClient) -> list[dict]:
+    """The approved, placeable asset library. Metadata only; bytes come later.
+
+    Fails SOFT: a proposal without images is a worse proposal, not a failed one.
+    """
+    if not ASSETS_ENABLED:
+        return []
+    try:
+        resp = await client.get(
+            f"{SUPABASE_URL}/rest/v1/visual_assets",
+            headers=supabase_client._headers(prefer_representation=False),
+            params={"select": "id,storage_path,asset_kind,vision_description,"
+                              "ocr_text,section_heading,width,height,approved",
+                    "approved": "is.true",
+                    "asset_kind": "in.(corporate,product)"},
+            timeout=30.0)
+        resp.raise_for_status()
+        assets = resp.json() or []
+    except Exception as e:  # noqa: BLE001
+        log.warning("asset library unavailable, drafting without images: %s", e)
+        return []
+
+    # How many proposals each image appears in. Recurrence is the strongest
+    # available evidence that IV reuses an image deliberately, and
+    # asset_selection ranks on it.
+    counts: dict[str, int] = {}
+    for a in assets:
+        counts[a["storage_path"]] = counts.get(a["storage_path"], 0) + 1
+    for a in assets:
+        a["occurrences"] = counts.get(a["storage_path"], 1)
+    log.info("asset library: %d approved placeable assets", len(assets))
+    return assets
+
+
+async def download_asset(client: httpx.AsyncClient, storage_path: str):
+    """Image bytes as a stream ready for python-docx, or None."""
+    try:
+        resp = await client.get(
+            f"{SUPABASE_URL}/storage/v1/object/{ASSET_BUCKET}/{storage_path}",
+            headers=supabase_client._headers(prefer_representation=False), timeout=60.0)
+        if resp.status_code != 200:
+            log.warning("asset download failed HTTP %s for %s",
+                        resp.status_code, storage_path)
+            return None
+        return io.BytesIO(resp.content)
+    except Exception as e:  # noqa: BLE001
+        log.warning("asset download error for %s: %s", storage_path, e)
+        return None
 
 
 async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], query: str,
@@ -1769,6 +1835,11 @@ async def generate_proposal_endpoint(request: Request):
                 # NFRs were captured, stored, and then silently discarded.
                 discovery_answers=intake_answers or None,
                 client_logo_path=await _resolve_client_logo(intake_answers or {}),
+                # Image placement. Selection is pure (asset_selection.py); these
+                # two callables are the only part that touches Supabase, which
+                # keeps document_engine free of a database dependency.
+                asset_fns={"library": fetch_approved_assets,
+                           "download": download_asset},
             )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)

@@ -106,8 +106,14 @@ def clean_desc(text: str | None) -> str:
 def build_html(cards: list[dict], out_path: str) -> None:
     body = []
     for c in cards:
-        checked = "checked"
-        body.append(f'''<label class="card" data-kind="{c['kind']}">
+        # Reflect the CURRENT approval state, do not blanket pre-check.
+        # 131 assets were un-approved after run 8 leaked another client's
+        # Microsoft Project plan into a proposal. A sheet that pre-checks
+        # everything would silently restore them on the next export -- the
+        # review would undo its own previous outcome.
+        checked = "checked" if c["approved"] else ""
+        was = "yes" if c["approved"] else "no"
+        body.append(f'''<label class="card" data-kind="{c['kind']}" data-was="{was}">
   <input type="checkbox" {checked} value="{c['id']}">
   <img src="data:image/jpeg;base64,{c['thumb']}" loading="lazy"
        onclick="event.preventDefault();zoom(this.src)">
@@ -165,6 +171,7 @@ def build_html(cards: list[dict], out_path: str) -> None:
     <button class="ghost" onclick="filter('all')">All</button>
     <button class="ghost" onclick="filter('corporate')">Corporate only</button>
     <button class="ghost" onclick="filter('product')">Product only</button>
+    <button class="ghost" onclick="filterRejected()">Previously rejected</button>
     <button onclick="downloadIds()">Download ids.txt</button>
     <button class="ghost" onclick="showIds()">Show ids (copy manually)</button>
   </div>
@@ -175,11 +182,19 @@ def build_html(cards: list[dict], out_path: str) -> None:
 <script>
 function zoom(src){{document.getElementById('lbimg').src=src;document.getElementById('lb').showModal();}}
 const boxes=()=>[...document.querySelectorAll('input[type=checkbox]')];
-function tally(){{document.getElementById('count').textContent=
-  boxes().filter(b=>b.checked).length+' of '+boxes().length+' approved';}}
+function tally(){{
+  const on=boxes().filter(b=>b.checked).length;
+  const was=[...document.querySelectorAll('.card')].filter(c=>c.dataset.was==='yes').length;
+  document.getElementById('count').textContent=
+    on+' of '+boxes().length+' approved (was '+was+')';}}
 function setAll(v){{boxes().forEach(b=>{{if(b.closest('.card').style.display!=='none')b.checked=v}});tally();}}
 function filter(k){{document.querySelectorAll('.card').forEach(c=>{{
   c.style.display=(k==='all'||c.dataset.kind===k)?'block':'none';}});}}
+// The 131 assets removed after run 8. Worth a second look: the rules that
+// rejected them are keyword rules, and they will have caught things that are
+// actually fine as well as the ones that were not.
+function filterRejected(){{document.querySelectorAll('.card').forEach(c=>{{
+  c.style.display=(c.dataset.was==='no')?'block':'none';}});}}
 function approvedIds(){{
   return boxes().filter(b=>b.checked).map(b=>b.value).join('\\n');
 }}
@@ -266,6 +281,7 @@ def main() -> int:
             missing += 1
             continue
         cards.append({"id": a["id"], "kind": a["asset_kind"], "thumb": thumb,
+                      "approved": bool(a.get("approved")),
                       "w": a.get("width") or "?", "h": a.get("height") or "?",
                       "kb": round((a.get("size_bytes") or 0) / 1024),
                       "desc": clean_desc(a.get("vision_description"))})

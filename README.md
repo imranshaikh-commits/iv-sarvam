@@ -15,7 +15,7 @@
 
 ## Progress Dashboard
 
-> Quick-glance project status. Last updated: 2026-08-14 (IST).
+> Quick-glance project status. Last updated: 2026-08-21 (IST).
 
 **Overall completion: ~88%**
 `██████████████████░░`
@@ -30,7 +30,7 @@
 | 3 — Retrieval + drafting | Done | `████████████████████` 100% |
 | 4 — Conversational frontend + auth | Partial | `███████████████░░░░░` 75% — **full pipeline validated end to end in chat** (router → 22-area discovery → diagram plan → per-diagram approval → drafting → DOCX/PDF); auth/multi-tenancy still missing |
 | 5 — Architecture approval gate + compression/export | Done (gate enforced in chat) | `████████████████████` 98% |
-| 6 — Validation (recreation benchmark) | In progress | `████████░░░░░░░░░░░░` 40% — four scored runs against the Amlak proposal; fidelity, hygiene and structure addressed, run 5 pending |
+| 6 — Validation (recreation benchmark) | In progress | `██████████████░░░░░░` 70% — seven scored runs against the Amlak proposal; fidelity, hygiene, structure and prose volume all addressed. Retrieval now measured by a repeatable scorecard |
 | 7 — Pilot + hardening + rollout | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
 
 ### What's next
@@ -41,7 +41,7 @@ Sequenced in **[`docs/PHASES.md`](docs/PHASES.md)**. In short:
 |---|---|
 | **6 — Validation** *(current)* | Recreation test against a known-good proposal → corpus expansion → scored pilot on historical RFPs → eval harness → cost telemetry |
 | 7 — Hardening | TLS + network exposure, Supabase Auth / multi-tenancy, backups, CI |
-| 8 — Quality (evidence-led) | Hybrid search, model A/B, the proposal-length question, diagram visual parity, screenshot/asset reuse |
+| 8 — Quality (evidence-led) | Image placement into proposals, diagram visual parity (decision-node shapes, page fit), reranking, the outcome loop |
 | 9 — Production | Rollout, monitoring, runbook, key rotation |
 
 The ordering is deliberate: the project is feature-rich and evidence-poor. No
@@ -56,62 +56,84 @@ client-confidential proposal content and this repository is public. See
 
 ### Known gaps before pilot
 
-- **Corpus coverage ~11%** — 11 of 100+ bank proposals ingested (1,413 chunks). Grounding quality and draft depth are bounded by this; bulk ingestion from the Drive bank is the highest-leverage open item.
+- **Corpus** — 112 proposals, 11,060 chunks, 50 clients, 15 vendors. Composition is now 61 implementation / 39 migration / 14 MSS, against 10/0/1 before. The Sales-SoWs bank was curated by reading document CONTENT, not filenames: 68 of 197 candidates were rejected, including a client-authored STC RFP whose doc properties name Saudi Telecom, a competitor's proposal authored by Smpl ID, 22 consultant CVs and 2 NDAs.
 - **Supabase Auth / Worker / multi-tenancy** (Phase 4) — not wired (RLS + disabled sign-ups is the interim gate). `approved_by` on diagrams stays NULL until user identity exists.
-- **Diagram variety** — Shilpi produces zone-and-box architecture graphs only. IV's proposals also use swimlane workflows (HRMS joiner flow across HRMS / IdM / Manager / AD lanes) with decision nodes, and hardware-spec callouts drawn beside the boxes. Not built.
+- **Diagram detail** — swimlanes and page-fit are built and working (run 6 produced a six-lane joiner flow with real branch logic). Two gaps remain: the model ignores the `shape` field so decision points render as rectangles rather than diamonds, and hardware-spec callouts beside the boxes are not built.
 - **Durable diagram spec-template store** (per vendor + diagram type) — deferred from Pass 4.
-- **Hybrid search** (BM25 + RRF) — retrieval is pure vector similarity for now.
+- **Reranking** — a 2026 controlled comparison found cross-encoder reranking the only technique that reliably beat plain dense retrieval at this corpus scale, while hybrid BM25+dense and multi-query expansion both finished BELOW it. Reranking is therefore the next retrieval change worth measuring; hybrid search is not.
 - **Phase 6 pilot** — not started; no *scored* runs against historical RFPs yet. The `RFP/` folder in the Drive bank is the natural test set. First recreation-test fixture prepared (Amlak / SailPoint — a client absent from the corpus, with the vendor present).
-- **Corpus type coverage** — the 11 ingested proposals are 10 implementation, 1 MSS and **zero migration**, despite the intake template supporting all three. A migration or MSS proposal currently has almost no grounding; ingestion should deliberately seek those out rather than adding more of the same.
-- **Visual assets** — human proposals are roughly half visual (40 images in the Amlak proposal alone; vendor product UI, IV corporate assets, client architecture). Shilpi produces generated diagrams only. Asset reuse is Phase 8.
-- **Visual density** — the human Amlak proposal carries 37 images, roughly a third of them corporate and case-study assets rather than architecture. Shilpi produces 6. Asset reuse (the `visual_assets` table plus a mandatory human approval gate) is Phase 8.
+- **Visual density** — the human Amlak proposal carries 37 images; Shilpi produces 6. The `visual_assets` table and private storage bucket now exist and hold **959 assets from 74 proposals (385 MB)**, recovered without a single API call by reattaching vision descriptions the pipeline had already paid for. Placement into documents is not built, and the library is the wrong shape: 655 architecture (rarely reusable — they depict a specific client's estate), 71 corporate, **0 product**. The product rule depends on OCR text and OCR never ran, so vendor screenshots fall through. Reclassification from the stored descriptions is the fix.
+- **Sizing evidence is lopsided** — the retrieval scorecard measures tabular evidence per probe: `sizing_prod` scores 1.00, `sizing_dr` scores 0.12. The corpus is rich in production sizing tables and nearly bare of DR-specific ones, which is why run 7 lost its DR, UAT and Development sizing tables. No amount of retrieval tuning fixes a gap in the source material.
+- **The benchmark must stay out of the corpus** — both Amlak proposals were ingested during bulk ingestion and have been deleted. Run 7 was drafted with its own answer available, so its Similar Experience quality is genuine but its overall score is inflated. Always run the leakage check before a scored run.
 
-### Recently shipped (2026-08-11 → 14)
+### Recently shipped (2026-08-14 → 21)
 
-Four validation runs against the Amlak benchmark drove this work. Each number
-below is measured against the human proposal as a control, not asserted.
+Every number below is measured, and several of them overturned a change that
+looked correct. That is the point of recording them.
 
-- **Two classes of silent answer loss fixed.** `parse_bucket_answers` split
-  replies on `;`, so a multi-item value ended at its first semicolon — 9 of 10
-  out-of-scope items, 5 of 6 pain points and Tranches 1-3 were discarded before
-  reaching the drafting engine. Separately, `_norm_label` treated "HA and DR
-  requirements" and "HA / DR requirements" as different fields, dropping five
-  more answers. Both produced a confident *partial* parse that short-circuited
-  the LLM fallback, so nothing was chased and nothing was logged.
-- **Template rebuilt to IV's house structure** — 11 sections, 47 unique
-  content-specific subsections. Previously 7 generic sections whose subsections
-  were the same three headings ("Overview / Detailed Design / Considerations &
-  Dependencies") repeated on every section, because they came from a
-  module-level list applied uniformly. IV's own proposal has 53 subsections and
-  all 53 differ.
-- **Markdown tables render as Word tables in drafted sections.** Only the
-  compliance-matrix path could do this; a sizing or BOQ table anywhere else
-  landed as one paragraph of literal pipe characters.
-- **Real Word styles for bullets and subheadings.** The renderer decided per
-  *block*: a block opening with a label kept its dash lines as body text. One
-  run produced 42 paragraphs with embedded newlines, 52 dash-lines as prose and
-  zero uses of `List Bullet`. The decision is now per line.
-- **Client logo attached in chat.** Open WebUI sends attachments in the
-  multimodal content array; `last_user_text` kept only the text parts, so the
-  image reached the brain and was discarded one line before anything could use
-  it. Now decoded at discovery area 10 and placed on the cover and in the
-  running header.
-- **Corpus leakage closed.** The citation appendix and the compliance matrix's
-  Evidence column carried other clients' names and verbatim proposal text into a
-  client deliverable. The appendix is gone; the matrix now has separate internal
-  and client-facing renders.
-- **Degeneration detection generalised.** The phrase-repetition check scored a
-  single-pass thesaurus walk at zero, because it never repeats. Two structural
-  signals added: longest run without sentence-ending punctuation, and
-  function-word density. Thresholds set for zero false positives against the
-  human proposal rather than for maximum catch.
-- **Primary model moved to Claude Sonnet 5** after a controlled comparison.
+**Corpus: 11 → 112 proposals.** The Sales-SoWs bank was curated by reading
+document *content*, not filenames. 68 of 197 candidates were rejected: a
+client-authored STC RFP whose doc properties name Saudi Telecom Company and
+whose body still carries `<stc: Enter Project Number>` placeholders, a
+competitor's proposal authored by Smpl ID whose corporate boilerplate would
+have entered IV's voice bank, 22 consultant CVs, 2 NDAs and four vendor
+marketing PDFs. Migration proposals went from **0 to 39**, MSS from 1 to 14.
 
-**Lesson re-learned.** Two of the tests written for this work passed a negative
-control with their call sites deliberately unwired, and a third was satisfied by
-the IV logo when it meant to detect the client logo. The "built but never wired"
-failure was reproduced inside its own regression suite. All three now drive the
-real pipeline and assert the generated document.
+**Ingestion is manifest-driven with content-hash dedup.** Selection comes from
+the reviewed manifest, never a directory walk, and the manifest's human-verified
+metadata overrides whatever the model infers — which is how Mannai stays
+Ahlibank, Netpolean stays ABB India and PNB stays PNB MetLife.
+
+**Retrieval rebuilt and measured.** A 20-probe scorecard
+(`scripts/eval_retrieval.py`) now scores source diversity, proposal-type match,
+section-topic match, tabular evidence share, fragment share and recency:
+
+| | before | after |
+|---|---|---|
+| type match | 0.429 | **0.768** |
+| topic match | — | **0.700** |
+| max hits from one proposal | 7 of 10 | **2 of 8** |
+| section labels marked `other` | 45.6% | **29.9%** |
+
+Type match was previously *worse than random*: migration queries returned 0.25
+migration content against a 35.5% base rate, so every migration section would
+have been drafted from greenfield implementation proposals.
+
+**Three stacked bugs found by refusing to trust a success response.** The type
+reservation was cosmetic — a trailing `LIMIT` re-selected the global top-k and
+evicted every reserved row, because reserved rows score lower by construction.
+Fixing that changed nothing, because pgvector's HNSW index returns at most
+`hnsw.ef_search` candidates (default **40**) however large the LIMIT, so two
+prior migrations' "wider pools" never existed; in those 40 candidates, 39 were
+implementation and one was migration. Fixing *that* needed `SET LOCAL`, which
+needs PL/pgSQL, which then failed twice more on `STABLE` and on `RETURNS TABLE`
+column shadowing.
+
+**A metric that does not measure what you care about will approve a regression
+in it.** The scorecard approved topic-aware retrieval on relevance; run 7 then
+lost three sizing tables and rows from every other table. `tabular_pct` was
+added in response, and the topic reservation lowered from 50% to 30%.
+
+**Migration proposal type built.** 14 sections covering current-state
+assessment, migration strategy, rollback and decommissioning — none of which
+exist in a greenfield template. The intake had offered `migration` since it was
+written while `get_template("migration")` raised `ValueError`, so a consultant
+could answer all 22 discovery areas and then hit a crash. Now asserted as an
+invariant over every intake type.
+
+**Visual assets recovered.** 959 assets from 74 proposals, with no API calls:
+the pipeline was already extracting images, OCRing them and describing the
+diagrams with a vision model, then discarding the bytes. The descriptions were
+reattached by the index in their chunk headings (`Diagram #5` → image 5), which
+is deterministic because extraction order is.
+
+**Lessons re-learned, recorded so they are not re-learned again.**
+Slug truncation at 60 characters silently rejected four of six TASNEE MSS
+revisions as duplicates. A dry run that skipped fetching descriptions reported a
+classification that could not occur in the real run. The first section
+classifier left 60% residue — *worse* than the 46% it replaced — and only the
+dry run caught it. Two tests written for the topic work passed a negative
+control with their call sites deliberately unwired.
 
 ---
 
@@ -128,7 +150,7 @@ Shilpi is that system. He is **not a chatbot and not a search engine** — he is
 | Time to first full draft, manual process | 2 to 5 person-days | IV internal baseline |
 | Proposal content that is static/reusable across deals | ~60% | IV corpus analysis, 10 sample proposals |
 | Diagrams that are reused or templated across proposals | ~38% | IV corpus analysis, perceptual hashing of 260 embedded images |
-| Source proposals in the working corpus | 11 ingested, 1,413 chunks | Shilpi Supabase, live |
+| Source proposals in the working corpus | 112 ingested, 11,060 chunks | Shilpi Supabase, live |
 | Target time to first draft | under 2 hours | Project success criterion (V1) |
 | Target output size (Lite, email-friendly) | under 5 MB | Project success criterion (V1) |
 
@@ -155,7 +177,7 @@ Shilpi is that system. He is **not a chatbot and not a search engine** — he is
 Honest about what is not done, so no one mistakes the current state for production-ready:
 
 - **Auth and multi-tenancy:** Supabase Auth and the Worker JWT gate are not wired. The brain is protected by network isolation (internal-only) and Open WebUI's disabled sign-ups, not by per-user identity. User identity is not yet propagated end-to-end, so generated drafts are not yet attributed to individual users (`approved_by` on diagrams is NULL). Production auth hardening is a pending milestone, not abandoned.
-- **Corpus coverage:** only 11 of the 100+ bank proposals are ingested (1,413 chunks). Every downstream quality metric — grounding density, citation coverage, how much genuinely distinct content exists per section — is bounded by this. Bulk ingestion is the highest-leverage open item.
+- **Nobody but the builder has read a Shilpi draft.** Seven scored runs, one reader, one opinion. Every quality judgement in this document rests on that. Getting a senior IAM architect to read one and mark what they would rewrite is now the highest-leverage open item — it is also the ground truth any future LLM reviewer would need to be scored against.
 - **Proposal length:** `full` depth measures 42pp after the NoneType fix + 3500-token cap (both deployed); the opt-in `deep` tier (6 subsection facets) is merged but not yet re-measured. 100+pp remains a target, pending a decision on whether length is the right proxy for "boss-ready".
 - **Client-logo sourcing:** approval-gated embedding of a client logo sourced online is deferred from Pass 5; the placeholder box is used instead.
 - **Durable diagram spec-template store:** reusable DiagramSpec templates keyed by vendor and diagram type are deferred from Pass 4 (the engine regenerates from scratch for now).
@@ -178,11 +200,11 @@ flowchart TB
 
     ROUTER["OpenRouter<br/>(LLM gateway)"]
     GLM["GLM 5.2<br/>(primary, hardcoded)"]
-    QWEN["Qwen3 235B<br/>(fallback, hardcoded)"]
+    QWEN["GLM 5.2<br/>(fallback)"]
     EMB["text-embedding-3-small<br/>(1536-dim)"]
 
     SB["Supabase<br/>Postgres 17 + pgvector<br/>(RLS-enforced)"]
-    PROP["proposals · proposal_chunks<br/>(RAG bank, 1,413 chunks)"]
+    PROP["proposals · proposal_chunks · visual_assets<br/>(RAG bank, 11,060 chunks + 959 images)"]
     INTAKE["intake_sessions<br/>(discovery answers)"]
     GEN["generated_proposals<br/>(persisted drafts)"]
     DIAG["architecture_diagrams<br/>(specs + approval state)"]
@@ -212,7 +234,7 @@ sequenceDiagram
     participant U as User (Open WebUI)
     participant B as Shilpi Brain
     participant S as Supabase (pgvector)
-    participant L as GLM 5.2 / Qwen3
+    participant L as Claude Sonnet 5 / GLM 5.2
     participant D as Document Engine
 
     U->>B: new deal (client, vendor, type)
@@ -237,12 +259,12 @@ sequenceDiagram
 |---|---|---|
 | Agent runtime | **FastAPI brain** (Python) | Replaced the originally-planned Hermes agent after evaluating framework lock-in. A thin FastAPI service is fully auditable, has no telemetry, and every prompt change is a tracked commit. Skills are plain Python modules, not a proprietary format |
 | LLM gateway | **OpenRouter** | Provider-agnostic. One key, one contract, swap models by changing a constant. No per-provider SDK lock-in |
-| Primary LLM | **GLM 5.2** (`z-ai/glm-5.2`) | Strong long-context drafting at low cost. Hardcoded so the user-facing model list is a single entry: "Shilpi Architect" |
-| Fallback LLM | **Qwen3 235B** (`qwen/qwen3-235b-a22b-2507`) | Auto-triggered at every LLM call site if the primary fails before streaming. DeepSeek was removed entirely (it spiraled on ambiguous compliance requirements) |
+| Primary LLM | **Claude Sonnet 5** (`anthropic/claude-sonnet-5`) | Chosen by measurement, not preference: same 22 inputs, model as the only variable. GLM produced 4 degenerate paragraphs including two thesaurus walks of 645 and 677 words with no full stop; Sonnet produced 0, worst case 104. Verbosity and em-dash habit barely moved, which is how we knew those were template problems |
+| Fallback LLM | **GLM 5.2** (`z-ai/glm-5.2`) | Auto-triggered at every call site if the primary fails before streaming. Overridable via `SHILPI_PRIMARY_MODEL` / `SHILPI_FALLBACK_MODEL`; any override is logged at startup and reported by `GET /health`, so it is never silent |
 | Embeddings | **text-embedding-3-small** (1536-dim) | Cheap, well-understood, good enough for vendor/section-typed retrieval. Negligible one-time cost to embed the whole bank |
-| Retrieval | **Supabase pgvector** + `match_proposal_chunks` RPC | Vector similarity with section-type awareness and metadata filters, in the same database as everything else. No separate vector store to operate |
+| Retrieval | **Supabase pgvector** + `match_proposal_chunks` RPC | HNSW vector search with content dedup (42.9% of chunks are byte-identical, because IV keeps document revisions), a per-proposal cap so no single document fills the evidence budget, and reserved slots for the proposal type and section topic being drafted — plus a topic-scoped second query for topics too small to appear in a general candidate pool |
 | Document output | **python-docx + Jinja2** | Native DOCX with real headings, tables, a refreshable TOC field, and embedded images. Templates are version-controlled Jinja2, not a binary .dotx |
-| Diagram rendering | **DiagramSpec JSON → D2 (SVG → cairosvg PNG), Graphviz fallback** | GLM emits a constrained JSON spec; D2 renders it with real nested zone containers (DMZ / secure zone / data zone) which Graphviz lays out poorly. SVG is native (no headless browser); Graphviz stays installed as an automatic fallback so a missing `d2` binary degrades instead of breaking. No image-generation model (unreliable at precise labels), no external rendering API (would leak client architecture) |
+| Diagram rendering | **DiagramSpec JSON → D2 (SVG → librsvg PNG), Graphviz fallback** | The model emits a constrained JSON spec; D2 renders it with real nested zone containers (DMZ / secure zone / data zone) which Graphviz lays out poorly. SVG is native (no headless browser); Graphviz stays installed as an automatic fallback so a missing `d2` binary degrades instead of breaking. No image-generation model (unreliable at precise labels), no external rendering API (would leak client architecture) |
 | Chat frontend | **Open WebUI** | Open-source, OpenAI-compatible, supports a persona system prompt and a single locked model. Cheaper and more controllable than building a custom chat UI |
 | Hosting | **AWS EC2 (ARM, Mumbai)** | Single-purpose box, static IP, close to the team. Fixed low monthly cost; covered by AWS credits during the MVP window |
 | Data store | **Supabase (Postgres + pgvector + RLS)** | Auth, relational data, vector search, and storage in one free-tier service. RLS at the database layer is the security backbone |
@@ -253,10 +275,13 @@ sequenceDiagram
 
 Shilpi grounds every draft in what IV has actually delivered, never in model memory.
 
-- **Bank:** 100+ historical proposals (DOCX/PDF). **Working corpus:** 11 proposals ingested and embedded as 1,413 chunks across 15 section types.
-- **Section taxonomy:** `exec_summary`, `scope`, `solution`, `architecture`, `assumptions`, `timeline`, `pricing`, `why_vendor`, `similar_experience`, `cover`, `table`, `diagram`, `ocr`, `page`, `other`. Retrieval is section-type aware — an executive-summary query matches executive-summary chunks, not commercial ones.
-- **Metadata per proposal:** `client_name`, `industry`, `country`, `iam_vendor`, `proposal_type` (implementation / MSS), `user_count`, `app_count`, `deal_size_bucket`, `outcome`, `year` — captured during ingestion and reused as the discovery interview schema.
-- **Diagram reuse (measured):** of 260 embedded images across 8 sample proposals, ~38% are reused or templated, concentrated **per vendor and per diagram type** (e.g. SailPoint deployment-architecture and HRMS joiner-workflow diagrams recur across SailPoint proposals; Ping reference architectures recur across Ping proposals). This is why reusable DiagramSpec templates are stored in Supabase rather than regenerating every diagram from scratch.
+- **Bank:** 421 files in the Sales-SoWs Drive folder, of which **129 are IV-authored proposal prose**. **Working corpus:** 112 proposals, 11,060 chunks, 50 clients, 15 vendors. Composition 61 implementation / 39 migration / 14 MSS.
+- **Curation by content, not filename.** A content review rejected 68 of 197 candidates the path heuristics had accepted: a client-authored STC RFP whose doc properties name Saudi Telecom Company, a competitor's proposal authored by Smpl ID, 22 consultant CVs, 2 NDAs, vendor marketing PDFs. Client-authored documents are **never** bank content — grounding IV's voice in the client's words and citing it as IV past work is the failure this prevents.
+- **Two label columns, deliberately.** `section_type` is STRUCTURAL (`table`, `diagram`, `page`, `ocr`) — how the content was extracted. `section_topic` is SEMANTIC (23 topics: `scope`, `architecture`, `sizing`, `raci`, `why_vendor`, `company_profile`, `migration`, `pricing`, ...) — what it is about. A table inside a Commercial section is both; one column cannot express that.
+- **Why the semantic column exists.** `section_type` was 46% `other`, with 34 `why_vendor` and 16 `company_profile` chunks in the entire corpus — yet every IV proposal has both. Metadata-filtered retrieval was impossible against labels that poor. After reclassification (`scripts/classify_sections.py`, rules not a model, 29.9% residue): `company_profile` covers 96 of 114 proposals, `similar_experience` 94, `pricing` 105.
+- **Metadata per proposal:** `client_name`, `industry`, `country`, `iam_vendor`, `proposal_type` (implementation / migration / MSS), `user_count`, `app_count`, `deal_size_bucket`, `outcome`, `year`, plus `source_sha256` and `source_tier` for provenance. The reviewed manifest's values **override** anything the model infers during ingestion: a first-page read is exactly where a partner's name sits, which is how `CIAM_Mannai_IV_Technical_Proposal_V3_0.docx` reads as a Mannai proposal when the client is Ahlibank.
+- **`outcome` is `unknown` for all 112.** Recording won/lost and weighting retrieval toward what actually won is the single change that would compound more than anything else on the roadmap. It needs a human who knows the answers, and nobody has been asked.
+- **Visual assets:** 959 images from 74 proposals (385 MB) in a private Supabase Storage bucket, with `visual_assets` holding the metadata, provenance `(section_heading, image, caption)` and a **mandatory approval gate** (`approved` defaults false). Dedup on content hash collapsed 3,763 duplicates — the IV logo appears in most proposals and stores once. Placement into generated documents is not built.
 
 ### Grounding contract
 
@@ -290,6 +315,36 @@ Static sections (Company Profile, Why-Vendor, Methodology) are pulled near-verba
 
 ### Stage 4 — Review, Deliver, Learn
 Section-level edit requests preserve approved sections untouched. On final approval, the proposal is saved back into the RAG bank as new reference material, so the next deal starts smarter. Delivery in "Full" (print-ready) and "Lite" (email-friendly, under 5 MB) variants.
+
+---
+
+## Measuring Retrieval
+
+Every retrieval change since 2026-08-18 has been gated on a scorecard, because
+several changes that looked obviously right were measured as no-ops or
+regressions.
+
+```bash
+python3 scripts/eval_retrieval.py --baseline           # record a baseline
+python3 scripts/eval_retrieval.py --compare retrieval_baseline.json
+```
+
+Twenty probes drawn from **real template subsections** (production sizing, RACI,
+Why-Vendor, migration cutover, payment milestones), scored on: distinct
+proposals represented, max hits from any one proposal, proposal-type match,
+section-topic match, tabular-evidence share, fragment share, recency and mean
+similarity. No single number is the verdict — a change that raises diversity
+while collapsing relevance is a regression, and the comparison says so.
+
+This exists because a 2026 controlled study of five retrieval strategies found
+that **increased complexity did not reliably improve results at this corpus
+scale**: hybrid BM25+dense and multi-query expansion both finished *below* plain
+dense retrieval, with multi-query posting the lowest precision of any strategy.
+Only cross-encoder reranking clearly won. Our corpus is a narrow domain at a
+similar scale — exactly the regime where added sophistication backfired. So the
+rule is: measure first, change second, measure again.
+
+Scorecard JSONs are gitignored: they contain client names.
 
 ---
 
@@ -391,7 +446,7 @@ Qualitative model — no per-credit estimates. Exact figures are tracked in priv
 |---|---|---|
 | Compute (EC2) | Free during MVP (credits), low fixed monthly after | Single ARM instance, static IP |
 | Database (Supabase) | Free tier | Pauses after 7 days idle (mitigated by the daily keep-alive) |
-| LLM (OpenRouter) | Pay-per-use | GLM 5.2 primary is inexpensive for drafting volume; Qwen3 fallback only on primary failure |
+| LLM (OpenRouter) | Pay-per-use | Claude Sonnet 5 primary, GLM 5.2 fallback only on primary failure. The old ~$0.45/proposal estimate is stale: the model changed and subsections went 24 → 47. Still a few dollars for a document that takes a consultant days, so cost remains **not** the binding constraint — but the figure needs re-measuring |
 | Embeddings | Negligible | One-time embed of the bank costs cents |
 | Frontend, GitHub | Free tiers | Open WebUI is self-hosted; GitHub public repo |
 
@@ -435,8 +490,8 @@ gantt
 | Milestone | State |
 |---|---|
 | Foundation, repo, credentials | Done |
-| Supabase schema, RLS, pgvector, embeddings (11 proposals, 1,413 chunks) | Done |
-| EC2 + Docker + brain + OpenRouter (GLM 5.2 + Qwen3) | Done |
+| Supabase schema, RLS, pgvector, embeddings (112 proposals, 11,060 chunks) | Done |
+| EC2 + Docker + brain + OpenRouter (Claude Sonnet 5 + GLM 5.2) | Done |
 | Grounded RAG chat + compliance matrix | Done |
 | Document-production engine (templates, DOCX, TOC, citations, SME markers) | Done |
 | Compliance repetition fix + model swap (DeepSeek removed) | Done |
@@ -471,7 +526,7 @@ gantt
 | Hosting | Oracle Cloud Free Tier | AWS EC2 (ARM, Mumbai) | AWS credits available; Mumbai region closer to the team |
 | Frontend | Open WebUI on Cloudflare Pages + Worker auth proxy | Open WebUI directly on EC2 | Simpler single-box deployment for MVP; Cloudflare Worker deferred until multi-tenancy is wired |
 | Diagrams | MermaidJS inline in chat | DiagramSpec JSON → D2 (Graphviz fallback) | Deterministic, editable, approval-friendly; no external rendering dependency. Graphviz first, switched to D2 for nested zone containers |
-| LLM tier | DeepSeek primary, GLM 5.2 fallback, Claude escalation | GLM 5.2 primary + Qwen3 235B fallback, hardcoded | DeepSeek removed after compliance-spiral incidents; GLM/Qwen covers drafting and classification reliably |
+| LLM tier | DeepSeek primary, GLM 5.2 fallback, Claude escalation | Claude Sonnet 5 primary + GLM 5.2 fallback, env-overridable | DeepSeek removed after compliance-spiral incidents. Sonnet chosen by a controlled comparison, not preference: GLM produced 4 degenerate paragraphs on the benchmark, Sonnet 0 |
 | Auth | Supabase Auth + Worker JWT gate (Sprint 8) | RLS at DB layer; brain internal-only | Network isolation is the interim gate; full Auth/Worker is a known gap, not abandoned |
 
 The blueprint's intent (conversation-first, retrieval-grounded, human-in-loop, self-improving) is unchanged. Only the components and sequence evolved.
@@ -486,9 +541,12 @@ iv-sarvam/
 ├── backend/brain/                    # the Shilpi brain (FastAPI)
 │   ├── app.py                        # endpoints, model routing, fallback
 │   ├── document_engine.py            # section drafting + DOCX assembly
-│   ├── proposal_templates.py         # Jinja2 section templates (implementation / mss)
+│   ├── proposal_templates.py         # section templates (implementation / migration / mss)
+│   │                                 #   + SECTION_TOPICS: section -> corpus topic for retrieval
+│   ├── document_qa.py                # deterministic QA gate (degeneration, citations, em-dashes)
+│   ├── diagram_engine.py             # DiagramSpec -> D2 (swimlanes, shapes) -> PNG
 │   ├── chat_state.py                 # conversation state machine (router/interview/architecture/drafting modes)
-│   ├── intake_template.py            # 24-bucket discovery interview schema
+│   ├── intake_template.py            # 22-area discovery interview schema
 │   ├── supabase_client.py            # thin PostgREST helpers (fail-soft)
 │   ├── branding.py                   # DOCX branding (logo, theme, header/footer)
 │   ├── assets/                       # optimized IV logo PNGs
@@ -502,8 +560,21 @@ iv-sarvam/
 │   └── assets/                       # OWUI logo assets
 ├── supabase/migrations/              # SQL migrations (schema + RLS + RPCs)
 │   ├── 001_init.sql
-│   └── shilpi_005_intake_and_diagrams.sql
-├── scripts/                          # ingestion + embedding pipeline
+│   ├── sarvam_005_intake_and_diagrams.sql
+│   ├── sarvam_006_ingest_dedup.sql            # content-hash dedup on ingestion
+│   ├── sarvam_007_retrieval_dedup_and_diversity.sql
+│   ├── sarvam_008_proposal_type_aware_retrieval.sql
+│   ├── sarvam_009_section_topic.sql           # semantic label column
+│   ├── sarvam_010_topic_aware_retrieval.sql
+│   ├── sarvam_011_topic_scoped_fallback.sql   # reaches topics too small to surface
+│   ├── sarvam_012_lower_topic_reserve.sql
+│   └── sarvam_013_visual_assets.sql           # image library + approval gate
+├── scripts/                          # ingestion, curation and measurement
+│   ├── corpus_manifest.py            # curate the Drive bank into tiers (CSV for human review)
+│   ├── ingest_v2.py                  # manifest-driven ingestion, content-hash dedup
+│   ├── classify_sections.py          # backfill section_topic (rules, no model)
+│   ├── extract_visual_assets.py      # recover image bytes into visual_assets
+│   └── eval_retrieval.py             # 20-probe retrieval scorecard
 ├── docs/                             # project, persona, sprint docs
 ├── data/                             # raw (gitignored) + tagging templates
 └── assets/                           # shared branding assets

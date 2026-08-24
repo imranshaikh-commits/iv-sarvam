@@ -15,7 +15,7 @@
 
 ## Progress Dashboard
 
-> Quick-glance project status. Last updated: 2026-08-21 (IST).
+> Quick-glance project status. Last updated: 2026-08-22 (IST).
 
 **Overall completion: ~88%**
 `██████████████████░░`
@@ -30,7 +30,7 @@
 | 3 — Retrieval + drafting | Done | `████████████████████` 100% |
 | 4 — Conversational frontend + auth | Partial | `███████████████░░░░░` 75% — **full pipeline validated end to end in chat** (router → 22-area discovery → diagram plan → per-diagram approval → drafting → DOCX/PDF); auth/multi-tenancy still missing |
 | 5 — Architecture approval gate + compression/export | Done (gate enforced in chat) | `████████████████████` 98% |
-| 6 — Validation (recreation benchmark) | In progress | `██████████████░░░░░░` 70% — seven scored runs against the Amlak proposal; fidelity, hygiene, structure and prose volume all addressed. Retrieval now measured by a repeatable scorecard |
+| 6 — Validation (recreation benchmark) | In progress | `███████████████░░░░░` 75% — eight scored runs against the Amlak proposal. Fidelity, hygiene, structure, prose volume and image placement all addressed and measured. What remains is not a build task: **no reviewer other than the builder has read a draft** |
 | 7 — Pilot + hardening + rollout | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
 
 ### What's next
@@ -58,13 +58,53 @@ client-confidential proposal content and this repository is public. See
 
 - **Corpus** — 112 proposals, 11,060 chunks, 50 clients, 15 vendors. Composition is now 61 implementation / 39 migration / 14 MSS, against 10/0/1 before. The Sales-SoWs bank was curated by reading document CONTENT, not filenames: 68 of 197 candidates were rejected, including a client-authored STC RFP whose doc properties name Saudi Telecom, a competitor's proposal authored by Smpl ID, 22 consultant CVs and 2 NDAs.
 - **Supabase Auth / Worker / multi-tenancy** (Phase 4) — not wired (RLS + disabled sign-ups is the interim gate). `approved_by` on diagrams stays NULL until user identity exists.
+- **Port 8080 is still plain HTTP** with the whole proposal bank behind it. Open since the first session; the only outstanding item with a live security consequence.
 - **Diagram detail** — swimlanes and page-fit are built and working (run 6 produced a six-lane joiner flow with real branch logic). Two gaps remain: the model ignores the `shape` field so decision points render as rectangles rather than diamonds, and hardware-spec callouts beside the boxes are not built.
 - **Durable diagram spec-template store** (per vendor + diagram type) — deferred from Pass 4.
 - **Reranking** — a 2026 controlled comparison found cross-encoder reranking the only technique that reliably beat plain dense retrieval at this corpus scale, while hybrid BM25+dense and multi-query expansion both finished BELOW it. Reranking is therefore the next retrieval change worth measuring; hybrid search is not.
-- **Phase 6 pilot** — not started; no *scored* runs against historical RFPs yet. The `RFP/` folder in the Drive bank is the natural test set. First recreation-test fixture prepared (Amlak / SailPoint — a client absent from the corpus, with the vendor present).
-- **Visual density** — the human Amlak proposal carries 37 images; Shilpi produces 6. The `visual_assets` table and private storage bucket now exist and hold **959 assets from 74 proposals (385 MB)**, recovered without a single API call by reattaching vision descriptions the pipeline had already paid for. Placement into documents is not built, and the library is the wrong shape: 655 architecture (rarely reusable — they depict a specific client's estate), 71 corporate, **0 product**. The product rule depends on OCR text and OCR never ran, so vendor screenshots fall through. Reclassification from the stored descriptions is the fix.
+- **Nobody but the builder has read a Shilpi draft** — eight scored runs, one reader, one opinion. Every quality judgement in this document rests on that. Ashish's "would you sign this" benchmark has never been applied. This is the largest untested assumption in the project and no amount of further building removes it.
+- **`outcome` is `unknown` for all 112 proposals** — recording won/lost and weighting retrieval toward what actually won is the single change that would compound more than anything else here. It needs a human who knows the answers.
+- **Phase 6 pilot against historical RFPs** — not started. The `RFP/` folder in the Drive bank (20 client-authored documents, tiered `testset` during curation) is the natural test set.
+- **Visual density** — the human Amlak proposal carries 37 images; run 8 produced 16, up from 6. Placement works, but images land at the END of whatever section matched rather than beside the text they illustrate, so an engagement-approach graphic sat under "Workforce and Capabilities". The realistic ceiling is 10–15: of IV's 37, roughly a third are per-deal architecture drawings that cannot be reused at all.
+- **Image placement leaked another client's data, and the gate did not catch it** — run 8 placed a Microsoft Project Gantt chart under *Case Studies* showing BTPN's and STC's task names, durations and resource assignments, in a proposal addressed to Amlak. Two failures compounded. The classifier filed Gantt charts as `corporate` on the reasoning that they are "generic in shape, client-specific only in the dates"; a Gantt chart IS a client's project plan. And the approval sheet rendered 260px thumbnails on which the task names were illegible — a gate you cannot read through is not a gate. Fixed: 131 assets un-approved (any project schedule, and anything whose description or OCR names a corpus client), thumbnails raised to 720px with click-to-zoom, and the sheet now reflects current approval state instead of pre-checking everything, which would have silently restored the rejects on the next export.
+- **Captions removed entirely** — captions were generated from each image's vision description and produced, verbatim: *"Gantt chart, a type of project management diagram that visualizes the schedule and dependencies for the 'Sistem-BTPN ProjectPL'. It details tasks broken into ph"*. Three faults in one string: it explained what a Gantt chart is to an IAM audience, it named another client's project, and it truncated mid-word. IV's own proposals caption almost nothing.
+- **Company Profile is thin** — 493 words but generic, because the `company_profile` chunks behind it are mostly headings and fragments rather than IV's actual profile prose. A corpus problem, not a template one.
 - **Sizing evidence is lopsided** — the retrieval scorecard measures tabular evidence per probe: `sizing_prod` scores 1.00, `sizing_dr` scores 0.12. The corpus is rich in production sizing tables and nearly bare of DR-specific ones, which is why run 7 lost its DR, UAT and Development sizing tables. No amount of retrieval tuning fixes a gap in the source material.
 - **The benchmark must stay out of the corpus** — both Amlak proposals were ingested during bulk ingestion and have been deleted. Run 7 was drafted with its own answer available, so its Similar Experience quality is genuine but its overall score is inflated. Always run the leakage check before a scored run.
+
+### Recently shipped (2026-08-21 → 22)
+
+**Images reach the document.** 6 → 16 in run 8. 946 assets recovered from the
+bank with no API calls (the pipeline was already extracting, OCRing and
+describing images with a vision model, then discarding the bytes); reclassified
+from those stored descriptions into 239 corporate and 106 product; 341 approved
+through an offline contact sheet; then **131 un-approved** after run 8 showed
+why.
+
+**A client data leak, and what it taught.** Run 8 put another client's Microsoft
+Project plan into a proposal. The rule that allowed it was mine, and the reason
+it survived review was also mine: 260px thumbnails on which the task names could
+not be read. Both fixed. The general lesson is recorded in `02_LESSONS.md`: an
+approval gate must be legible at the size the reviewer sees, or it launders a
+decision nobody actually made.
+
+**Three run-8 defects traced to limits I set.**
+
+| Symptom | Cause |
+|---|---|
+| `[SME REV`, `[SME RE` truncated mid-word | 420-token cap against a 220-word instruction. A hard cap must be a safety net, never the binding constraint |
+| Paragraphs of 180 words (IV's median is 29) | the instruction capped the SUBSECTION and said nothing about paragraphs |
+| "Gantt chart, a type of project management diagram that…" | captions built from vision descriptions, truncated at 160 chars |
+
+**Client review artefacts were published to this public repo** — the asset
+contact sheet, carrying 341 base64 thumbnails of client proposal imagery and
+descriptions naming clients, was committed by a `git add -A`. The `.gitignore`
+rules for it had been written but never actually added. Purged from history with
+`git filter-repo` and force-pushed; the ignore rules now verified with
+`git check-ignore` rather than assumed. Untracking a file does nothing if the
+ignore rule was never there.
+
+---
 
 ### Recently shipped (2026-08-14 → 21)
 
@@ -121,7 +161,7 @@ written while `get_template("migration")` raised `ValueError`, so a consultant
 could answer all 22 discovery areas and then hit a crash. Now asserted as an
 invariant over every intake type.
 
-**Visual assets recovered.** 959 assets from 74 proposals, with no API calls:
+**Visual assets recovered.** 946 assets from 74 proposals, with no API calls:
 the pipeline was already extracting images, OCRing them and describing the
 diagrams with a vision model, then discarding the bytes. The descriptions were
 reattached by the index in their chunk headings (`Diagram #5` → image 5), which
@@ -204,7 +244,7 @@ flowchart TB
     EMB["text-embedding-3-small<br/>(1536-dim)"]
 
     SB["Supabase<br/>Postgres 17 + pgvector<br/>(RLS-enforced)"]
-    PROP["proposals · proposal_chunks · visual_assets<br/>(RAG bank, 11,060 chunks + 959 images)"]
+    PROP["proposals · proposal_chunks · visual_assets<br/>(RAG bank, 11,060 chunks + 946 images, 210 approved)"]
     INTAKE["intake_sessions<br/>(discovery answers)"]
     GEN["generated_proposals<br/>(persisted drafts)"]
     DIAG["architecture_diagrams<br/>(specs + approval state)"]
@@ -281,7 +321,10 @@ Shilpi grounds every draft in what IV has actually delivered, never in model mem
 - **Why the semantic column exists.** `section_type` was 46% `other`, with 34 `why_vendor` and 16 `company_profile` chunks in the entire corpus — yet every IV proposal has both. Metadata-filtered retrieval was impossible against labels that poor. After reclassification (`scripts/classify_sections.py`, rules not a model, 29.9% residue): `company_profile` covers 96 of 114 proposals, `similar_experience` 94, `pricing` 105.
 - **Metadata per proposal:** `client_name`, `industry`, `country`, `iam_vendor`, `proposal_type` (implementation / migration / MSS), `user_count`, `app_count`, `deal_size_bucket`, `outcome`, `year`, plus `source_sha256` and `source_tier` for provenance. The reviewed manifest's values **override** anything the model infers during ingestion: a first-page read is exactly where a partner's name sits, which is how `CIAM_Mannai_IV_Technical_Proposal_V3_0.docx` reads as a Mannai proposal when the client is Ahlibank.
 - **`outcome` is `unknown` for all 112.** Recording won/lost and weighting retrieval toward what actually won is the single change that would compound more than anything else on the roadmap. It needs a human who knows the answers, and nobody has been asked.
-- **Visual assets:** 959 images from 74 proposals (385 MB) in a private Supabase Storage bucket, with `visual_assets` holding the metadata, provenance `(section_heading, image, caption)` and a **mandatory approval gate** (`approved` defaults false). Dedup on content hash collapsed 3,763 duplicates — the IV logo appears in most proposals and stores once. Placement into generated documents is not built.
+- **Visual assets:** 946 images from 74 proposals (385 MB) in a private Supabase Storage bucket. `visual_assets` holds the metadata, the vision description already paid for during ingestion, and a **mandatory approval gate** (`approved` defaults false). Dedup on content hash collapsed 3,763 duplicates — the IV logo appears in most proposals and stores once.
+- **Only two of four asset kinds may ever be placed.** `corporate` (239) and `product` (106) are reusable. `architecture` (379) is excluded **in code**, not left to a reviewer: those images depict a specific client's zones, node counts and integrations, so one in another client's proposal is a leak. `unknown` (224) has no vision description because OCR never ran, so it cannot be judged.
+- **210 assets are currently approved.** 131 were withdrawn after run 8: any project schedule (a Gantt chart is a client's project plan, however generic it looks) and anything whose description or OCR text names a corpus client.
+- **Selection matches on vision descriptions, not provenance.** The original design placed images by the `(section_heading, image, caption)` triple, but the extractor fell back to "the first non-image chunk" whenever an image's own heading was its numbering — so 49 corporate assets across 12 proposals were all labelled "Introduction". Provenance that says everything came from the same place says nothing.
 
 ### Grounding contract
 
@@ -389,8 +432,8 @@ flowchart LR
 - **Primary:** Claude Sonnet 5. **Fallback:** GLM 5.2. Defaults live in code; `SHILPI_PRIMARY_MODEL` / `SHILPI_FALLBACK_MODEL` override them, and any override is logged at startup and reported by `GET /health` so it is never silent. There is no model chooser in the UI; Open WebUI exposes a single model, "Shilpi Architect".
 - **Why Sonnet over GLM:** measured, not assumed. Same 22 inputs, model as the only variable. GLM produced 4 degenerate paragraphs including two single-pass thesaurus walks of 645 and 677 words with no full stop; Sonnet produced 0, with a worst case of 104. Verbosity and em-dash habit barely moved, which is what identified them as template and prompt problems rather than model problems.
 - Fallback applies at all five LLM call sites (chat drafting, section drafting, compliance classification, open-router raw drafting, and diagram-spec generation).
-- **Why no DeepSeek:** it spiraled on ambiguous compliance requirements, generating hundreds of thousands of characters and multi-minute hangs. Removed in favor of GLM/Qwen with per-call token caps, frequency penalty, and truncation guards.
-- **Why no image-generation model for diagrams:** image-gen models mangle precise text labels and break schematic consistency, and editing labels onto a raster diagram is unreliable. D2 (with Graphviz fallback) renders the DiagramSpec deterministically — no model failure point — and the only model involved (GLM spec generation) already has the Qwen fallback.
+- **Why no DeepSeek:** it spiraled on ambiguous compliance requirements, generating hundreds of thousands of characters and multi-minute hangs. Removed in favor of the Sonnet/GLM chain with per-call token caps, frequency penalty, and truncation guards.
+- **Why no image-generation model for diagrams:** image-gen models mangle precise text labels and break schematic consistency, and editing labels onto a raster diagram is unreliable. D2 (with Graphviz fallback) renders the DiagramSpec deterministically — no model failure point — and the only model involved (spec generation) already has the GLM fallback.
 - **Why D2 over Graphviz:** Graphviz optimises for minimal edge crossings, not legibility, and its clusters lay out poorly — the first live deployment diagram came out as a repeat of the logical flow with no zones. D2 draws `group` as a real nested container, which is what DMZ / secure zone / data zone diagrams need. Both are auto-layout, so neither reproduces IV's hand-composed sample decks; see [Known gaps](#known-gaps--not-pilot-ready-yet).
 - Embeddings use `text-embedding-3-small` (unchanged); OpenRouter's image API remains available as an optional path for non-diagram visuals later, but is not used for architecture diagrams.
 
@@ -437,6 +480,23 @@ Persistence is fail-soft: if a Supabase write fails, the generated DOCX is still
 Deeper reasoning: [`docs/PROJECT.md`](docs/PROJECT.md) (contingency matrix, risk register).
 
 ---
+
+### Incidents
+
+- **2026-08-22 — client imagery published to this repo.** The asset review
+  contact sheet (341 base64 thumbnails of client proposal images, plus vision
+  descriptions naming clients) was committed by a `git add -A`. The
+  `.gitignore` rules had been drafted but never added, and **untracking a file
+  does nothing if the ignore rule was never there**. Purged with
+  `git filter-repo` and force-pushed; a fresh clone confirms no trace in any
+  commit. GitHub may retain unreferenced blobs by SHA until garbage collection,
+  and anyone who cloned in the window still holds a copy.
+  Now verified with `git check-ignore` rather than assumed, for every artefact
+  that touches client data: `sarvam.env`, `ids.txt`, `asset_review.html`,
+  retrieval scorecards, corpus manifests, ingestion run output.
+
+- **2026-08-21 — another client's project plan placed in a proposal.** See
+  Known Gaps. Not a repo exposure: the document was never sent.
 
 ## Costs
 

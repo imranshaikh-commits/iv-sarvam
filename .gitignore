@@ -79,3 +79,6 @@ asset_review.html
 ids.txt
 scripts/asset_review.html
 scripts/ids.txt
+
+corpus_manifest*.csv
+corpus_review_summary*.md

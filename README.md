@@ -1,6 +1,6 @@
 # Shilpi — IV Proposal Architect
 
-**Shilpi** (सर्वम्, Sanskrit for *"all, everything, the whole"*) is Inspirit Vision's in-house Proposal Architect — a conversational, retrieval-grounded AI that turns a new RFP into a structured, client-ready proposal in hours instead of days, by drafting from IV's 100+ historical proposal bank rather than from a blank page.
+**Shilpi** (शिल्पी, Sanskrit for *"artisan, craftsperson"*) is Inspirit Vision's in-house Proposal Architect — a conversational, retrieval-grounded AI that turns a new RFP into a structured, client-ready proposal in hours instead of days, by drafting from IV's curated bank of 112 past proposals rather than from a blank page.
 
 ![Status](https://img.shields.io/badge/status-Phase%206%20validation%20%7C%20run%205%20pending-blue)
 ![Brain](https://img.shields.io/badge/brain-FastAPI%20(Python)-231154)
@@ -179,7 +179,7 @@ control with their call sites deliberately unwired.
 
 ## Executive Summary
 
-Inspirit Vision currently spends multiple person-days drafting each client proposal from scratch — assembling company profile, similar experience, scope understanding, solution architecture, implementation methodology, RACI, timeline, and compliance from memory and old files. With a bank of 100+ historical proposals across SailPoint, Ping Identity, IBM Security Verify, Red Hat Keycloak (RHBK), and ForgeRock engagements, there is enough reusable intellectual property to power a system that drafts, diagrams, and delivers proposals in a fraction of the time.
+Inspirit Vision currently spends multiple person-days drafting each client proposal from scratch — assembling company profile, similar experience, scope understanding, solution architecture, implementation methodology, RACI, timeline, and compliance from memory and old files. With a curated bank of 112 past proposals across 15 vendors and 50 clients — SailPoint, Ping Identity, ForgeRock, Oracle, IBM, BeyondTrust, CyberArk, Okta, Saviynt, Red Hat Keycloak among them — there is enough reusable intellectual property to power a system that drafts, diagrams, and delivers proposals in a fraction of the time.
 
 Shilpi is that system. He is **not a chatbot and not a search engine** — he is a well-read junior consultant who has read every proposal IV has ever sent, remembers all of them, interviews you about the new deal, proposes an architecture you must approve, and then drafts the full document section by section, grounded in what IV has actually delivered before.
 
@@ -189,7 +189,7 @@ Shilpi is that system. He is **not a chatbot and not a search engine** — he is
 |---|---|---|
 | Time to first full draft, manual process | 2 to 5 person-days | IV internal baseline |
 | Proposal content that is static/reusable across deals | ~60% | IV corpus analysis, 10 sample proposals |
-| Diagrams that are reused or templated across proposals | ~38% | IV corpus analysis, perceptual hashing of 260 embedded images |
+| Images that are reusable across proposals | 345 of 946 (36%) | `visual_assets`, content-hash dedup across 74 proposals. The rest are client-specific architecture drawings or unclassifiable |
 | Source proposals in the working corpus | 112 ingested, 11,060 chunks | Shilpi Supabase, live |
 | Target time to first draft | under 2 hours | Project success criterion (V1) |
 | Target output size (Lite, email-friendly) | under 5 MB | Project success criterion (V1) |
@@ -219,11 +219,10 @@ Honest about what is not done, so no one mistakes the current state for producti
 - **Auth and multi-tenancy:** Supabase Auth and the Worker JWT gate are not wired. The brain is protected by network isolation (internal-only) and Open WebUI's disabled sign-ups, not by per-user identity. User identity is not yet propagated end-to-end, so generated drafts are not yet attributed to individual users (`approved_by` on diagrams is NULL). Production auth hardening is a pending milestone, not abandoned.
 - **Nobody but the builder has read a Shilpi draft.** Seven scored runs, one reader, one opinion. Every quality judgement in this document rests on that. Getting a senior IAM architect to read one and mark what they would rewrite is now the highest-leverage open item — it is also the ground truth any future LLM reviewer would need to be scored against.
 - **Proposal length:** `full` depth measures 42pp after the NoneType fix + 3500-token cap (both deployed); the opt-in `deep` tier (6 subsection facets) is merged but not yet re-measured. 100+pp remains a target, pending a decision on whether length is the right proxy for "boss-ready".
-- **Client-logo sourcing:** approval-gated embedding of a client logo sourced online is deferred from Pass 5; the placeholder box is used instead.
 - **Durable diagram spec-template store:** reusable DiagramSpec templates keyed by vendor and diagram type are deferred from Pass 4 (the engine regenerates from scratch for now).
 - **External research and fact-checking:** Exa/Firecrawl external research and the secondary-LLM fact-checker are deferred to post-pilot.
-- **Hybrid search:** retrieval is pure vector similarity; BM25 + reciprocal rank fusion is deferred.
-- **Diagram visual parity:** D2 output is accurate and legible but visibly machine-generated next to IV's hand-composed sample decks (STC, NWC). Auto-layout cannot close that gap. Reaching house-style parity needs either editable export (`.drawio`/`.pptx`) for a human to finish, or a designer-built SVG template library for the ~4 recurring diagram types — a design investment, not an engineering one. Deferred until pilot feedback says whether it matters.
+- **Hybrid search:** deliberately NOT pursued. A 2026 controlled comparison found hybrid BM25+dense finishing *below* plain dense retrieval at this corpus scale, and multi-query expansion posting the lowest precision of any strategy. Cross-encoder reranking was the only technique that clearly won, so that is the next retrieval change worth measuring.
+- **Diagram visual parity:** D2 output is accurate and legible but visibly machine-generated next to IV's hand-composed sample decks. Auto-layout cannot close that gap. Reaching house-style parity needs either editable export (`.drawio`/`.pptx`) for a human to finish, or a designer-built SVG template library for the ~4 recurring diagram types — a design investment, not an engineering one. Deferred until pilot feedback says whether it matters.
 - **Pilot validation:** no end-to-end runs against historical RFPs with the scoring rubric yet.
 
 ---
@@ -279,7 +278,7 @@ sequenceDiagram
 
     U->>B: new deal (client, vendor, type)
     B->>S: create intake_session
-    B-->>U: 24-bucket discovery interview
+    B-->>U: 22-area discovery interview
     U->>B: answers (scope, scale, arch, diagrams, constraints)
     B->>S: patch + complete intake_session
     B->>S: match_proposal_chunks (per-section queries)
@@ -348,7 +347,7 @@ flowchart LR
 ```
 
 ### Stage 1 — Discovery Interview
-A 24-bucket structured interview collects everything needed for an accurate draft: client and engagement details, scale and volumetrics, scope, **architecture inputs (deployment model, required diagram types and count, hardware sizing, HA/DR, security architecture)**, migration, integrations (HRMS, AD/Exchange, IdP/SSO, applications), compliance and regulatory specifics, timeline, MSS-specific SLA/commercials (conditional), submission constraints, audience and win-themes, current-state systems, NFRs, delivery model, post-go-live, and reuse controls. Every answer persists to the `intake_sessions` table.
+A 22-area structured interview collects everything needed for an accurate draft: client and engagement details, scale and volumetrics, scope, **architecture inputs (deployment model, required diagram types and count, hardware sizing, HA/DR, security architecture)**, migration, integrations (HRMS, AD/Exchange, IdP/SSO, applications), compliance and regulatory specifics, timeline, MSS-specific SLA/commercials (conditional), submission constraints, audience and win-themes, current-state systems, NFRs, delivery model, post-go-live, and reuse controls. Every answer persists to the `intake_sessions` table.
 
 ### Stage 2 — Architecture Proposal and Human-in-Loop Gate
 Shilpi retrieves the closest-matching past architecture, generates a `DiagramSpec`, renders it for preview, and presents it. The user **approves or rejects with comments**; on rejection he regenerates incorporating the feedback. Approved diagrams are persisted and embedded in the DOCX. **V1 contract (enforced):** drafting is hard-gated on an approved architecture — a "generate the proposal" request before approval is refused in chat. The reusable spec-template library remains deferred.
@@ -397,7 +396,7 @@ The engine is what turns a chat thread into a deliverable document.
 
 ### Built now
 
-- **Templates:** Jinja2 section templates per proposal type. The `implementation` template mirrors IV's real house structure — **11 top-level sections and 47 content-specific subsections, every heading distinct** ("Proposed Production Hardware Sizing", "Tranche 2 - Lifecycle Management and Initial Applications", "Payment Milestones"). Eleven subsections explicitly require a markdown table, which the assembler renders as native Word tables. Section titles and headings render through Jinja, so vendor and client names substitute ("Proposed Solution - SailPoint", "Why SailPoint"). Subsections defined on a section override the depth tier's count: those headings are the section's structure, not a knob.
+- **Templates:** Jinja2 section templates for `implementation`, `migration` and `mss`. Every type the intake offers now has a template, asserted as an invariant — the intake offered `migration` for weeks while `get_template("migration")` raised `ValueError`, so a consultant could answer all 22 discovery areas and then hit a crash. The `migration` template is 14 sections and is NOT the implementation one renamed: current-state assessment, migration strategy (including whether password hashes carry across or users must re-enrol), rollback position, and decommissioning have no greenfield counterpart. The `implementation` template mirrors IV's real house structure — **11 top-level sections and 47 content-specific subsections, every heading distinct** ("Proposed Production Hardware Sizing", "Tranche 2 - Lifecycle Management and Initial Applications", "Payment Milestones"). Eleven subsections explicitly require a markdown table, which the assembler renders as native Word tables. Section titles and headings render through Jinja, so vendor and client names substitute ("Proposed Solution - SailPoint", "Why SailPoint"). Subsections defined on a section override the depth tier's count: those headings are the section's structure, not a knob.
 - **Section-by-section drafting:** each section runs its own retrieval query and LLM draft, with per-call token caps and frequency penalty to prevent repetition spirals on ambiguous content.
 - **Compliance matrix:** per-requirement classification against retrieved evidence, with paraphrase matching and a truncation guard.
 - **Citations and traceability:** retrieval traces are persisted with each generated proposal. Inline `[N]` markers and the citation appendix are **stripped from the deliverable** — the appendix listed retrieved chunks by client name and similarity score, so an Amlak document named three other IV clients across 78 paragraphs. Provenance belongs in logs, not in a document that leaves the building.
@@ -408,7 +407,9 @@ The engine is what turns a chat thread into a deliverable document.
 ### Built now (continued — enhancement passes)
 
 - **Long-form depth:** `brief` / `standard` / `full` tiers control retrieval fan-out and, for sections that do not define their own subsections, the number of generic facets drafted. `full` adds RACI, timeline, sizing, integration inventory, and risk appendices as real DOCX tables.
-- **Diagram framework (Pass 4, done + live-validated):** GLM emits a constrained `DiagramSpec` JSON → D2 renders SVG (cairosvg → PNG), Graphviz fallback → user approves **in chat** → only approved diagrams are embedded. Approval state machine (draft → needs_review → approved/rejected), now driven from the conversation.
+- **Diagram framework (done + live-validated):** the model emits a constrained `DiagramSpec` JSON → D2 renders SVG (librsvg → PNG), Graphviz fallback → user approves **in chat** → only approved diagrams are embedded. Approval state machine (draft → needs_review → approved/rejected), driven from the conversation.
+- **Swimlanes and page fit (done):** for flow diagrams `group` means the ACTOR, not the network zone, so a joiner flow renders as horizontal lanes (HRMS / IdentityIQ / Manager / Active Directory) the way IV draws it. Diagrams that come out too tall for the page are re-laid-out and the best-scoring candidate kept, measured from the rendered SVG rather than guessed: an Amlak-shaped architecture diagram went from 2.45 aspect (a sliver) to 0.46. Node shapes (`decision`, `datastore`, `external`) are supported but the model ignores them — see Known Gaps.
+- **Image placement (done):** approved `corporate` and `product` assets are matched to sections on their vision descriptions and embedded at 4.5 x 3.2 inches. Each image appears once per document. Off by default (`SHILPI_ASSETS_ENABLED`), because turning it on changes what lands in a client document.
 - **Export pipeline (Round 3, done + live-validated):** lite (<5 MB) DOCX compression via Pillow, PDF export via LibreOffice headless, and delivery to storage signed URLs (`generated-drafts` bucket, 1-hour TTL). Opt-in via `lite` / `include_pdf` / `return_signed_urls` on `/v1/generate-proposal`.
 
 ### Deferred
@@ -450,7 +451,7 @@ The brain exposes an OpenAI-compatible interface plus proposal-production endpoi
 | GET | `/v1/models` | Lists the single `shilpi-architect` model |
 | POST | `/v1/chat/completions` | Conversation state machine: intent router → discovery interview → architecture approval gate → drafting; vault mode = grounded RAG chat (streaming, SSE heartbeats) |
 | POST | `/v1/compliance-matrix` | Classify RFP requirements against retrieved evidence |
-| GET | `/v1/intake-template` | Return the 24-bucket discovery interview (filters by proposal type) |
+| GET | `/v1/intake-template` | Return the 22-area discovery interview (filters by proposal type) |
 | POST | `/v1/intake-sessions` | Create a discovery session |
 | PATCH | `/v1/intake-sessions/{id}` | Merge partial answers |
 | POST | `/v1/intake-sessions/{id}/complete` | Validate required answers, mark complete |
@@ -468,10 +469,10 @@ Persistence is fail-soft: if a Supabase write fails, the generated DOCX is still
 
 | Layer | Control |
 |---|---|
-| Network | EC2 security group restricts inbound to SSH (from known IPs) and the frontend port. The brain is bound to localhost — never exposed publicly |
+| Network | EC2 security group restricts inbound to SSH (from known IPs) and the frontend port. The brain is bound to localhost — never exposed publicly. **Open gap: the frontend is served over plain HTTP on port 8080**, so session cookies and every proposal rendered in the browser cross the network unencrypted |
 | Database | Row-Level Security enforced at the Postgres layer on every table. All writes use a server-side key; client-facing access is policy-gated. RLS is never disabled |
-| Secrets | API keys live only in the server's local environment file (restricted permissions). `.gitignore` blocks `.env`, `*.pem`, `*.key`, and key-pattern files repo-wide |
-| Client data | Source proposals under NDA live under `data/raw/` (gitignored, never committed). Only anonymised metadata is version-controlled |
+| Secrets | API keys live only in the server's local environment file (restricted permissions). `.gitignore` blocks `.env`, `*.env`, `*.pem`, `*.key`. **The `.env` pattern never matched `sarvam.env`** — caught before it was committed, but only by chance. Ignore rules for anything touching client data are now verified with `git check-ignore`, not assumed |
+| Client data | Source proposals under NDA live under `data/raw/` (gitignored, never committed). Only anonymised metadata is version-controlled. **This was violated once** — see Incidents. Gitignored: corpus manifests (client names and engagements), retrieval scorecards (client names in probe results), the asset review sheet (client imagery), ingestion run output |
 | Frontend | Open WebUI open sign-ups disabled; only the Shilpi Architect model is exposed (all other LLM connections removed) |
 | LLM data | OpenRouter is the only external LLM path. No client content is sent to image-generation or rendering APIs |
 | Availability | A daily keep-alive pings the database to prevent free-tier idle pause, and auto-restores the project if it is ever found paused |

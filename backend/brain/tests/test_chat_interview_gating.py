@@ -1437,5 +1437,12 @@ def test_evidence_block_handles_no_evidence():
     reads to the model as 'evidence exists and says nothing'."""
     assert "no relevant evidence" in app.build_evidence_block([]).lower()
 
-if __name__ == "__main__":
-    main()
+
+# Shared runner: collects tests at EXIT, so appending a test below this
+# line cannot silently skip it. Four files previously lost appended
+# tests to an inline loop that read globals() at call time.
+import os as _os, sys as _sys  # noqa: E402
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from _runner import run_tests  # noqa: E402
+
+run_tests(globals(), "CHAT INTERVIEW GATING TESTS")

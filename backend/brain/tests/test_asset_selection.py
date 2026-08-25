@@ -10,6 +10,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import asset_selection as A  # noqa: E402
 
 LIB = [
@@ -106,10 +107,11 @@ def test_summary_lists_every_placed_image():
     assert A.asset_summary({}) == ""
 
 
-if __name__ == "__main__":
-    passed = 0
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-            passed += 1
-    print(f"ALL {passed} ASSET SELECTION TESTS PASSED")
+# Shared runner: collects tests at EXIT, so appending a test below this
+# line cannot silently skip it. Four files previously lost appended
+# tests to an inline loop that read globals() at call time.
+import os as _os, sys as _sys  # noqa: E402
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from _runner import run_tests  # noqa: E402
+
+run_tests(globals(), "ASSET SELECTION TESTS")

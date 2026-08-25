@@ -1593,8 +1593,14 @@ def _chat_completion_json(content: str, resp_id: str = "chatcmpl-shilpi-complian
 
 @app.get("/health")
 async def health():
+    # Every runtime switch that changes what lands in a client document is
+    # reported here. A silent config difference makes a scored run meaningless:
+    # the model override is visible for exactly that reason, and image placement
+    # was enabled once with no way to confirm it had taken effect.
     return {"status": "ok", "model": MODEL_ID,
-            "primary_model": PRIMARY_LLM_MODEL, "fallback_model": FALLBACK_LLM_MODEL}
+            "primary_model": PRIMARY_LLM_MODEL, "fallback_model": FALLBACK_LLM_MODEL,
+            "assets_enabled": ASSETS_ENABLED,
+            "asset_bucket": ASSET_BUCKET if ASSETS_ENABLED else None}
 
 
 @app.get("/v1/models")

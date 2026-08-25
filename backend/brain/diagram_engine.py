@@ -614,6 +614,34 @@ def spec_shortfall(spec: "DiagramSpec") -> str | None:
     if orphans and len(orphans) / n > MAX_ORPHAN_RATIO:
         return (f"{len(orphans)} of {n} components had no connections at all "
                 f"({', '.join(orphans[:6])})")
+
+    # A branch point drawn as a rectangle. The model reliably WRITES branch
+    # logic into flow diagrams -- run 6 produced "Identity Already Exists?" and
+    # "Manager Approval Required?" with correctly labelled Yes/No edges -- and
+    # then marks every node `process`, so the diamonds that make a flow
+    # readable never render. Two runs of prompt instruction did not move it,
+    # while the swimlane half of the same instruction landed immediately.
+    #
+    # So this is checked and retried rather than asked for again: a node whose
+    # label is a question, or which has multiple labelled outgoing edges, is a
+    # decision node whatever the model called it.
+    if spec.diagram_type in _LANE_TYPES:
+        by_source: dict[str, list] = {}
+        for edge in spec.edges:
+            by_source.setdefault(edge.source, []).append(edge)
+        undeclared = []
+        for node in spec.nodes:
+            if node.shape == "decision":
+                continue
+            asks = node.label.strip().endswith("?")
+            branches = [e for e in by_source.get(node.id, []) if (e.label or "").strip()]
+            if asks or len(branches) > 1:
+                undeclared.append(node.label.strip()[:40])
+        if undeclared:
+            return ("branch points were not marked as decisions, so they would "
+                    "render as plain rectangles instead of diamonds: "
+                    + "; ".join(f'"{u}"' for u in undeclared[:4])
+                    + '. Set shape="decision" on each of those nodes')
     return None
 _SPEC_EVIDENCE_BUDGET = int(os.environ.get("SHILPI_SPEC_EVIDENCE_BUDGET", "1500"))
 D2_PNG_WIDTH = int(os.environ.get("SHILPI_D2_PNG_WIDTH", "1800"))

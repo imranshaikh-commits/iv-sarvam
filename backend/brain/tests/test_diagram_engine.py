@@ -589,3 +589,77 @@ def test_guidance_actually_asks_for_lanes_and_shapes():
     assert "decision" in flow
     arch = chat_state.deployment_guidance_for("Deployment", "architecture")
     assert "decision" in arch, "shape mandate missing from non-flow diagrams"
+
+
+# ---------------------------------------------------------------------------
+# Decision nodes, enforced by VALIDATION rather than asked for again.
+#
+# The model reliably writes branch logic into flow diagrams -- run 6 produced
+# "Identity Already Exists?" and "Manager Approval Required?" with correctly
+# labelled Yes/No edges -- and then marks every node `process`, so the diamonds
+# that make a flow readable never render. Two rounds of prompt instruction did
+# not move it, while the swimlane half of the SAME instruction landed at once.
+# ---------------------------------------------------------------------------
+
+def _flow(nodes, edges):
+    return diagram_engine.DiagramSpec(
+        diagram_type="flow", title="Joiner",
+        nodes=[diagram_engine.DiagramNode(**n) for n in nodes],
+        edges=[diagram_engine.DiagramEdge(**e) for e in edges])
+
+
+_BRANCH_NODES = [
+    {"id": "a", "label": "HR Joiner Event", "group": "HRMS"},
+    {"id": "q", "label": "Identity Already Exists?", "group": "SailPoint IIQ"},
+    {"id": "y", "label": "Update Attributes", "group": "SailPoint IIQ"},
+    {"id": "n", "label": "Provision New Identity", "group": "SailPoint IIQ"},
+]
+_BRANCH_EDGES = [
+    {"source": "a", "target": "q"},
+    {"source": "q", "target": "y", "label": "Yes"},
+    {"source": "q", "target": "n", "label": "No"},
+]
+
+
+def test_a_question_node_left_as_process_is_rejected():
+    reason = diagram_engine.spec_shortfall(_flow(_BRANCH_NODES, _BRANCH_EDGES))
+    assert reason and "decision" in reason
+    assert "Identity Already Exists?" in reason
+
+
+def test_a_properly_marked_decision_passes():
+    nodes = [dict(n) for n in _BRANCH_NODES]
+    nodes[1]["shape"] = "decision"
+    assert diagram_engine.spec_shortfall(_flow(nodes, _BRANCH_EDGES)) is None
+
+
+def test_multiple_labelled_outgoing_edges_count_as_a_branch():
+    """Not every branch point is phrased as a question."""
+    nodes = [{"id": "a", "label": "Aggregate", "group": "HRMS"},
+             {"id": "r", "label": "Route by identity type", "group": "IIQ"},
+             {"id": "e", "label": "Employee path", "group": "IIQ"},
+             {"id": "c", "label": "Contractor path", "group": "IIQ"}]
+    edges = [{"source": "a", "target": "r"},
+             {"source": "r", "target": "e", "label": "Employee"},
+             {"source": "r", "target": "c", "label": "Contractor"}]
+    assert diagram_engine.spec_shortfall(_flow(nodes, edges)) is not None
+
+
+def test_an_architecture_fan_out_is_not_a_decision():
+    """A load balancer with two labelled edges is not a branch point. This rule
+    must not fire outside flow diagrams or it would reject every HA topology."""
+    spec = diagram_engine.DiagramSpec(
+        diagram_type="architecture", title="Deployment",
+        nodes=[diagram_engine.DiagramNode(id="lb", label="Load Balancer", group="DMZ"),
+               diagram_engine.DiagramNode(id="n1", label="IIQ Node 1", group="App"),
+               diagram_engine.DiagramNode(id="n2", label="IIQ Node 2", group="App")],
+        edges=[diagram_engine.DiagramEdge(source="lb", target="n1", label="HTTPS"),
+               diagram_engine.DiagramEdge(source="lb", target="n2", label="HTTPS")])
+    assert diagram_engine.spec_shortfall(spec) is None
+
+
+def test_the_rejection_names_the_offending_nodes():
+    """The retry prompt is built from this string, so it has to be specific
+    enough for the model to act on."""
+    reason = diagram_engine.spec_shortfall(_flow(_BRANCH_NODES, _BRANCH_EDGES))
+    assert 'shape="decision"' in reason

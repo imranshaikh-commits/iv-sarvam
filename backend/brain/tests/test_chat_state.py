@@ -480,8 +480,11 @@ def test_guidance_always_demands_edges():
         assert "Title Case" in g, title
 
 
-if __name__ == "__main__":
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    for fn in fns:
-        fn()
-    print(f"ALL {len(fns)} CHAT STATE TESTS PASSED")
+# Shared runner: collects tests at EXIT, so appending a test below this
+# line cannot silently skip it. Four files previously lost appended
+# tests to an inline loop that read globals() at call time.
+import os as _os, sys as _sys  # noqa: E402
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from _runner import run_tests  # noqa: E402
+
+run_tests(globals(), "CHAT STATE TESTS")

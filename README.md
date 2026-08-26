@@ -2,7 +2,7 @@
 
 **Shilpi** (शिल्पी, Sanskrit for *"artisan, craftsperson"*) is Inspirit Vision's in-house Proposal Architect — a conversational, retrieval-grounded AI that turns a new RFP into a structured, client-ready proposal in hours instead of days, by drafting from IV's curated bank of 112 past proposals rather than from a blank page.
 
-![Status](https://img.shields.io/badge/status-Phase%206%20validation%20%7C%20run%205%20pending-blue)
+![Status](https://img.shields.io/badge/status-Phase%206%20validation%20%7C%20run%209%20pending-blue)
 ![Brain](https://img.shields.io/badge/brain-FastAPI%20(Python)-231154)
 ![LLM](https://img.shields.io/badge/LLM-Claude%20Sonnet%205%20%2B%20GLM%205.2%20fallback-E85A24)
 ![Retrieval](https://img.shields.io/badge/retrieval-Supabase%20pgvector-3ECF8E)
@@ -17,8 +17,27 @@
 
 > Quick-glance project status. Last updated: 2026-08-22 (IST).
 
-**Overall completion: ~88%**
-`██████████████████░░`
+**Two questions gate use. Neither is a percentage.**
+
+| | Status |
+|---|---|
+| **Can IV use this on a live deal?** | Not yet. Blocked by: the frontend is plain HTTP, this repo is public, and the fixes from run 8 are untested in a live run. All small. |
+| **Would a senior IAM architect sign the output?** | **Unknown — never tested.** Eight scored runs, one reader, the person who built it. No amount of further code answers this. |
+
+<details>
+<summary>Why there is no overall completion figure here</summary>
+
+There used to be one. It was hand-typed, disagreed with the phase table below
+(88% against 81%), and drifted every time a phase row was edited.
+
+More importantly it measured progress against a plan written in July — before we
+knew the corpus was 11% ingested, before the section template turned out to be
+wrong, before image reuse existed as an idea. Optimising that number means
+closing rows in a table, which is not the same as being useful to IV.
+
+The phase table is kept because it shows *shape*: where effort went and what was
+never started. It is not a completion score.
+</details>
 
 ### Phase completion
 
@@ -35,20 +54,29 @@
 
 ### What's next
 
-Sequenced in **[`docs/PHASES.md`](docs/PHASES.md)**. In short:
+Three sprints. The ordering matters more than the contents: the project is
+feature-rich and evidence-poor, and everything built since run 6 has been judged
+by one reader.
 
-| Phase | Focus |
-|---|---|
-| **6 — Validation** *(current)* | Recreation test against a known-good proposal → corpus expansion → scored pilot on historical RFPs → eval harness → cost telemetry |
-| 7 — Hardening | TLS + network exposure, Supabase Auth / multi-tenancy, backups, CI |
-| 8 — Quality (evidence-led) | Image placement into proposals, diagram visual parity (decision-node shapes, page fit), reranking, the outcome loop |
-| 9 — Production | Rollout, monitoring, runbook, key rotation |
+**Sprint I — clear the runway.** Frontend behind TLS, repository made private,
+the asset library reviewed at legible size, and run 9 to confirm the run-8 fixes
+landed. Small, and it ends with a document worth showing someone.
 
-The ordering is deliberate: the project is feature-rich and evidence-poor. No
-Shilpi output has yet been scored against a human proposal, so every remaining
-quality decision — model choice, proposal length, whether diagram polish matters,
-how much corpus is enough — is currently argued from intuition. Validation comes
-before hardening, and hardening before scale.
+**Sprint J — get a verdict.** A senior IAM architect reads a draft against
+"would you sign this"; the commercial owner reads the commercial section. In
+parallel, a **migration** run and an **MSS** run — both have templates and real
+grounding (39 and 14 proposals) and neither has ever been exercised end to end.
+Ends with a rework number produced by someone other than the builder.
+
+**Sprint K — built against evidence.** Contents written by Sprint J's verdict,
+not guessed now. The standing candidates are cross-encoder reranking, image
+placement position, and the outcome loop (`outcome` is `unknown` for all 112
+proposals, and weighting retrieval toward what actually won is the change that
+would compound most).
+
+The honest risk in that ordering: if Sprint J finds the problem somewhere we have
+not looked, some of the work since run 6 was speculative. That is an argument for
+running J sooner, not for skipping it.
 
 Eval fixtures live in `docs/evals/` and are **not committed** — they contain
 client-confidential proposal content and this repository is public. See
@@ -568,12 +596,17 @@ gantt
 | Raise `MAX_DRAFT_TOKENS` (1500 → 3500) | Done — merged `6da140c`; rebuild brain to deploy |
 | Client-logo sourcing (web/image search + approval-gated embedding) | Deferred |
 | Durable diagram spec-template store (per vendor + diagram type) | Deferred |
-| Supabase Auth / Worker / multi-tenancy (Sprint 8) | Not wired (~45% of Phase 4) |
+| Supabase Auth / Worker / multi-tenancy | Not wired. Deliberate: single internal user, RLS plus disabled sign-ups is the interim gate |
 | External research + fact-checker | Deferred (post-pilot) |
-| Hybrid search (BM25 + vector + reciprocal rank fusion) | Deferred |
-| Pilot against 5–10 historical RFPs + hardening + team rollout | Not started |
+| Hybrid search (BM25 + RRF) | **Closed, not deferred.** A 2026 controlled comparison found it finishing *below* plain dense retrieval at this corpus scale. Cross-encoder reranking is the technique worth measuring instead |
+| Pilot against 5–10 historical RFPs + hardening + team rollout | Not started. The `RFP/` folder in the Drive bank (20 client-authored documents, tiered `testset` during curation) is the test set |
 
-> **Status line:** Phases 0–3 complete. Phase 4 ~45% (Open WebUI + interview gating + branding done; Auth/Worker/multi-tenancy not wired). Phase 5 ~97% (all 5 passes + export pipeline done + live-validated; NoneType bug FIXED `6290d23`; MAX_DRAFT_TOKENS raised `6da140c` — rebuild brain to deploy; remaining: client-logo sourcing, durable spec-template store). Phase 6 (pilot, hardening, rollout) not started. Overall ~81%.
+> **Status line:** Phases 0–3 complete. Phase 4 is 75% — the conversational
+> pipeline is validated end to end; auth and multi-tenancy are not wired and, for
+> a single-user internal tool, may never need to be. Phase 5 done, gate enforced
+> in chat. Phase 6 in progress: eight scored runs, and what remains is a human
+> verdict rather than a build task. Phase 7 (pilot, hardening, rollout) not
+> started.
 
 ---
 

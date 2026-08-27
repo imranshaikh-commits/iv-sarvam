@@ -763,6 +763,39 @@ RULES:
 """
 
 
+# Corrective guidance, matched to the shortfall that was actually detected.
+#
+# `spec_shortfall` returns a human-readable reason; this turns that reason into
+# an instruction the model can act on. A generic correction is worse than none:
+# it consumes the single retry without addressing the fault. Live in run 9 the
+# Integration / Joiner Flow diagram was rejected for unmarked decision nodes and
+# then told to add more edges, so it failed the same check twice and the diagram
+# was abandoned.
+_GRAPH_CORRECTION = (
+    "A diagram is a GRAPH, not a list of boxes. Return the components AND the "
+    "connections between them: roughly as many edges as nodes, every node "
+    "connected to at least one other, and each edge labelled with the protocol, "
+    "action or data that flows along it."
+)
+
+_DECISION_CORRECTION = (
+    "Set shape=\"decision\" on every node that is a branch point -- any node "
+    "whose label is a question, or that has more than one labelled outgoing "
+    "edge. Keep the node text and the edges exactly as they are; only the "
+    "`shape` field needs to change. Valid shapes are: process, decision, "
+    "datastore, external, start, end, person, queue. A flow diagram in which "
+    "every node is `process` is missing its decision points."
+)
+
+
+def _correction_for(shortfall: str) -> str:
+    """Turn a rejection reason into an instruction aimed at that reason."""
+    lead = f"\n\nIMPORTANT: your previous answer was rejected because {shortfall}. "
+    if "decision" in shortfall.lower():
+        return lead + _DECISION_CORRECTION
+    return lead + _GRAPH_CORRECTION
+
+
 async def generate_diagram_spec(
     structured_fn: StructuredFn,
     *,
@@ -826,14 +859,8 @@ async def generate_diagram_spec(
     if shortfall:
         log.warning("diagram spec unusable (%s) — retrying with an explicit correction",
                     shortfall)
-        spec = await _attempt(
-            user_prompt
-            + f"\n\nIMPORTANT: your previous answer was rejected because {shortfall}. "
-              "A diagram is a GRAPH, not a list of boxes. Return the components AND "
-              "the connections between them: roughly as many edges as nodes, every "
-              "node connected to at least one other, and each edge labelled with the "
-              "protocol, action or data that flows along it."
-        )
+        # The correction must address the ACTUAL shortfall -- see _correction_for.
+        spec = await _attempt(user_prompt + _correction_for(shortfall))
         shortfall = spec_shortfall(spec)
     if shortfall:
         raise ValueError(f"model returned an unusable diagram spec — {shortfall}")

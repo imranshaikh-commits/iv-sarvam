@@ -663,3 +663,43 @@ def test_the_rejection_names_the_offending_nodes():
     enough for the model to act on."""
     reason = diagram_engine.spec_shortfall(_flow(_BRANCH_NODES, _BRANCH_EDGES))
     assert 'shape="decision"' in reason
+
+
+# ---------------------------------------------------------------------------
+# The corrective retry must address the shortfall it was given.
+#
+# Live in run 9: the Integration / Joiner Flow spec was rejected for unmarked
+# decision nodes, and the retry appended a fixed paragraph about graphs and
+# edges -- advice with no bearing on the fault. It failed the same check twice
+# and the diagram was abandoned. A generic correction is worse than none: it
+# consumes the single retry without addressing the problem.
+# ---------------------------------------------------------------------------
+
+def test_a_decision_rejection_gets_decision_advice():
+    reason = "branch points were not marked as decisions, so they would render as rectangles"
+    out = diagram_engine._correction_for(reason)
+    assert 'shape="decision"' in out
+    assert "roughly as many edges as nodes" not in out, \
+        "generic graph advice sent for a decision-shape fault"
+
+
+def test_a_connectivity_rejection_still_gets_graph_advice():
+    out = diagram_engine._correction_for("12 of 15 components had no connections at all")
+    assert "GRAPH" in out
+    assert 'shape="decision"' not in out
+
+
+def test_every_correction_quotes_the_actual_reason():
+    """The model cannot fix what it was not told."""
+    for reason in ("branch points were not marked as decisions",
+                   "the spec had no nodes at all",
+                   "12 of 15 components had no connections at all"):
+        assert reason in diagram_engine._correction_for(reason)
+
+
+def test_decision_correction_lists_the_valid_shapes():
+    """A correction that names the field but not its legal values invites a
+    second failure."""
+    out = diagram_engine._correction_for("branch points were not marked as decisions")
+    for shape in ("process", "decision", "datastore", "external"):
+        assert shape in out

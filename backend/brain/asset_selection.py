@@ -53,8 +53,10 @@ SECTION_ASSET_RULES: dict[str, tuple[tuple[str, ...], str]] = {
                         r"organi[sz]ation|office|branch|team structure|"
                         r"delivery (model|centre|center)|workforce"),
     "similar_experience": (("corporate",),
-                           r"case stud|success|customer|client logo|logos|"
-                           r"reference|sector|industries served"),
+                           r"case stud|success stor|customer|client logo|logos|"
+                           r"reference|sector|industr|banking|government|"
+                           r"telecom|healthcare|retail|engagement|deployment "
+                           r"across|outcome|achievement|delivered"),
     "solution_overview": (("product",),
                           r"platform|capabilit|module|architecture|"
                           r"identity (governance|security)|reference"),
@@ -93,9 +95,23 @@ def _mentions_other_vendor(text: str, wanted: Optional[str]) -> bool:
     return False
 
 
+# How many images each section carries. IV's distribution is nothing like
+# uniform: Case Studies has TEN, Project Plan five, and most solution
+# subsections one each. Run 9 used a flat two per section and put zero in Case
+# Studies -- IV's credibility section, and ours was text only.
+SECTION_ASSET_LIMITS: dict[str, int] = {
+    "similar_experience": 6,
+    "solution_overview": 4,
+    "company_profile": 3,
+    "proposed_solution": 3,
+    "project_timeline": 2,
+}
+DEFAULT_ASSET_LIMIT = 2
+
+
 def select_assets(assets: list[dict], section_id: str,
                   iam_vendor: Optional[str] = None,
-                  limit: int = 2) -> list[dict]:
+                  limit: Optional[int] = None) -> list[dict]:
     """Assets suitable for this section, best first.
 
     `assets` is the approved, placeable library (already filtered by the caller
@@ -108,6 +124,8 @@ def select_assets(assets: list[dict], section_id: str,
     rule = SECTION_ASSET_RULES.get(section_id)
     if not rule:
         return []
+    if limit is None:
+        limit = SECTION_ASSET_LIMITS.get(section_id, DEFAULT_ASSET_LIMIT)
     kinds, pattern = rule
     rx = re.compile(pattern, re.I)
 

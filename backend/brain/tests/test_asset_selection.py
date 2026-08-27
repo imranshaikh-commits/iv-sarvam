@@ -115,3 +115,32 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _runner import run_tests  # noqa: E402
 
 run_tests(globals(), "ASSET SELECTION TESTS")
+
+
+def test_case_studies_get_a_bigger_image_budget_than_other_sections():
+    """IV's Similar Experience section carries TEN images -- it is the
+    credibility section. Run 9 used a flat two per section and put zero there."""
+    assert A.SECTION_ASSET_LIMITS["similar_experience"] > A.DEFAULT_ASSET_LIMIT
+    lib = [{"asset_kind": "corporate", "approved": True, "occurrences": i,
+            "vision_description": f"banking sector engagement outcome panel {i}"}
+           for i in range(9)]
+    picked = A.select_assets(lib, "similar_experience", "SailPoint")
+    assert len(picked) == A.SECTION_ASSET_LIMITS["similar_experience"]
+
+
+def test_an_explicit_limit_still_wins():
+    lib = [{"asset_kind": "corporate", "approved": True, "occurrences": i,
+            "vision_description": f"banking sector engagement outcome {i}"}
+           for i in range(9)]
+    assert len(A.select_assets(lib, "similar_experience", "SailPoint", limit=1)) == 1
+
+
+def test_sector_words_reach_the_case_studies_section():
+    """IV's case-study visuals are client logos, sector graphics and outcome
+    panels -- the pattern must not require the literal words 'case study'."""
+    for desc in ("a logo wall of banking clients",
+                 "government sector deployment achievements",
+                 "outcomes delivered for a telecom customer"):
+        lib = [{"asset_kind": "corporate", "approved": True, "occurrences": 3,
+                "vision_description": desc}]
+        assert A.select_assets(lib, "similar_experience", "SailPoint"), desc

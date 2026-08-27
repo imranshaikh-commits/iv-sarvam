@@ -1351,7 +1351,14 @@ def assemble_docx(
     document.add_page_break()
 
     # --- Table of contents (real, refreshable Word TOC field) --------------
-    branding.add_section_heading(document, "Table of Contents")
+    # NOT a section heading: a contents page that lists itself as section 1 is
+    # a Shilpi artefact, not something IV's proposals do. Styled to match, but
+    # outside the heading hierarchy so it stays out of the contents it renders.
+    _toc_title = document.add_paragraph()
+    _toc_run = _toc_title.add_run("Table of Contents")
+    _toc_run.bold = True
+    _toc_run.font.size = Pt(16)
+    _toc_run.font.color.rgb = branding.NAVY
     _toc_extra = [t for t in (
         "Solution Architecture Diagrams" if _embeddable_diagrams(diagrams) else None,
         "Compliance Matrix" if any(
@@ -1432,7 +1439,9 @@ def assemble_docx(
     # --- Compliance Matrix (optional) --------------------------------------
     if compliance_markdown:
         document.add_page_break()
-        branding.add_section_heading(document, "Compliance Matrix")
+        # H2: a requirement-coverage matrix is a supporting artefact, not one
+        # of the proposal's top-level sections.
+        document.add_heading("Compliance Matrix", level=2)
         _add_markdown_ish(document, compliance_markdown)
 
     # --- Citation Appendix: REMOVED -----------------------------------------
@@ -1568,8 +1577,12 @@ def _add_appendices(document: Document, metadata: dict,
     _cur = [""]
 
     def _heading(text: str) -> None:
+        # Level 2, not a section heading. "Appendices" is the H1; A through F sit
+        # UNDER it. Emitting each as an H1 gave run 9 eighteen top-level
+        # sections against IV's eleven, and a table of contents listing
+        # "Appendices", "Appendix D", "Appendix E" and "Appendix F" as peers.
         if _cur[0] not in skip:
-            branding.add_section_heading(document, text)
+            document.add_heading(text, level=2)
 
     def _table(_doc, cols, rows) -> None:
         # Signature mirrors _appendix_table so the call sites are unchanged.

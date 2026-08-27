@@ -268,6 +268,24 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
             ("Connectors and Integrations",
              "connector coverage for the systems named at discovery, and the approach "
              "where no out-of-box connector exists."),
+            # IV's Solution Overview has THIRTEEN subsections; run 9 produced
+            # nine. The four below are the gap, and they are precisely where IV
+            # places its product screenshots -- the `product` asset kind we hold
+            # 97 approved examples of and barely used.
+            ("{{ iam_vendor }} Solution Overview",
+             "the platform itself: what the product is, its core components, and "
+             "how they fit together. Vendor-level, not client-specific."),
+            ("Comprehensive Identity Governance Platform",
+             "the breadth of the governance platform across identity lifecycle, "
+             "access request, certification, policy and analytics - what a single "
+             "platform covers that point solutions do not."),
+            ("Intuitive Administrative and End User Dashboards",
+             "what an administrator and an end user each see day to day: request "
+             "flows, approvals, self-service, and the administrative console."),
+            ("{{ iam_vendor }} Extension Modules and Add-ons",
+             "optional modules beyond the core platform and when each is worth "
+             "adding. Note explicitly which are IN scope for this engagement and "
+             "which are not."),
         ),
     ),
     SectionSpec(
@@ -335,6 +353,11 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
             # IV splits RACI into a legend plus TWO matrices -- governance
             # activities, then delivery activities -- 33 rows in total. Run 9
             # produced a single 10-row table.
+            ("Stage 1 - Build Current State",
+             "the discovery and baseline stage: what is inventoried before any "
+             "build begins - applications, identities, entitlements, existing "
+             "integrations and data quality. Present the inventory as a markdown "
+             "TABLE with columns Area, What Is Captured, Source, Owner."),
             ("RACI Legend",
              "a short markdown TABLE with columns Role, Description defining "
              "R = Responsible, A = Accountable, C = Consulted, I = Informed."),
@@ -365,6 +388,10 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
             # IV gives each tranche its own milestone TABLE with success
             # criteria -- 14, 6 and 6 rows. Run 9 wrote prose for all three,
             # which is why the table count trails the human original.
+            ("Project Plan",
+             "how the plan is run rather than what it contains: governance cadence, "
+             "status reporting, change control, risk and issue management, and the "
+             "tooling used to track it."),
             ("Tranche 1 - Foundation",
              "foundation scope as a markdown TABLE with columns Sr#, Category, "
              "Milestone, Success Criteria. Cover licence delivery, kickoff, "
@@ -392,9 +419,17 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "what must exist before build starts: environments, access, network readiness."),
             ("{{ client_name }} Resource Commitments",
              "the client roles and time commitments required, as a bulleted list."),
+            ("Logistics",
+             "working arrangements: onsite versus remote split, working hours and "
+             "calendar, access and facility requirements, travel. Use the discovery "
+             "answers on travel and resourcing."),
             ("Working Assumptions",
              "the delivery assumptions the plan depends on, as a bulleted list. Use the "
              "assumptions supplied at discovery."),
+            ("{{ iam_vendor }} Assumptions",
+             "assumptions specific to the PLATFORM rather than the engagement: "
+             "licensing model, version and patch level, vendor support "
+             "entitlement, and any product capability the plan depends on."),
             ("Dependencies",
              "external dependencies and what happens to the plan if each slips."),
         ),
@@ -440,6 +475,16 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "certification, go-live, handover). Percentages must total 100 where "
              "discovery supplies them, otherwise 'To be confirmed'. Amounts stay "
              "'To be confirmed' unless supplied."),
+            ("Payment Milestone - Resident Engineer",
+             "the resident engineer commercial line as a markdown TABLE with "
+             "columns Item #, Period, Rate Basis, Amount. Include only if "
+             "discovery names a resident engineer. Amounts stay 'To be confirmed' "
+             "unless supplied."),
+            ("Payment Milestone - Application Integration Bucket",
+             "the per-batch application integration line as a markdown TABLE with "
+             "columns Item #, Batch, Applications, Payment %, Amount. Use the "
+             "batch size named at discovery. Amounts stay 'To be confirmed' "
+             "unless supplied."),
             ("Commercial Assumptions",
              "what the commercial structure assumes: travel, taxes, support terms, "
              "validity, using the answers supplied at discovery."),

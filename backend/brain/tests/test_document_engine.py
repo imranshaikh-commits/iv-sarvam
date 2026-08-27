@@ -1239,3 +1239,95 @@ def test_an_untitled_subsection_adds_no_heading():
     h2 = [p.text for p in doc.paragraphs if p.style.name == "Heading 2"]
     assert h2 == [], f"empty heading emitted: {h2}"
     assert any("Continuous prose." in p.text for p in doc.paragraphs)
+
+
+# ---------------------------------------------------------------------------
+# Top-level structure must match IV's. Run 9 had EIGHTEEN H1 sections against
+# IV's eleven, because the contents page, the diagram gallery, the compliance
+# matrix and each individual appendix were all emitted as top-level headings --
+# so the table of contents listed "Appendices", "Appendix D", "Appendix E" and
+# "Appendix F" as peers, and listed itself as section 1.
+# ---------------------------------------------------------------------------
+
+def test_appendices_are_nested_under_the_appendices_heading():
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "implementation"},
+        sections=[{"id": "company_profile", "title": "Company Profile",
+                   "content": "Body."}],
+        include_appendices=True,
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    h1 = [p.text.strip() for p in doc.paragraphs
+          if p.style.name == "Heading 1" and p.text.strip()]
+    h2 = [p.text.strip() for p in doc.paragraphs
+          if p.style.name == "Heading 2" and p.text.strip()]
+    assert "Appendices" in h1
+    individual = [h for h in h1 if h.startswith("Appendix ")]
+    assert not individual, f"individual appendices emitted as H1: {individual}"
+    assert any(h.startswith("Appendix ") for h in h2), "appendices lost entirely"
+
+
+def test_the_contents_page_does_not_list_itself():
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "implementation"},
+        sections=[{"id": "company_profile", "title": "Company Profile",
+                   "content": "Body."}],
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    h1 = [p.text.strip() for p in doc.paragraphs
+          if p.style.name == "Heading 1" and p.text.strip()]
+    assert "Table of Contents" not in h1
+    # ...but the page is still there and still styled.
+    assert any(p.text.strip() == "Table of Contents" for p in doc.paragraphs)
+
+
+def test_the_compliance_matrix_is_a_supporting_artefact_not_a_section():
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "implementation"},
+        sections=[{"id": "company_profile", "title": "Company Profile",
+                   "content": "Body."}],
+        compliance_markdown="| Req | Requirement | Status |\n|---|---|---|\n| R1 | x | Covered |",
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    h1 = [p.text.strip() for p in doc.paragraphs
+          if p.style.name == "Heading 1" and p.text.strip()]
+    assert "Compliance Matrix" not in h1
+
+
+def test_solution_overview_covers_what_iv_covers():
+    """IV's Solution Overview has 13 subsections; run 9 produced 9. The four
+    missing are where IV places its product screenshots."""
+    import proposal_templates
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    spec = next(s for s in proposal_templates.get_template("implementation")
+                if s.id == "solution_overview")
+    headings = [h for h, _ in spec.render_subsections(ctx)]
+    assert len(headings) >= 13, f"only {len(headings)} subsections"
+    joined = " | ".join(headings)
+    for required in ("Solution Overview", "Comprehensive Identity Governance",
+                     "Dashboards", "Extension Modules"):
+        assert required in joined, f"missing: {required}"
+
+
+def test_iv_subsections_that_were_absent_are_now_present():
+    import proposal_templates
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    headings = [h for s in proposal_templates.get_template("implementation")
+                for h, _ in s.render_subsections(ctx)]
+    joined = " | ".join(headings)
+    for required in ("Stage 1 - Build Current State", "Project Plan", "Logistics",
+                     "Assumptions", "Resident Engineer",
+                     "Application Integration Bucket"):
+        assert required in joined, f"IV has this subsection and we do not: {required}"
+
+
+def test_no_duplicate_subsection_headings_across_the_whole_template():
+    import proposal_templates
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    headings = [h for s in proposal_templates.get_template("implementation")
+                for h, _ in s.render_subsections(ctx) if h]
+    dupes = sorted({h for h in headings if headings.count(h) > 1})
+    assert not dupes, f"repeated subsection headings: {dupes}"

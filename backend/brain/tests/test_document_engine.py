@@ -325,25 +325,34 @@ def test_citation_markers_survive():
 # --- discovery answers must reach drafting ----------------------------------
 def test_discovery_routing_sends_sizing_to_architecture():
     """REGRESSION: generate_proposal accepted only rfp_text, so 21 of 22 discovery
-    areas were captured, stored and then discarded before drafting."""
+    areas were captured, stored and then discarded before drafting.
+
+    Section ids updated 2026-08-27: this test asserted `solution_architecture`
+    and `implementation_methodology`, which stopped existing when the template
+    was rebuilt to IV's house structure. It passed against a map that routed
+    nothing, which is how 11 of 12 sections came to be drafted blind.
+    """
     ans = {"client_name": "Amlak International", "iam_vendor": "SailPoint",
            "hardware_sizing_inputs": "4 app servers at 4 CPU, 16 GB memory",
            "cluster_topology": "2 UI servers and 2 Task servers",
            "payment_milestones": "20 percent on signature",
-           "engagement_duration": "42 weeks"}
-    arch = document_engine.discovery_context_for("solution_architecture", ans)
+           "duration": "42 weeks"}
+    arch = document_engine.discovery_context_for("proposed_solution", ans)
     assert "16 GB" in arch and "Task servers" in arch
     assert "20 percent" not in arch, "commercial detail leaked into architecture"
 
-    impl = document_engine.discovery_context_for("implementation_methodology", ans)
-    assert "42 weeks" in impl
-    assert "16 GB" not in impl, "sizing leaked into methodology"
+    # Engagement duration belongs to project_timeline, not to the delivery
+    # approach: "42 weeks" is a schedule fact, and the RACI/deliverables section
+    # has no use for it.
+    timeline = document_engine.discovery_context_for("project_timeline", ans)
+    assert "42 weeks" in timeline
+    assert "16 GB" not in timeline, "sizing leaked into the timeline"
 
 
 def test_skip_and_control_fields_are_not_routed():
     ans = {"client_name": "X", "rto_rpo": "skip", "proposal_depth": "full",
            "_diagram_plan": [["a", "b"]], "hardware_sizing_inputs": "real value"}
-    ctx = document_engine.discovery_context_for("solution_architecture", ans)
+    ctx = document_engine.discovery_context_for("proposed_solution", ans)
     assert "real value" in ctx
     assert "skip" not in ctx.lower()
     assert "proposal_depth" not in ctx.lower() and "diagram_plan" not in ctx.lower()
@@ -1003,3 +1012,59 @@ def test_the_token_cap_is_not_the_binding_constraint():
     assert document_engine.PROSE_SUBSECTION_TOKENS > \
         document_engine.PROSE_SUBSECTION_WORDS * 2, (
         "token cap too close to the word target; it will truncate mid-sentence")
+
+
+# ---------------------------------------------------------------------------
+# The discovery map must track BOTH the templates and the intake schema.
+#
+# It silently stopped tracking either. Keys were the OLD section ids from before
+# the template was rebuilt to IV's house structure, so 11 of 12 implementation
+# sections received NO discovery answers at all. Field names were invented
+# rather than taken from the intake schema, so several that did match resolved
+# to nothing.
+#
+# Visible symptom: 42 [SME REVIEW] markers in run 9, including on UAT sizing,
+# connectors, hypercare and the support model -- all of which the consultant HAD
+# supplied. The model was not hedging; it had not been told.
+# ---------------------------------------------------------------------------
+
+def test_every_section_of_every_template_receives_discovery_answers():
+    import proposal_templates
+    mapped = set(document_engine._SECTION_DISCOVERY_FIELDS)
+    missing = {}
+    for ptype in proposal_templates.VALID_PROPOSAL_TYPES:
+        gap = {s.id for s in proposal_templates.get_template(ptype)} - mapped
+        if gap:
+            missing[ptype] = sorted(gap)
+    assert not missing, (
+        f"sections drafted with no discovery answers: {missing}. A sizing "
+        f"subsection without sizing inputs can only produce generic text.")
+
+
+def test_every_mapped_field_exists_in_the_intake_schema():
+    """A field name that is not in the schema resolves to nothing, silently."""
+    import intake_template
+    valid = {q["id"] for b in intake_template.get_intake_template(None)["buckets"]
+             for q in b["questions"]}
+    bad = sorted({f for fields in document_engine._SECTION_DISCOVERY_FIELDS.values()
+                  for f in fields if f not in valid})
+    assert not bad, f"discovery fields that do not exist in the intake: {bad}"
+
+
+def test_supplied_answers_reach_the_section_that_needs_them():
+    """Spot-check the fields that were flagged [SME REVIEW] in run 9."""
+    answers = {"hardware_sizing_inputs": "UAT 4 app servers, 8 CPU, 32 GB, 250 GB",
+               "support_model": "L1, L2 and L3 support",
+               "hypercare": "post-production support period",
+               "ad_exchange": "AD and Exchange integration in scope"}
+    sizing = document_engine.discovery_context_for("proposed_solution", answers)
+    assert "32 GB" in sizing and "Exchange" in sizing
+    kt = document_engine.discovery_context_for("knowledge_transfer", answers)
+    assert "L1, L2 and L3" in kt and "post-production" in kt
+
+
+def test_skip_answers_are_not_presented_as_facts():
+    answers = {"user_count": "skip", "app_count": "25 applications"}
+    out = document_engine.discovery_context_for("executive_summary", answers)
+    assert "25 applications" in out
+    assert "skip" not in out.lower()

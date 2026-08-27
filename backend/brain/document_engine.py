@@ -137,54 +137,119 @@ MAX_DRAFT_TOKENS = 2500
 # deliberate: a single blob would bloat every call and invite every section to
 # restate everything. Sizing belongs to architecture, milestones to commercials,
 # pain points to the executive summary.
+# Section id -> the discovery fields that section needs.
+#
+# THIS MAP MUST TRACK proposal_templates.py AND intake_template.py. It silently
+# stopped doing both:
+#
+#   * Keys were the OLD section ids (client_context, solution_architecture,
+#     technical_approach, implementation_methodology, integration_points). When
+#     the template was rebuilt to IV's house structure every section was
+#     renamed, and this map was not. Result: 11 of 12 implementation sections
+#     received NO discovery answers at all -- only executive_summary matched.
+#   * Field names were invented rather than taken from the intake schema
+#     ("engagement_duration" for `duration`, "environments" for `envs`,
+#     "sod_required" for `sod`, "hrms_authoritative_source" for
+#     `integration_hrms`), so several that did match resolved to nothing.
+#
+# The visible symptom was 42 [SME REVIEW] markers in run 9, including on UAT
+# sizing, connectors, hypercare and the support model -- all of which the
+# consultant HAD supplied. The model was not hedging; it genuinely had not been
+# told. A sizing table drafted without sizing inputs can only be generic, so
+# this also explains part of the table thinness against IV's original.
+#
+# `test_document_engine.py` asserts every section id in every template appears
+# here, and that every field name exists in the intake schema. Those two tests
+# are the reason this cannot drift again.
 _SECTION_DISCOVERY_FIELDS: dict[str, tuple[str, ...]] = {
+    # --- implementation template ---
     "executive_summary": (
         "business_objectives", "pain_points", "differentiators", "decision_criteria",
-        "engagement_duration", "app_count", "user_count", "primary_audience",
+        "duration", "app_count", "user_count", "audience",
     ),
-    "client_context": (
-        "business_objectives", "pain_points", "current_state", "existing_iam_platform",
-        "directories", "hrms", "idp", "source_of_truth", "in_scope", "out_of_scope",
-        "user_count", "app_count", "identity_types", "industry", "country",
+    "company_profile": ("partner_positioning", "vendor_partner_positioning"),
+    "similar_experience": (
+        "case_studies_to_highlight", "case_studies_include", "case_studies_exclude",
+        "similar_projects", "partner_positioning",
     ),
-    "current_state": (
-        "current_state", "existing_iam_platform", "product_versions", "directories",
-        "hrms", "idp", "source_of_truth", "pain_points", "migration_required",
+    "scope_understanding": (
+        "business_objectives", "in_scope", "out_of_scope", "current_state",
+        "existing_iam_platform", "pain_points", "app_count", "user_count",
+        "identity_types", "apps_to_onboard",
     ),
-    "solution_architecture": (
+    "solution_overview": (
+        "sod", "access_review_cadence", "target_integrations", "audit",
+        "monitoring", "identity_types", "differentiators", "regulations",
+    ),
+    "proposed_solution": (
         "deployment_model", "hardware_sizing_inputs", "cluster_topology",
-        "ha_dr_requirements", "rto_rpo", "security_architecture_needs", "regions",
-        "network_zones", "environments", "availability", "scalability", "performance",
-        "target_integrations", "app_count", "user_count",
+        "ha_dr_requirements", "rto_rpo", "security_architecture_needs",
+        "regions", "network_zones", "envs", "availability", "scalability",
+        "performance", "target_integrations", "integration_hrms", "ad_exchange",
+        "idp_sso", "apps_to_onboard", "app_count", "user_count", "directories",
+        "current_hrms", "current_idp", "source_of_truth",
     ),
-    "technical_approach": (
-        "deployment_model", "cluster_topology", "security_architecture_needs",
-        "sod_required", "access_review_cadence", "pii_handling", "monitoring",
-        "audit", "data_retention", "migration_required",
+    "implementation_approach": (
+        "delivery_phases", "delivery_milestones", "governance", "raci",
+        "client_responsibilities", "dependencies", "assumptions",
     ),
-    "implementation_methodology": (
-        "delivery_phases", "delivery_milestones", "engagement_duration",
-        "key_milestones", "target_go_live", "governance", "raci",
-        "client_responsibilities", "dependencies", "assumptions", "app_count",
+    "project_timeline": (
+        "duration", "timeline_milestones", "go_live_date", "delivery_phases",
+        "delivery_milestones", "app_count",
     ),
-    "integration_points": (
-        "target_integrations", "hrms_authoritative_source", "ad_exchange_details",
-        "idp_sso_details", "applications_to_onboard", "app_count", "directories",
-    ),
-    "assumptions_open_questions": (
+    "assumptions_responsibilities": (
         "assumptions", "dependencies", "client_responsibilities", "out_of_scope",
-        "rto_rpo", "product_versions",
+        "rto_rpo", "versions",
     ),
+    "knowledge_transfer": (
+        "training", "kt", "hypercare", "support_model", "post_sla",
+        "postgolive_reporting_cadence",
+    ),
+    "commercial": (
+        "license_included", "pricing_model", "payment_milestones", "taxes",
+        "travel", "support_terms", "validity_period", "currency",
+    ),
+    "compliance_matrix": ("rfp_text", "regulations", "certifications"),
+
+    # --- migration template ---
+    "current_state": (
+        "current_state", "existing_iam_platform", "versions", "directories",
+        "current_hrms", "current_idp", "source_of_truth", "pain_points",
+        "is_migration", "tenants", "apps_to_onboard", "app_count",
+    ),
+    "target_state": (
+        "deployment_model", "hardware_sizing_inputs", "cluster_topology",
+        "ha_dr_requirements", "envs", "regions", "network_zones",
+        "security_architecture_needs", "availability", "scalability",
+    ),
+    "migration_strategy": (
+        "is_migration", "existing_iam_platform", "apps_to_onboard", "app_count",
+        "identity_types", "out_of_scope", "delivery_phases", "data_residency",
+    ),
+    "rollback_risk": (
+        "ha_dr_requirements", "rto_rpo", "availability", "dependencies",
+        "assumptions", "envs",
+    ),
+    "decommissioning": (
+        "existing_iam_platform", "data_retention", "out_of_scope",
+        "license_included", "support_terms",
+    ),
+
+    # --- mss template ---
     "operating_model": (
-        "support_model", "post_golive_reporting_cadence", "governance", "raci",
+        "support_model", "postgolive_reporting_cadence", "governance", "raci",
         "training", "kt", "hypercare",
     ),
     "service_model": (
         "support_model", "post_sla", "hypercare", "training", "kt",
-        "delivery_phases", "environments",
+        "delivery_phases", "envs",
     ),
     "sla_coverage": ("post_sla", "support_model", "availability", "monitoring", "audit"),
     "escalation_incident": ("post_sla", "support_model", "monitoring", "governance"),
+    "assumptions_open_questions": (
+        "assumptions", "dependencies", "client_responsibilities", "out_of_scope",
+        "rto_rpo", "versions",
+    ),
 }
 
 # Fields every section benefits from knowing.

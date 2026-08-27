@@ -66,7 +66,11 @@ def _fake_chunks():
     ]
 
 
-async def stub_retrieve(client, embedding, query, k=8):
+# **kw: draft_section passes proposal_type and section_topic. A stub that does
+# not accept them raises TypeError, retrieval fails silently, and the section
+# falls back to a placeholder while the test still passes. Third occurrence of
+# this exact drift.
+async def stub_retrieve(client, embedding, query, k=8, **kw):
     return _fake_chunks()
 
 
@@ -188,10 +192,16 @@ def test_full_mode_adds_subsections_and_appendices():
     assert result["included_appendices"] is True
     text = _extract_text(result["docx_bytes"])
 
-    # Multi-subsection drafting: facet subheadings appear in the document.
-    assert "Overview" in text
-    assert "Detailed Design" in text
-    assert "Considerations & Dependencies" in text
+    # Multi-subsection drafting: the section's OWN subsection headings appear.
+    # This used to assert the generic "Overview / Detailed Design /
+    # Considerations & Dependencies" triple, which is exactly what Sprint B
+    # removed -- the executive summary was still getting it in run 9 because a
+    # section with no subsections falls back to SUBSECTION_FACETS.
+    for expected in ("Proposed Production Hardware Sizing", "RACI Legend",
+                     "Tranche 1 - Foundation"):
+        assert expected in text, f"missing content-specific subsection: {expected}"
+    assert "Considerations & Dependencies" not in text, \
+        "the generic facet triple is back"
 
     # The appendix pack is now SUPPRESSED when the body template carries RACI,
     # timeline, sizing and commercial as real sections (2026-08-14). Run 5
@@ -219,7 +229,10 @@ def test_full_mode_adds_subsections_and_appendices():
 
 def test_full_mode_draft_markdown_has_subsections():
     result = asyncio.run(_generate("full"))
-    assert "### Overview" in result["draft_markdown"]
+    # Was '### Overview' -- the generic facet triple. The executive summary is
+    # continuous prose in IV's house style, so assert a real content-specific
+    # heading instead.
+    assert "### Proposed Production Hardware Sizing" in result["draft_markdown"]
 
 
 # --- deep mode: all 6 facets + appendices -----------------------------------
@@ -230,15 +243,9 @@ def test_deep_mode_adds_all_facets_and_appendices():
     text = _extract_text(result["docx_bytes"])
 
     # All 6 subsection facets appear (the 3 from "full" plus the 3 new ones).
-    for facet_title in (
-        "Overview",
-        "Detailed Design",
-        "Considerations & Dependencies",
-        "Security & Compliance Considerations",
-        "Testing, Validation & Quality Assurance",
-        "Change Management, Training & Adoption",
-    ):
-        assert facet_title in text, f"missing facet subheading: {facet_title}"
+    for facet_title in ("Proposed DR Hardware Sizing", "RACI - Delivery Activities",
+                        "Payment Milestone - Implementation"):
+        assert facet_title in text, f"missing subsection: {facet_title}"
 
     for h in APPENDIX_HEADINGS:
         superseded = any(k in h for k in ("RACI", "Timeline", "Sizing", "Commercial"))
@@ -251,8 +258,13 @@ def test_deep_mode_adds_all_facets_and_appendices():
 
 def test_deep_mode_draft_markdown_has_all_subsections():
     result = asyncio.run(_generate("deep"))
-    assert "### Overview" in result["draft_markdown"]
-    assert "### Change Management, Training & Adoption" in result["draft_markdown"]
+    # Was '### Overview' -- the generic facet triple. The executive summary is
+    # continuous prose in IV's house style, so assert a real content-specific
+    # heading instead.
+    assert "### Proposed Production Hardware Sizing" in result["draft_markdown"]
+    # Was a generic facet name. Assert a real IV subsection instead.
+    assert "### Payment Milestone - Licence" in result["draft_markdown"]
+    assert "### \n" not in result["draft_markdown"], "empty markdown heading"
 
 
 def test_appendices_render_directly():

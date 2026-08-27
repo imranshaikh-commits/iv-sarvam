@@ -172,8 +172,22 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
         title="Executive Summary",
         purpose="High-level overview of the proposed engagement, value, and outcomes.",
         query_template=f"executive summary, engagement value, business outcomes and objectives {_CTX}. {{{{ rfp_text[:400] }}}}",
-        # Deliberately no subsections: IV's executive summary is continuous prose
-        # on a single page. Splitting it into facets is what made it bloat.
+        # IV's executive summary is continuous prose on a single page, so this
+        # section wants ONE drafting call, not a facet split.
+        #
+        # Leaving `subsections` empty does not achieve that: a section with none
+        # falls back to SUBSECTION_FACETS, which is the generic
+        # "Overview / Detailed Design / Considerations & Dependencies" triple
+        # that Sprint B removed everywhere else. Run 9 shipped it at the top of
+        # the document, in the one section a reader always reads.
+        #
+        # A single unnamed subsection renders as continuous prose under the
+        # section heading, which is what IV actually does.
+        subsections=(
+            ("", "the engagement in one page: what Amlak is buying, why now, what "
+                 "changes for the business, and the shape of the delivery. "
+                 "Continuous prose, no sub-headings, no bullet lists."),
+        ),
     ),
     SectionSpec(
         id="company_profile",

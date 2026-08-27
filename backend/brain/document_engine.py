@@ -782,7 +782,10 @@ async def draft_section(
                 sub_content = _assumption_placeholder(context, section_title, sub_title, facet)
                 needs_sme_review = True
             subsection_results.append({"title": sub_title, "content": sub_content})
-            parts.append(f"### {sub_title}\n\n{sub_content}")
+            # An untitled subsection is continuous prose under the section
+            # heading (IV's executive summary), so no "### " marker.
+            parts.append(f"### {sub_title}\n\n{sub_content}"
+                         if sub_title.strip() else sub_content)
         content = "\n\n".join(parts).strip()
 
     if drafting_failed:
@@ -1126,6 +1129,10 @@ def _add_picture_fitted(document: Document, stream, *, max_w, max_h) -> None:
 # Reusable assets are supporting material, not the point of the page: sized
 # smaller than a generated architecture diagram so they illustrate rather than
 # dominate. The text column is 5.9in wide with IV's margins.
+# Diagrams are the point of the page; reusable assets illustrate. Different caps.
+_DIAGRAM_MAX_W = Inches(6.0)
+_DIAGRAM_MAX_H = Inches(7.5)
+
 _IMAGE_MAX_W = Inches(4.5)
 _IMAGE_MAX_H = Inches(3.2)
 
@@ -1227,6 +1234,58 @@ async def _attach_assets(client, sections: list[dict], context: dict,
 
 
 
+# Which drafted subsection each diagram belongs beside.
+#
+# IV embeds every diagram INSIDE the subsection that explains it: the deployment
+# architecture diagram sits under "Proposed Deployment Architecture", right after
+# the prose describing it. Shilpi collected all diagrams into a trailing
+# "Solution Architecture Diagrams" section, so in run 9 a reader had to hold the
+# text in their head and go looking forty pages later.
+#
+# Matched on the diagram's TYPE and title against the subsection heading, since
+# the diagram plan and the template are written independently.
+_DIAGRAM_PLACEMENT: tuple[tuple[str, str], ...] = (
+    (r"joiner|integration|hrms|lifecycle|jml", r"HRMS Integration|Joiner"),
+    (r"deployment", r"Proposed Deployment Architecture"),
+    (r"security|network", r"Proposed Production Architecture"),
+    (r"solution|reference|architecture", r"Proposed Future IAM State"),
+    (r"migration|cutover", r"Migration Pattern|Proposed Target Architecture"),
+)
+
+_DIAGRAM_PLACEMENT_RE = tuple(
+    (re.compile(d, re.I), re.compile(h, re.I)) for d, h in _DIAGRAM_PLACEMENT)
+
+
+def _placement_for(diagram: dict) -> Optional[re.Pattern]:
+    """The subsection-heading pattern this diagram should sit under, if any."""
+    key = f"{diagram.get('diagram_type') or ''} {diagram.get('title') or ''}"
+    for dpat, hpat in _DIAGRAM_PLACEMENT_RE:
+        if dpat.search(key):
+            return hpat
+    return None
+
+
+def _claim_diagram(embeddable: list[dict], heading: str,
+                   used: set) -> Optional[dict]:
+    """The diagram belonging under this subsection heading, once."""
+    for item in embeddable:
+        if id(item) in used:
+            continue
+        pattern = _placement_for(item)
+        if pattern and pattern.search(heading or ""):
+            used.add(id(item))
+            return item
+    return None
+
+
+def _embed_diagram(document: Document, item: dict) -> None:
+    try:
+        _add_picture_fitted(document, item["stream"],
+                            max_w=_DIAGRAM_MAX_W, max_h=_DIAGRAM_MAX_H)
+    except Exception as e:  # noqa: BLE001 - a bad render must not sink the section
+        log.warning("could not embed diagram %s: %s", item.get("title"), e)
+
+
 def _render_section_assets(document: Document, sec: dict) -> None:
     """Embed the approved images chosen for this section.
 
@@ -1302,6 +1361,12 @@ def assemble_docx(
     document.add_page_break()
 
     # --- Sections -----------------------------------------------------------
+    # Diagrams are placed INSIDE the subsection that explains them, the way IV
+    # does it. Whatever no subsection claims still gets the trailing gallery, so
+    # an unmatched diagram is never silently dropped.
+    _inline_diagrams = _embeddable_diagrams(diagrams)
+    _placed_diagrams: set = set()
+
     aggregated_assumptions: list[str] = []
     for sec in sections:
         heading = branding.add_section_heading(document, sec.get("title", "Untitled"))
@@ -1322,8 +1387,18 @@ def assemble_docx(
         if subs:
             # Multi-subsection (full depth): render each facet under an H2 heading.
             for sub in subs:
-                document.add_heading(sub.get("title", "Untitled"), level=2)
+                # An EMPTY title means "continuous prose under the section
+                # heading", which is how IV writes its executive summary. Adding
+                # an empty H2 would put a blank line in the table of contents.
+                title = (sub.get("title") or "").strip()
+                if title:
+                    document.add_heading(title, level=2)
                 _add_body_paragraphs(document, sub.get("content", ""))
+                # The diagram that explains THIS subsection, immediately after
+                # the prose describing it -- the way IV places them.
+                claimed = _claim_diagram(_inline_diagrams, title, _placed_diagrams)
+                if claimed:
+                    _embed_diagram(document, claimed)
         else:
             _add_body_paragraphs(document, sec.get("content", ""))
 

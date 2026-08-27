@@ -1147,3 +1147,95 @@ def test_the_template_asks_for_more_tables_than_ivs_original_has():
     wants = [h for s in proposal_templates.get_template("implementation")
              for h, f in s.render_subsections(ctx) if DE._WANTS_TABLE_RE.search(f)]
     assert len(wants) >= 17, f"only {len(wants)} table subsections: {wants}"
+
+
+# ---------------------------------------------------------------------------
+# Diagrams belong INSIDE the subsection that explains them.
+#
+# IV puts the deployment architecture diagram under "Proposed Deployment
+# Architecture", immediately after the prose describing it. Shilpi collected all
+# diagrams into a trailing "Solution Architecture Diagrams" section, so in run 9
+# a reader had to hold the text in their head and go looking forty pages later.
+# ---------------------------------------------------------------------------
+
+def _diagram(dtype, title):
+    return {"diagram_type": dtype, "title": title, "status": "approved",
+            "image_bytes": _png_bytes()}
+
+
+def test_a_diagram_renders_under_the_subsection_it_explains():
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "Amlak International",
+                  "proposal_type": "implementation"},
+        sections=[{"id": "proposed_solution", "title": "Proposed Solution",
+                   "subsections": [
+                       {"title": "Proposed Deployment Architecture",
+                        "content": "The deployment spans four environments."},
+                       {"title": "Proposed Production Hardware Sizing",
+                        "content": "Sizing follows."}]}],
+        diagrams=[_diagram("deployment", "Amlak — Deployment")],
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    idx = {p.text.strip(): i for i, p in enumerate(doc.paragraphs) if p.text.strip()}
+    images = [i for i, p in enumerate(doc.paragraphs) if "graphicData" in p._p.xml]
+    dep = idx.get("Proposed Deployment Architecture")
+    sizing = idx.get("Proposed Production Hardware Sizing")
+    assert dep and sizing
+    assert any(dep < i < sizing for i in images), (
+        "deployment diagram did not render between its own subsection and the next")
+
+
+def test_an_unmatched_diagram_still_reaches_the_document():
+    """Placement is a preference, not a filter. A diagram no subsection claims
+    must still appear in the trailing gallery rather than vanish."""
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "implementation"},
+        sections=[{"id": "company_profile", "title": "Company Profile",
+                   "content": "Body."}],
+        diagrams=[_diagram("deployment", "Deployment")],
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    text = "\n".join(p.text for p in doc.paragraphs)
+    images = [r for r in doc.part.rels.values() if "image" in r.reltype]
+    assert "Solution Architecture Diagrams" in text
+    assert len(images) >= 2, "unmatched diagram was dropped"
+
+
+def test_a_diagram_is_placed_once():
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "implementation"},
+        sections=[{"id": "proposed_solution", "title": "Proposed Solution",
+                   "subsections": [
+                       {"title": "Proposed Deployment Architecture", "content": "a"},
+                       {"title": "Proposed Deployment Architecture", "content": "b"}]}],
+        diagrams=[_diagram("deployment", "Deployment")],
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    images = [r for r in doc.part.rels.values() if "image" in r.reltype]
+    assert len(images) == 2, f"IV logo + one diagram expected, got {len(images)}"
+
+
+def test_executive_summary_is_continuous_prose():
+    """IV's executive summary has no sub-headings. Leaving `subsections` empty
+    made it fall back to the generic Overview/Detailed Design triple, which
+    Sprint B removed everywhere else -- and run 9 shipped it at the top of the
+    document, in the one section every reader reads."""
+    import proposal_templates
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    spec = next(s for s in proposal_templates.get_template("implementation")
+                if s.id == "executive_summary")
+    subs = spec.render_subsections(ctx)
+    assert len(subs) == 1 and subs[0][0] == "", subs
+
+
+def test_an_untitled_subsection_adds_no_heading():
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "implementation"},
+        sections=[{"id": "executive_summary", "title": "Executive Summary",
+                   "subsections": [{"title": "", "content": "Continuous prose."}]}],
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    h2 = [p.text for p in doc.paragraphs if p.style.name == "Heading 2"]
+    assert h2 == [], f"empty heading emitted: {h2}"
+    assert any("Continuous prose." in p.text for p in doc.paragraphs)

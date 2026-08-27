@@ -315,16 +315,24 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "cell blank. Remarks names the node split (e.g. '2 x UI, 2 x Task') "
              "and any RAID or clustering requirement."),
             ("Proposed DR Hardware Sizing",
-             "disaster recovery sizing as a markdown TABLE with the SAME eleven "
-             "columns as production. DR mirrors production unless discovery says "
-             "otherwise. Follow the table with one short paragraph on the "
-             "replication approach between sites."),
+             "disaster recovery sizing as a markdown TABLE with EXACTLY these "
+             "columns: #, Server Category, Quantity, CPU per node, "
+             "Memory per node (GB), Storage per node (GB), DB Storage (GB), "
+             "Operating System, Application Server, Database, Remarks. "
+             "DR mirrors production unless discovery says otherwise. Follow the "
+             "table with one short paragraph on the replication approach."),
             ("Proposed UAT Hardware Sizing",
-             "UAT sizing as a markdown TABLE with the SAME eleven columns. UAT is "
-             "normally reduced from production; use the discovery figures."),
+             "UAT sizing as a markdown TABLE with EXACTLY these columns: "
+             "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
+             "Storage per node (GB), DB Storage (GB), Operating System, "
+             "Application Server, Database, Remarks. UAT is normally reduced "
+             "from production; use the discovery figures."),
             ("Proposed Development Hardware Sizing",
-             "development sizing as a markdown TABLE with the SAME eleven columns. "
-             "Development is the smallest environment, typically a single node."),
+             "development sizing as a markdown TABLE with EXACTLY these columns: "
+             "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
+             "Storage per node (GB), DB Storage (GB), Operating System, "
+             "Application Server, Database, Remarks. Development is the smallest "
+             "environment, typically a single node."),
             ("Proposed HRMS Integration and Joiner Workflow",
              "the authoritative source feed and the joiner workflow it triggers, "
              "step by step through to account creation in the target systems."),
@@ -368,8 +376,9 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "project tools, status reporting, change control, and risk and issue "
              "management. At least 10 rows."),
             ("RACI - Delivery Activities",
-             "delivery responsibilities as a markdown TABLE with the same four "
-             "columns. Cover scope definition, product acquisition, environment "
+             "delivery responsibilities as a markdown TABLE with EXACTLY these "
+             "columns: Deliverable / Activity, Inspirit Vision, {{ client_name }}, "
+             "Description / Comments. Cover scope definition, product acquisition, environment "
              "provisioning, design, build, integration, testing, UAT, cutover and "
              "handover. Use the responsibilities supplied at discovery. At least "
              "12 rows."),
@@ -401,12 +410,15 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "evidence closes that milestone. At least 10 rows."),
             ("Tranche 2 - Lifecycle Management and Initial Applications",
              "lifecycle automation plus the first application batch, as a markdown "
-             "TABLE with the same four columns. Use the application counts named "
-             "at discovery."),
+             "TABLE with EXACTLY these columns: Sr#, Category, Milestone, "
+             "Success Criteria. Cover joiner/mover/leaver automation, birthright "
+             "roles, the first application batch named at discovery, UAT and "
+             "documentation. At least 6 rows."),
             ("Tranche 3 - Access Certification and Application Onboarding",
              "certification campaigns plus continued onboarding, as a markdown "
-             "TABLE with the same four columns, in the batch size named at "
-             "discovery."),
+             "TABLE with EXACTLY these columns: Sr#, Category, Milestone, "
+             "Success Criteria, in the batch size named at discovery. "
+             "At least 6 rows."),
         ),
     ),
     SectionSpec(
@@ -460,7 +472,9 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "Quantity, Unit, Basis. Leave price cells as 'To be confirmed' - Shilpi does "
              "NOT invent commercial figures."),
             ("Total Bill of Quantities",
-             "the combined BOQ as a markdown TABLE with the same discipline on figures."),
+             "the combined BOQ as a markdown TABLE with EXACTLY these columns: "
+             "#, Item, Description, Unit Price, Total Price. Leave price cells "
+             "as 'To be confirmed' - Shilpi does NOT invent commercial figures."),
             # IV splits payment into a licence schedule (by year) and an
             # implementation schedule (by milestone, with percentages).
             ("Payment Milestone - Licence",

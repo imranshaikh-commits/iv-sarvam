@@ -1331,3 +1331,71 @@ def test_no_duplicate_subsection_headings_across_the_whole_template():
                 for h, _ in s.render_subsections(ctx) if h]
     dupes = sorted({h for h in headings if headings.count(h) > 1})
     assert not dupes, f"repeated subsection headings: {dupes}"
+
+
+# ---------------------------------------------------------------------------
+# Run-10 defects.
+# ---------------------------------------------------------------------------
+
+def test_no_table_instruction_refers_to_a_sibling_subsection():
+    """Each subsection is an INDEPENDENT drafting call, so "the same four
+    columns as above" has no antecedent -- the model never sees the sibling's
+    instruction. Run 10's Tranche 2 produced no table at all while Tranches 1
+    and 3 did, because Tranche 2's instruction said "the same four columns"."""
+    import proposal_templates, re
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    offenders = [h for s in proposal_templates.get_template("implementation")
+                 for h, f in s.render_subsections(ctx)
+                 if re.search(r"same\s+(four|eleven|three|two)?\s*columns|"
+                              r"same discipline|as (above|production)\b", f, re.I)]
+    assert not offenders, f"instructions depending on a sibling: {offenders}"
+
+
+def test_every_table_subsection_names_its_columns():
+    import proposal_templates, document_engine as DE
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    for s in proposal_templates.get_template("implementation"):
+        for h, f in s.render_subsections(ctx):
+            if DE._WANTS_TABLE_RE.search(f):
+                assert "columns:" in f or "columns " in f, \
+                    f"{h} asks for a table without naming its columns"
+
+
+def test_appendix_f_is_nested_like_the_others():
+    """Appendix F called branding.add_section_heading directly, bypassing both
+    the H2 demotion and the skip logic, so run 10 shipped it as a top-level
+    heading beside "Appendices" while A-E sat correctly beneath it."""
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "implementation",
+                  "discovery_answers": {"license_included": "yes",
+                                        "pricing_model": "fixed"}},
+        sections=[{"id": "company_profile", "title": "Company Profile",
+                   "content": "Body."}],
+        include_appendices=True,
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    h1 = [p.text.strip() for p in doc.paragraphs
+          if p.style.name == "Heading 1" and p.text.strip()]
+    assert not [h for h in h1 if h.startswith("Appendix ")], h1
+    assert any("Appendix F" in p.text and p.style.name == "Heading 2"
+               for p in doc.paragraphs), "Appendix F lost entirely"
+
+
+def test_an_inline_diagram_is_not_repeated_in_the_gallery():
+    """Run 10 placed all four diagrams inline and printed the gallery again, so
+    every diagram appeared twice -- worse than the behaviour it replaced."""
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "implementation"},
+        sections=[{"id": "proposed_solution", "title": "Proposed Solution",
+                   "subsections": [{"title": "Proposed Deployment Architecture",
+                                    "content": "prose"}]}],
+        diagrams=[_diagram("deployment", "Deployment")],
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    images = [r for r in doc.part.rels.values() if "image" in r.reltype]
+    h1 = [p.text.strip() for p in doc.paragraphs if p.style.name == "Heading 1"]
+    assert len(images) == 2, f"IV logo + one diagram expected, got {len(images)}"
+    assert "Solution Architecture Diagrams" not in h1, \
+        "empty gallery heading emitted for a diagram already placed inline"

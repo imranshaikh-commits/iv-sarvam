@@ -1158,7 +1158,31 @@ def _embeddable_diagrams(diagrams: Optional[list[dict]]) -> list[dict]:
     return out
 
 
-def _add_approved_diagrams(document: Document, diagrams: Optional[list[dict]]) -> None:
+def _unplaced_diagrams(diagrams: Optional[list[dict]],
+                       sections: list[dict]) -> list[dict]:
+    """Diagrams no subsection heading will claim.
+
+    The contents page is written BEFORE the sections are rendered, so it cannot
+    read `_placed_diagrams`. It replays the same matching instead: advertising a
+    "Solution Architecture Diagrams" section that then contains nothing is the
+    same class of bug as the contents entry that once advertised a diagram
+    section the assembler declined to create.
+    """
+    embeddable = _embeddable_diagrams(diagrams)
+    if not embeddable:
+        return []
+    headings = [(sub.get("title") or "")
+                for sec in sections for sub in (sec.get("subsections") or [])]
+    claimed: set = set()
+    for heading in headings:
+        item = _claim_diagram(embeddable, heading, claimed)
+        if item is None:
+            continue
+    return [d for d in embeddable if id(d) not in claimed]
+
+
+def _add_approved_diagrams(document: Document, embeddable: list[dict],
+                           already_placed: Optional[set] = None) -> None:
     """Embed ONLY approved, rendered architecture diagrams as images.
 
     A diagram is embedded iff status == 'approved' and it carries usable image
@@ -1167,7 +1191,14 @@ def _add_approved_diagrams(document: Document, diagrams: Optional[list[dict]]) -
     enforcement of the approval gate. If nothing qualifies, no section is added,
     so proposals without approved diagrams are unchanged.
     """
-    embeddable = _embeddable_diagrams(diagrams)
+    # `embeddable` is the SAME list the section renderer worked from, not a
+    # fresh call to _embeddable_diagrams. That function builds new dicts each
+    # time, so id() is not stable across calls and an identity filter here
+    # silently matched nothing: run 10 placed every diagram inline and then
+    # emitted this heading again with no image under it, because the BytesIO
+    # stream had already been consumed.
+    if already_placed:
+        embeddable = [d for d in embeddable if id(d) not in already_placed]
     if not embeddable:
         return
 
@@ -1360,7 +1391,10 @@ def assemble_docx(
     _toc_run.font.size = Pt(16)
     _toc_run.font.color.rgb = branding.NAVY
     _toc_extra = [t for t in (
-        "Solution Architecture Diagrams" if _embeddable_diagrams(diagrams) else None,
+        # Only advertise the gallery if a diagram will actually land in it.
+        # _placed_diagrams is populated during section rendering, which happens
+        # after the contents page is written, so this is computed the same way.
+        "Solution Architecture Diagrams" if _unplaced_diagrams(diagrams, sections) else None,
         "Compliance Matrix" if any(
             s.get("id") == COMPLIANCE_SECTION_ID for s in sections) else None,
     ) if t]
@@ -1434,7 +1468,7 @@ def assemble_docx(
             )
 
     # --- Architecture Diagrams (Pass 4 — approved only) --------------------
-    _add_approved_diagrams(document, diagrams)
+    _add_approved_diagrams(document, _inline_diagrams, already_placed=_placed_diagrams)
 
     # --- Compliance Matrix (optional) --------------------------------------
     if compliance_markdown:
@@ -1710,12 +1744,16 @@ def _add_appendices(document: Document, metadata: dict,
         if val and val.lower() not in ("skip", "none", "n/a", "na", "-"):
             _crows.append([label, val])
     if _crows:
-        branding.add_section_heading(document, "Appendix F — Commercial Structure")
-        _appendix_note(
-            document,
-            "Structure as captured at discovery. Pricing figures are deliberately "
-            "omitted and must be completed by the commercial owner before issue.")
-        _appendix_table(document, ["Item", "Basis"], _crows)
+        # Through the wrappers, not around them. Calling
+        # branding.add_section_heading / _appendix_table directly here bypassed
+        # BOTH the H2 demotion and the skip logic, so run 10 shipped
+        # "Appendix F" as a top-level heading beside "Appendices" while A-E sat
+        # correctly beneath it.
+        _heading("Appendix F — Commercial Structure")
+        _note("Structure as captured at discovery. Pricing figures are "
+              "deliberately omitted and must be completed by the commercial "
+              "owner before issue.")
+        _table(document, ["Item", "Basis"], _crows)
 
 
 # ---------------------------------------------------------------------------

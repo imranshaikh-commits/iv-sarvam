@@ -2,7 +2,7 @@
 
 **Shilpi** (शिल्पी, Sanskrit for *"artisan, craftsperson"*) is Inspirit Vision's in-house Proposal Architect — a conversational, retrieval-grounded AI that turns a new RFP into a structured, client-ready proposal in hours instead of days, by drafting from IV's curated bank of 112 past proposals rather than from a blank page.
 
-![Status](https://img.shields.io/badge/status-Phase%206%20validation%20%7C%20run%209%20pending-blue)
+![Status](https://img.shields.io/badge/status-Phase%206%20validation%20%7C%20run%2010%20scored-blue)
 ![Brain](https://img.shields.io/badge/brain-FastAPI%20(Python)-231154)
 ![LLM](https://img.shields.io/badge/LLM-Claude%20Sonnet%205%20%2B%20GLM%205.2%20fallback-E85A24)
 ![Retrieval](https://img.shields.io/badge/retrieval-Supabase%20pgvector-3ECF8E)
@@ -15,29 +15,23 @@
 
 ## Progress Dashboard
 
-> Quick-glance project status. Last updated: 2026-08-22 (IST).
+> Quick-glance project status. Last updated: 2026-08-27 (IST).
 
-**Two questions gate use. Neither is a percentage.**
+**Overall completion: 82%**
+`████████████████░░░░`
+
+Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 85,
+0). Recompute it when a row changes rather than adjusting it by feel — the
+previous figure was hand-typed, drifted to 88% while the table said 81%, and was
+removed for that reason.
+
+It measures **build progress against the plan**, which is not readiness. The two
+questions that gate use are below, and neither is a percentage.
 
 | | Status |
 |---|---|
-| **Can IV use this on a live deal?** | Not yet. Blocked by: the frontend is plain HTTP, this repo is public, and the fixes from run 8 are untested in a live run. All small. |
-| **Would a senior IAM architect sign the output?** | **Unknown — never tested.** Eight scored runs, one reader, the person who built it. No amount of further code answers this. |
-
-<details>
-<summary>Why there is no overall completion figure here</summary>
-
-There used to be one. It was hand-typed, disagreed with the phase table below
-(88% against 81%), and drifted every time a phase row was edited.
-
-More importantly it measured progress against a plan written in July — before we
-knew the corpus was 11% ingested, before the section template turned out to be
-wrong, before image reuse existed as an idea. Optimising that number means
-closing rows in a table, which is not the same as being useful to IV.
-
-The phase table is kept because it shows *shape*: where effort went and what was
-never started. It is not a completion score.
-</details>
+| **Can IV use this on a live deal?** | Not yet. Blocked by: the frontend is plain HTTP and this repo is public. Both small, both parked. |
+| **Would a senior IAM architect sign the output?** | **Sent for review after run 9; no verdict yet.** Ten scored runs, one reader so far. No amount of further code answers this. |
 
 ### Phase completion
 
@@ -49,7 +43,7 @@ never started. It is not a completion score.
 | 3 — Retrieval + drafting | Done | `████████████████████` 100% |
 | 4 — Conversational frontend + auth | Partial | `███████████████░░░░░` 75% — **full pipeline validated end to end in chat** (router → 22-area discovery → diagram plan → per-diagram approval → drafting → DOCX/PDF); auth/multi-tenancy still missing |
 | 5 — Architecture approval gate + compression/export | Done (gate enforced in chat) | `████████████████████` 98% |
-| 6 — Validation (recreation benchmark) | In progress | `███████████████░░░░░` 75% — eight scored runs against the Amlak proposal. Fidelity, hygiene, structure, prose volume and image placement all addressed and measured. What remains is not a build task: **no reviewer other than the builder has read a draft** |
+| 6 — Validation (recreation benchmark) | In progress | `█████████████████░░░` 85% — ten scored runs. **Run 10 exceeds the human original on tables (27 vs 25) and table content (3,760 vs 3,252 words)**, matches its eleven-column sizing tables and its RACI split, and places diagrams inside the subsection that explains them. Structure is no longer the constraint; content density is — 39 SME markers and 29 'To be confirmed' cells |
 | 7 — Pilot + hardening + rollout | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
 
 ### What's next
@@ -58,21 +52,22 @@ Three sprints. The ordering matters more than the contents: the project is
 feature-rich and evidence-poor, and everything built since run 6 has been judged
 by one reader.
 
-**Sprint I — clear the runway.** Frontend behind TLS, repository made private,
-the asset library reviewed at legible size, and run 9 to confirm the run-8 fixes
-landed. Small, and it ends with a document worth showing someone.
+**Sprint I — clear the runway.** Frontend behind TLS and the repository made
+private. Both parked deliberately while this is one person on one laptop; both
+become urgent the moment a second reviewer needs access, which Sprint J implies.
 
-**Sprint J — get a verdict.** A senior IAM architect reads a draft against
-"would you sign this"; the commercial owner reads the commercial section. In
-parallel, a **migration** run and an **MSS** run — both have templates and real
-grounding (39 and 14 proposals) and neither has ever been exercised end to end.
-Ends with a rework number produced by someone other than the builder.
+**Sprint J — get a verdict.** In progress: run 9 is with a senior IAM architect
+against "would you sign this". Still to do — the commercial owner reads the
+commercial section, and a **migration** run and an **MSS** run, both of which
+have templates and real grounding (39 and 14 proposals) and neither of which has
+ever been exercised end to end. Ends with a rework number produced by someone
+other than the builder.
 
 **Sprint K — built against evidence.** Contents written by Sprint J's verdict,
-not guessed now. The standing candidates are cross-encoder reranking, image
-placement position, and the outcome loop (`outcome` is `unknown` for all 112
-proposals, and weighting retrieval toward what actually won is the change that
-would compound most).
+not guessed now. Standing candidates: diagnose why 39 SME markers survive the
+discovery fix, cross-encoder reranking, and the outcome loop (`outcome` is
+`unknown` for all 112 proposals, and weighting retrieval toward what actually
+won is the change that would compound most).
 
 The honest risk in that ordering: if Sprint J finds the problem somewhere we have
 not looked, some of the work since run 6 was speculative. That is an argument for
@@ -90,47 +85,65 @@ client-confidential proposal content and this repository is public. See
 - **Diagram detail** — swimlanes and page-fit are built and working (run 6 produced a six-lane joiner flow with real branch logic). Two gaps remain: the model ignores the `shape` field so decision points render as rectangles rather than diamonds, and hardware-spec callouts beside the boxes are not built.
 - **Durable diagram spec-template store** (per vendor + diagram type) — deferred from Pass 4.
 - **Reranking** — a 2026 controlled comparison found cross-encoder reranking the only technique that reliably beat plain dense retrieval at this corpus scale, while hybrid BM25+dense and multi-query expansion both finished BELOW it. Reranking is therefore the next retrieval change worth measuring; hybrid search is not.
-- **Nobody but the builder has read a Shilpi draft** — eight scored runs, one reader, one opinion. Every quality judgement in this document rests on that. Ashish's "would you sign this" benchmark has never been applied. This is the largest untested assumption in the project and no amount of further building removes it.
+- **No verdict from a reviewer other than the builder** — ten scored runs, one reader. Run 9 has been sent to a senior IAM architect against the "would you sign this" benchmark; no response yet. Every quality judgement in this document rests on one opinion until that comes back, and no amount of further building changes it.
 - **`outcome` is `unknown` for all 112 proposals** — recording won/lost and weighting retrieval toward what actually won is the single change that would compound more than anything else here. It needs a human who knows the answers.
 - **Phase 6 pilot against historical RFPs** — not started. The `RFP/` folder in the Drive bank (20 client-authored documents, tiered `testset` during curation) is the natural test set.
-- **Visual density** — the human Amlak proposal carries 37 images; run 8 produced 16, up from 6. Placement works, but images land at the END of whatever section matched rather than beside the text they illustrate, so an engagement-approach graphic sat under "Workforce and Capabilities". The realistic ceiling is 10–15: of IV's 37, roughly a third are per-deal architecture drawings that cannot be reused at all.
+- **Visual density** — the human Amlak proposal carries 37 images; run 10 produced 14. Placement is now correct (images sit under the section heading they were chosen for, diagrams inside the subsection that explains them), but the COUNT is bounded by the library rather than the budget: Similar Experience is allowed six and took two, because only a fraction of the 113 approved corporate assets match its pattern. IV puts ten images in Case Studies; we put two. Realistic ceiling is 15–20 without new source material.
+- **Content density, not structure, is now the constraint** — run 10 carries **39 `[SME REVIEW]` markers and 29 "To be confirmed" cells**. Roughly seventy places where the document says someone must fill this in. The discovery-map fix was expected to collapse the SME count and moved it only 42 → 39, so either the answers still are not arriving or the model hedges regardless. That diagnosis is the next work, not another template change.
+- **Open defects from run 10** — Tranche 2 produced no table while Tranches 1 and 3 did; Appendix F is still emitted as a top-level heading (a different code path from A–E); the trailing diagram gallery duplicates every diagram now placed inline, so each appears twice.
 - **Image placement leaked another client's data, and the gate did not catch it** — run 8 placed a Microsoft Project Gantt chart under *Case Studies* showing BTPN's and STC's task names, durations and resource assignments, in a proposal addressed to Amlak. Two failures compounded. The classifier filed Gantt charts as `corporate` on the reasoning that they are "generic in shape, client-specific only in the dates"; a Gantt chart IS a client's project plan. And the approval sheet rendered 260px thumbnails on which the task names were illegible — a gate you cannot read through is not a gate. Fixed: 131 assets un-approved (any project schedule, and anything whose description or OCR names a corpus client), thumbnails raised to 720px with click-to-zoom, and the sheet now reflects current approval state instead of pre-checking everything, which would have silently restored the rejects on the next export.
 - **Captions removed entirely** — captions were generated from each image's vision description and produced, verbatim: *"Gantt chart, a type of project management diagram that visualizes the schedule and dependencies for the 'Sistem-BTPN ProjectPL'. It details tasks broken into ph"*. Three faults in one string: it explained what a Gantt chart is to an IAM audience, it named another client's project, and it truncated mid-word. IV's own proposals caption almost nothing.
 - **Company Profile is thin** — 493 words but generic, because the `company_profile` chunks behind it are mostly headings and fragments rather than IV's actual profile prose. A corpus problem, not a template one.
 - **Sizing evidence is lopsided** — the retrieval scorecard measures tabular evidence per probe: `sizing_prod` scores 1.00, `sizing_dr` scores 0.12. The corpus is rich in production sizing tables and nearly bare of DR-specific ones, which is why run 7 lost its DR, UAT and Development sizing tables. No amount of retrieval tuning fixes a gap in the source material.
 - **The benchmark must stay out of the corpus** — both Amlak proposals were ingested during bulk ingestion and have been deleted. Run 7 was drafted with its own answer available, so its Similar Experience quality is genuine but its overall score is inflated. Always run the leakage check before a scored run.
 
-### Recently shipped (2026-08-21 → 22)
+### Recently shipped (2026-08-22 → 27)
 
-**Images reach the document.** 6 → 16 in run 8. 946 assets recovered from the
-bank with no API calls (the pipeline was already extracting, OCRing and
-describing images with a vision model, then discarding the bytes); reclassified
-from those stored descriptions into 239 corporate and 106 product; 341 approved
-through an offline contact sheet; then **131 un-approved** after run 8 showed
-why.
+**Run 10 exceeds the human original on table content.**
 
-**A client data leak, and what it taught.** Run 8 put another client's Microsoft
-Project plan into a proposal. The rule that allowed it was mine, and the reason
-it survived review was also mine: 260px thumbnails on which the task names could
-not be read. Both fixed. The general lesson is recorded in `02_LESSONS.md`: an
-approval gate must be legible at the size the reviewer sees, or it launders a
-decision nobody actually made.
+| | IV original | Run 9 | Run 10 |
+|---|---|---|---|
+| Tables | 25 | 19 | **27** |
+| Table words | 3,252 | 2,381 | **3,760** |
+| Sizing table columns | 11 | 3–6 | **11** |
+| Payment milestone tables | 4 | 1 | **4** |
+| Top-level sections | 11 | 18 | 14 |
+| Median body paragraph | 29 words | 29 | 30 |
 
-**Three run-8 defects traced to limits I set.**
+Getting there meant reading IV's actual document rather than approximating it.
+The sizing tables are eleven named columns, not six invented ones. RACI is a
+legend plus two matrices totalling 33 rows, not one flat table. Payment splits
+into licence, implementation, resident engineer and application-integration
+bucket. Each tranche carries its own milestone table with success criteria.
 
-| Symptom | Cause |
-|---|---|
-| `[SME REV`, `[SME RE` truncated mid-word | 420-token cap against a 220-word instruction. A hard cap must be a safety net, never the binding constraint |
-| Paragraphs of 180 words (IV's median is 29) | the instruction capped the SUBSECTION and said nothing about paragraphs |
-| "Gantt chart, a type of project management diagram that…" | captions built from vision descriptions, truncated at 160 chars |
+**Diagrams now sit inside the subsection that explains them** — the joiner flow
+under *Proposed HRMS Integration and Joiner Workflow*, deployment under
+*Proposed Deployment Architecture*. They used to be collected into a trailing
+gallery, so a reader held the prose in their head and went looking forty pages
+later.
 
-**Client review artefacts were published to this public repo** — the asset
-contact sheet, carrying 341 base64 thumbnails of client proposal imagery and
-descriptions naming clients, was committed by a `git add -A`. The `.gitignore`
-rules for it had been written but never actually added. Purged from history with
-`git filter-repo` and force-pushed; the ignore rules now verified with
-`git check-ignore` rather than assumed. Untracking a file does nothing if the
-ignore rule was never there.
+**Eleven of twelve sections had been drafted with no discovery answers at all.**
+`_SECTION_DISCOVERY_FIELDS` still keyed on the section ids from before the
+house-structure rebuild, and used field names absent from the intake schema
+(`engagement_duration` for `duration`, `envs` for `environments`). "Proposed UAT
+Hardware Sizing" was drafted without the UAT sizing the consultant supplied. The
+model was not hedging; it had not been told. Silently degrading every run since
+Sprint B. Two tests now assert both invariants.
+
+**The generic facet triple came back and shipped.** Run 9's Executive Summary
+carried "Overview / Detailed Design / Considerations & Dependencies" — the exact
+pattern Sprint B removed — because a section with no subsections falls back to
+`SUBSECTION_FACETS`. Declaring the absence produced the opposite of the intent,
+at the top of the document, in the one section every reader reads.
+
+**Structural cleanup:** appendices nested under *Appendices* instead of being
+siblings of it; the compliance matrix demoted to a supporting artefact; the
+contents page no longer lists itself as section 1.
+
+**Known open after run 10** — Tranche 2 produced no table; Appendix F is still
+emitted as a top-level heading; the trailing diagram gallery duplicates every
+diagram now placed inline; "To be confirmed" cells rose 11 → 29 as the
+commercial tables widened; 39 SME markers, barely down from 42.
 
 ---
 
@@ -424,7 +437,7 @@ The engine is what turns a chat thread into a deliverable document.
 
 ### Built now
 
-- **Templates:** Jinja2 section templates for `implementation`, `migration` and `mss`. Every type the intake offers now has a template, asserted as an invariant — the intake offered `migration` for weeks while `get_template("migration")` raised `ValueError`, so a consultant could answer all 22 discovery areas and then hit a crash. The `migration` template is 14 sections and is NOT the implementation one renamed: current-state assessment, migration strategy (including whether password hashes carry across or users must re-enrol), rollback position, and decommissioning have no greenfield counterpart. The `implementation` template mirrors IV's real house structure — **11 top-level sections and 47 content-specific subsections, every heading distinct** ("Proposed Production Hardware Sizing", "Tranche 2 - Lifecycle Management and Initial Applications", "Payment Milestones"). Eleven subsections explicitly require a markdown table, which the assembler renders as native Word tables. Section titles and headings render through Jinja, so vendor and client names substitute ("Proposed Solution - SailPoint", "Why SailPoint"). Subsections defined on a section override the depth tier's count: those headings are the section's structure, not a knob.
+- **Templates:** Jinja2 section templates for `implementation`, `migration` and `mss`. Every type the intake offers now has a template, asserted as an invariant — the intake offered `migration` for weeks while `get_template("migration")` raised `ValueError`, so a consultant could answer all 22 discovery areas and then hit a crash. The `migration` template is 14 sections and is NOT the implementation one renamed: current-state assessment, migration strategy (including whether password hashes carry across or users must re-enrol), rollback position, and decommissioning have no greenfield counterpart. The `implementation` template mirrors IV's real house structure — **11 top-level sections and 61 content-specific subsections, every heading distinct** ("Proposed Production Hardware Sizing", "Tranche 2 - Lifecycle Management and Initial Applications", "Payment Milestones"). Twenty subsections explicitly require a markdown table, which the assembler renders as native Word tables — the sizing tables carry IV's own eleven column headers, RACI is a legend plus two matrices, and payment splits into licence, implementation, resident engineer and application-integration bucket. Section titles and headings render through Jinja, so vendor and client names substitute ("Proposed Solution - SailPoint", "Why SailPoint"). Subsections defined on a section override the depth tier's count: those headings are the section's structure, not a knob.
 - **Section-by-section drafting:** each section runs its own retrieval query and LLM draft, with per-call token caps and frequency penalty to prevent repetition spirals on ambiguous content.
 - **Compliance matrix:** per-requirement classification against retrieved evidence, with paraphrase matching and a truncation guard.
 - **Citations and traceability:** retrieval traces are persisted with each generated proposal. Inline `[N]` markers and the citation appendix are **stripped from the deliverable** — the appendix listed retrieved chunks by client name and similarity score, so an Amlak document named three other IV clients across 78 paragraphs. Provenance belongs in logs, not in a document that leaves the building.
@@ -604,9 +617,9 @@ gantt
 > **Status line:** Phases 0–3 complete. Phase 4 is 75% — the conversational
 > pipeline is validated end to end; auth and multi-tenancy are not wired and, for
 > a single-user internal tool, may never need to be. Phase 5 done, gate enforced
-> in chat. Phase 6 in progress: eight scored runs, and what remains is a human
-> verdict rather than a build task. Phase 7 (pilot, hardening, rollout) not
-> started.
+> in chat. Phase 6 at 85%: ten scored runs, and run 10 exceeds the human original
+> on table content. What remains there is a human verdict and content density,
+> not structure. Phase 7 (pilot, hardening, rollout) not started.
 
 ---
 

@@ -268,18 +268,31 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "environments, zones, and how components are distributed across them."),
             ("Proposed Production Architecture",
              "the production tier in detail: cluster topology, node roles and data tier."),
+            # IV's own sizing tables are ELEVEN columns wide and identical across
+            # all four environments. Run 9 produced 6, 4, 3 and 3 columns from an
+            # invented column list, which is why they read thinner than the human
+            # original even where the numbers were right. These are IV's actual
+            # headers, taken from the Amlak proposal.
             ("Proposed Production Hardware Sizing",
-             "production sizing as a TABLE with columns Component, Role, vCPU, Memory, "
-             "Storage, Operating System. Use the sizing figures supplied at discovery "
-             "exactly. Split by server role where the discovery answer splits them. "
-             "Output a markdown table, not prose."),
+             "production sizing as a markdown TABLE with EXACTLY these columns: "
+             "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
+             "Storage per node (GB), DB Storage (GB), Operating System, "
+             "Application Server, Database, Remarks. "
+             "One row per server category. Use the discovery sizing figures "
+             "exactly; write N/A where a column does not apply, never leave a "
+             "cell blank. Remarks names the node split (e.g. '2 x UI, 2 x Task') "
+             "and any RAID or clustering requirement."),
             ("Proposed DR Hardware Sizing",
-             "disaster recovery sizing as a markdown TABLE, same columns as production. "
-             "State the replication approach between sites."),
+             "disaster recovery sizing as a markdown TABLE with the SAME eleven "
+             "columns as production. DR mirrors production unless discovery says "
+             "otherwise. Follow the table with one short paragraph on the "
+             "replication approach between sites."),
             ("Proposed UAT Hardware Sizing",
-             "UAT sizing as a markdown TABLE, same columns."),
+             "UAT sizing as a markdown TABLE with the SAME eleven columns. UAT is "
+             "normally reduced from production; use the discovery figures."),
             ("Proposed Development Hardware Sizing",
-             "development environment sizing as a markdown TABLE, same columns."),
+             "development sizing as a markdown TABLE with the SAME eleven columns. "
+             "Development is the smallest environment, typically a single node."),
             ("Proposed HRMS Integration and Joiner Workflow",
              "the authoritative source feed and the joiner workflow it triggers, "
              "step by step through to account creation in the target systems."),
@@ -305,10 +318,24 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "deliverables as a markdown TABLE with columns Deliverable, Description, Phase."),
             ("Benefits",
              "the concrete benefits tied to the client's stated pain points."),
-            ("RACI Matrix",
-             "responsibilities as a markdown TABLE with columns Activity, Inspirit Vision, "
-             "{{ client_name }}, Vendor, using R/A/C/I values. Use the responsibilities "
-             "supplied at discovery."),
+            # IV splits RACI into a legend plus TWO matrices -- governance
+            # activities, then delivery activities -- 33 rows in total. Run 9
+            # produced a single 10-row table.
+            ("RACI Legend",
+             "a short markdown TABLE with columns Role, Description defining "
+             "R = Responsible, A = Accountable, C = Consulted, I = Informed."),
+            ("RACI - Project Governance",
+             "governance responsibilities as a markdown TABLE with columns "
+             "Deliverable / Activity, Inspirit Vision, {{ client_name }}, "
+             "Description / Comments. Cover ways of working, steering committee, "
+             "project tools, status reporting, change control, and risk and issue "
+             "management. At least 10 rows."),
+            ("RACI - Delivery Activities",
+             "delivery responsibilities as a markdown TABLE with the same four "
+             "columns. Cover scope definition, product acquisition, environment "
+             "provisioning, design, build, integration, testing, UAT, cutover and "
+             "handover. Use the responsibilities supplied at discovery. At least "
+             "12 rows."),
         ),
     ),
     SectionSpec(
@@ -321,14 +348,24 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "the overall plan as a markdown TABLE with columns Phase, Key Activities, "
              "Duration. Use the engagement duration and phase count supplied at discovery "
              "exactly; do not substitute a generic timeline."),
+            # IV gives each tranche its own milestone TABLE with success
+            # criteria -- 14, 6 and 6 rows. Run 9 wrote prose for all three,
+            # which is why the table count trails the human original.
             ("Tranche 1 - Foundation",
-             "foundation scope: installation, environment build, core configuration, "
-             "authoritative source onboarding."),
+             "foundation scope as a markdown TABLE with columns Sr#, Category, "
+             "Milestone, Success Criteria. Cover licence delivery, kickoff, "
+             "consulting and design workshops, environment installation "
+             "(development, QA, production, DR), core configuration and "
+             "authoritative source onboarding. Success Criteria states what "
+             "evidence closes that milestone. At least 10 rows."),
             ("Tranche 2 - Lifecycle Management and Initial Applications",
-             "lifecycle automation plus the first application batch named at discovery."),
-            ("Tranche 3 - Access Certification and Application Onboarding",
-             "certification campaigns plus continued onboarding in the batch size named "
+             "lifecycle automation plus the first application batch, as a markdown "
+             "TABLE with the same four columns. Use the application counts named "
              "at discovery."),
+            ("Tranche 3 - Access Certification and Application Onboarding",
+             "certification campaigns plus continued onboarding, as a markdown "
+             "TABLE with the same four columns, in the batch size named at "
+             "discovery."),
         ),
     ),
     SectionSpec(
@@ -375,10 +412,20 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "NOT invent commercial figures."),
             ("Total Bill of Quantities",
              "the combined BOQ as a markdown TABLE with the same discipline on figures."),
-            ("Payment Milestones",
-             "payment milestones as a markdown TABLE with columns Milestone, Trigger, "
-             "Percentage. Use the milestone structure supplied at discovery. Percentages "
-             "only where discovery supplies them, otherwise 'To be confirmed'."),
+            # IV splits payment into a licence schedule (by year) and an
+            # implementation schedule (by milestone, with percentages).
+            ("Payment Milestone - Licence",
+             "licence payment schedule as a markdown TABLE with columns Item #, "
+             "Invoice Date, Invoice Amount. One row per licence year where "
+             "discovery gives a term. Amounts stay 'To be confirmed' unless "
+             "supplied - never invent a figure."),
+            ("Payment Milestone - Implementation",
+             "implementation payment schedule as a markdown TABLE with columns "
+             "Item #, Milestone, Payment %, Amount. Milestones follow the delivery "
+             "plan (kickoff, requirements and design, application onboarding, "
+             "certification, go-live, handover). Percentages must total 100 where "
+             "discovery supplies them, otherwise 'To be confirmed'. Amounts stay "
+             "'To be confirmed' unless supplied."),
             ("Commercial Assumptions",
              "what the commercial structure assumes: travel, taxes, support terms, "
              "validity, using the answers supplied at discovery."),

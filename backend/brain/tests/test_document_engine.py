@@ -1068,3 +1068,82 @@ def test_skip_answers_are_not_presented_as_facts():
     out = document_engine.discovery_context_for("executive_summary", answers)
     assert "25 applications" in out
     assert "skip" not in out.lower()
+
+
+def test_assets_render_before_the_section_body():
+    """Images must sit under the SECTION heading they were chosen for.
+
+    They used to render after the whole body, so an image appeared beneath
+    whatever the last subsection heading happened to be: run 9 put a CIAM
+    governance pyramid under "Assumptions & Open Questions" and a change-control
+    graphic under "Training and Post-Production Support". The selection was
+    right; the position made it read as wrong.
+    """
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "Amlak International",
+                  "proposal_type": "implementation"},
+        sections=[{"id": "company_profile", "title": "Company Profile",
+                   "assets": [{"id": "a1", "stream": io.BytesIO(_png_bytes())}],
+                   "subsections": [
+                       {"title": "Inspirit Vision", "content": "First subsection."},
+                       {"title": "Workforce and Capabilities", "content": "Last subsection."}]}],
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    order, images = [], []
+    for i, p in enumerate(doc.paragraphs):
+        if "graphicData" in p._p.xml:
+            images.append(i)
+        if p.text.strip() in ("Company Profile", "Workforce and Capabilities"):
+            order.append((p.text.strip(), i))
+    heading = dict(order).get("Company Profile")
+    last_sub = dict(order).get("Workforce and Capabilities")
+    # Skip the IV cover logo, which precedes every section.
+    seen_image = next((i for i in images if i > heading), None)
+    assert seen_image is not None, "asset not embedded"
+    assert heading < seen_image < last_sub, (
+        f"image at {seen_image} should sit between the section heading "
+        f"({heading}) and the last subsection ({last_sub})")
+
+
+def test_sizing_subsections_name_ivs_real_columns():
+    """IV's sizing tables are eleven columns; run 9 produced 6, 4, 3 and 3 from
+    an invented list."""
+    import proposal_templates
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    sizing = [f for s in proposal_templates.get_template("implementation")
+              for h, f in s.render_subsections(ctx) if "Sizing" in h]
+    assert len(sizing) == 4, f"expected four sizing subsections, got {len(sizing)}"
+    for f in sizing:
+        assert "eleven" in f or "Server Category" in f
+    prod = next(f for f in sizing if "Server Category" in f)
+    for col in ("CPU per node", "DB Storage", "Operating System", "Remarks"):
+        assert col in prod, f"missing IV column: {col}"
+
+
+def test_iv_table_structures_are_split_the_way_iv_splits_them():
+    """RACI is a legend plus two matrices; payment splits licence from
+    implementation; each tranche has its own milestone table."""
+    import proposal_templates
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    headings = [h for s in proposal_templates.get_template("implementation")
+                for h, _ in s.render_subsections(ctx)]
+    for required in ("RACI Legend", "RACI - Project Governance",
+                     "RACI - Delivery Activities",
+                     "Payment Milestone - Licence",
+                     "Payment Milestone - Implementation"):
+        assert required in headings, f"missing: {required}"
+    tranches = [h for h in headings if h.startswith("Tranche")]
+    assert len(tranches) == 3, tranches
+
+
+def test_the_template_asks_for_more_tables_than_ivs_original_has():
+    """IV's Amlak proposal has 25 tables. Matching it is the floor, not the
+    target."""
+    import proposal_templates, document_engine as DE
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+           "proposal_type": "implementation", "rfp_text": ""}
+    wants = [h for s in proposal_templates.get_template("implementation")
+             for h, f in s.render_subsections(ctx) if DE._WANTS_TABLE_RE.search(f)]
+    assert len(wants) >= 17, f"only {len(wants)} table subsections: {wants}"

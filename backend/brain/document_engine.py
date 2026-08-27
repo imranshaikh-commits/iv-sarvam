@@ -1227,6 +1227,27 @@ async def _attach_assets(client, sections: list[dict], context: dict,
 
 
 
+def _render_section_assets(document: Document, sec: dict) -> None:
+    """Embed the approved images chosen for this section.
+
+    Only assets a human has approved reach this point, and only `corporate` and
+    `product` kinds -- `architecture` assets depict a specific client's estate
+    and are excluded in asset_selection.py.
+
+    No captions: they were generated from the vision description and leaked
+    another client's project name into run 8.
+    """
+    for asset in sec.get("assets") or []:
+        stream = asset.get("stream")
+        if not stream:
+            continue
+        try:
+            _add_picture_fitted(document, stream,
+                                max_w=_IMAGE_MAX_W, max_h=_IMAGE_MAX_H)
+        except Exception as e:  # noqa: BLE001 - a bad image must not sink a section
+            log.warning("could not embed asset %s: %s", asset.get("id"), e)
+
+
 def assemble_docx(
     metadata: dict,
     sections: list[dict],
@@ -1288,6 +1309,15 @@ def assemble_docx(
             flag = heading.add_run("   [SME REVIEW REQUIRED]")
             flag.font.size = Pt(10)
             flag.font.color.rgb = _DRAFT_COLOR
+        # Reusable images sit directly under the section heading they were
+        # chosen for. They used to render AFTER the whole section body, so an
+        # image appeared beneath whatever the last subsection heading happened
+        # to be -- run 9 put a CIAM governance pyramid under "Assumptions &
+        # Open Questions" and a change-control graphic under "Training and
+        # Post-Production Support". The selection was right; the position made
+        # it read as wrong.
+        _render_section_assets(document, sec)
+
         subs = sec.get("subsections") or []
         if subs:
             # Multi-subsection (full depth): render each facet under an H2 heading.
@@ -1297,27 +1327,8 @@ def assemble_docx(
         else:
             _add_body_paragraphs(document, sec.get("content", ""))
 
-        # Reusable images from the asset library, placed after the section body.
-        # Only assets a human has approved reach this point, and only
-        # `corporate` and `product` kinds -- `architecture` assets depict a
-        # specific client's estate and are excluded in asset_selection.py.
-        for asset in sec.get("assets") or []:
-            stream = asset.get("stream")
-            if not stream:
-                continue
-            try:
-                _add_picture_fitted(document, stream,
-                                    max_w=_IMAGE_MAX_W, max_h=_IMAGE_MAX_H)
-                # NO CAPTION. Captions were generated from the image's vision
-                # description, which produced two failures at once in run 8:
-                #   "Gantt chart, a type of project management diagram that
-                #    visualizes the schedule and dependencies for the
-                #    'Sistem-BTPN ProjectPL'. It details tasks broken into ph"
-                # It explained what a Gantt chart is to an IAM audience, named
-                # ANOTHER CLIENT'S project, and truncated mid-word at the 160
-                # character cap. IV's own proposals caption almost nothing.
-            except Exception as e:  # noqa: BLE001 - a bad image must not sink a section
-                log.warning("could not embed asset %s: %s", asset.get("id"), e)
+        # Assets are rendered directly under the SECTION heading (above), not
+        # here. See _render_section_assets.
 
         # Opportunistically collect assumption-ish lines for the aggregate section.
         if "assumption" not in (sec.get("id") or "").lower():

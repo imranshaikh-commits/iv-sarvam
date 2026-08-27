@@ -68,6 +68,10 @@ DOC_CONCURRENCY = int(os.environ.get("DOC_CONCURRENCY", os.environ.get("COMPLIAN
 # Below this max-similarity the evidence is considered weak and the section is
 # flagged for SME review.
 WEAK_EVIDENCE_THRESHOLD = float(os.environ.get("DOC_WEAK_EVIDENCE", "0.55"))
+# Characters of client-supplied discovery detail that count as "this section was
+# briefed". Roughly two substantial answers. Below it, weak corpus evidence
+# still triggers a review marker.
+MIN_DISCOVERY_FOR_GROUNDING = int(os.environ.get("DOC_MIN_DISCOVERY", "200"))
 
 SME_REVIEW_MARKER = "[SME REVIEW]"
 # Marks a grounded, generic placeholder emitted when a subsection LLM call
@@ -85,10 +89,24 @@ You are drafting the "{title}" section of a {proposal_type} proposal for {client
 
 SECTION PURPOSE: {purpose}
 
+TWO SOURCES, DIFFERENT AUTHORITY:
+- CLIENT-SUPPLIED FACTS are what this client told us in discovery. They are the
+  MOST authoritative source in this prompt. A claim that rests on them is fully
+  grounded and needs NO review marker, even if nothing in the EVIDENCE mentions
+  it. The EVIDENCE is other clients' past proposals; it cannot corroborate a
+  fact about THIS engagement, and its silence means nothing.
+- EVIDENCE is IV's past proposals, for house style, technical patterns and
+  wording. Cite it inline as [N].
+
 HARD RULES (non-negotiable):
-1. Ground every material technical claim in the EVIDENCE below. Cite inline like [1], [3] referring to evidence numbers.
+1. Ground every material technical claim in the CLIENT-SUPPLIED FACTS or the
+   EVIDENCE. Cite evidence inline like [1], [3] referring to evidence numbers.
+   Client-supplied facts are stated directly and are not cited.
 2. NEVER invent product versions, compliance/regulatory claims, pricing, SLAs, or client commitments.
-   If the evidence does not support something you need, write a literal "{marker}" note explaining what is missing.
+   Write a literal "{marker}" note ONLY when NEITHER source covers something the
+   section genuinely needs — a figure only the consultant or the commercial
+   owner can supply. Do NOT mark something as needing review because the
+   evidence is silent on it while the client-supplied facts state it.
 3. Draft ONLY this section as clean proposal prose (no markdown headings — the heading is added by the document builder). Be concise and specific; no filler.
 4. Prefer specific technical content from the evidence (architectures, connectors, workflows, timelines, volumetrics) over generic methodology boilerplate.
 5. This is a DRAFT for human review, never client-ready.
@@ -100,8 +118,12 @@ OUTPUT DISCIPLINE (mandatory):
   own research process. Do not write "the retrieved evidence", "the corpus",
   "Note on Evidence Applicability", or any commentary about what your sources do
   or do not contain. Sources are acknowledged ONLY through inline [N] markers.
-- Where a fact is genuinely unavailable, insert the review marker once and move
-  on. Do not explain at length what is missing or why.
+- Where a fact is genuinely unavailable from BOTH sources, insert the review
+  marker once and move on. Do not explain at length what is missing or why.
+- Never write "not in evidence", "not specified in evidence" or "not addressed
+  in the available evidence". The client does not know what our evidence corpus
+  is, and the phrase is usually wrong anyway: the fact is normally sitting in
+  the client-supplied facts above.
 - Never emit reasoning, deliberation or <think> blocks. Output only the section.
 - Stop when the section is complete. Do not pad to fill space, and never repeat a
   word or phrase to extend length.
@@ -670,7 +692,22 @@ async def draft_section(
     )
 
     max_similarity = max((float(c.get("similarity") or 0.0) for c in chunks), default=0.0)
-    needs_sme_review = (not chunks) or (max_similarity < WEAK_EVIDENCE_THRESHOLD)
+    # Weak CORPUS evidence is only a review trigger when the discovery answers
+    # do not cover the section either. The corpus is other clients' proposals:
+    # it cannot corroborate a fact about THIS engagement, so its silence says
+    # nothing when the consultant has already supplied the detail.
+    #
+    # Before this, "Proposed DR Hardware Sizing" was flagged as unreviewed while
+    # the discovery answers said "DR sized identically to production" -- one of
+    # the reasons run 10 still carried 39 markers after the discovery-routing
+    # fix landed.
+    weak_corpus = (not chunks) or (max_similarity < WEAK_EVIDENCE_THRESHOLD)
+    discovery_ctx = discovery_context_for(section_spec.id,
+                                          context.get("discovery_answers"))
+    # A few lines of client facts is a passing mention; a substantial block
+    # means the consultant has actually briefed this section.
+    has_client_facts = len(discovery_ctx) >= MIN_DISCOVERY_FOR_GROUNDING
+    needs_sme_review = weak_corpus and not has_client_facts
 
     # Reuse the brain's evidence/system-prompt builder, then layer section-specific
     # drafting instructions on top so the model drafts THIS section.
@@ -688,7 +725,6 @@ async def draft_section(
     rfp_ctx = (context.get("rfp_text") or "")[:4000]
     # The discovery answers relevant to THIS section. Without this the drafting
     # engine saw only rfp_text and invented or omitted every captured specific.
-    discovery_ctx = discovery_context_for(section_spec.id, context.get("discovery_answers"))
     client_facts = (f"CLIENT-SUPPLIED FACTS FOR THIS SECTION — these are "
                     f"authoritative and MUST be used verbatim where relevant. Do not "
                     f"replace them with generic statements, and do not claim they are "
@@ -719,7 +755,9 @@ async def draft_section(
     drafting_failed = False
     if not facets:
         user_prompt = (
-            f"Draft the \"{section_title}\" section now, grounded in the EVIDENCE and citing inline as [N].\n\n"
+            f"Draft the \"{section_title}\" section now, grounded in the "
+            f"CLIENT-SUPPLIED FACTS above or the EVIDENCE, citing evidence "
+            f"inline as [N].\n\n"
             f"{client_facts}"
             f"RFP / requirement context:\n{rfp_ctx}"
         )
@@ -756,9 +794,21 @@ async def draft_section(
                 f"material, stop - do not pad."
             )
             user_prompt = (
+                # The system prompt establishes that CLIENT-SUPPLIED FACTS
+                # outrank EVIDENCE and that their absence from the corpus means
+                # nothing. This line used to say "Ground every claim in the
+                # EVIDENCE", contradicting it in the more immediate user
+                # message -- which is why run 10 still carried 24 inline markers
+                # reading "not in evidence" and "not specified in evidence",
+                # phrases the system prompt explicitly forbids. Two of them
+                # flagged DR sizing and load-balancer scope that the consultant
+                # had supplied outright.
                 f"Draft the \"{sub_title}\" subsection of the \"{section_title}\" section, "
-                f"focusing specifically on {facet}. Ground every claim in the EVIDENCE and cite "
-                f"inline as [N]. Do not repeat content that belongs in other subsections.\n"
+                f"focusing specifically on {facet}. Ground every claim in the "
+                f"CLIENT-SUPPLIED FACTS above or the EVIDENCE, citing evidence "
+                f"inline as [N]; client-supplied facts are stated directly and "
+                f"not cited. Do not repeat content that belongs in other "
+                f"subsections.\n"
                 f"{length_rule}\n\n"
                 f"{client_facts}"
                 f"RFP / requirement context:\n{rfp_ctx}"

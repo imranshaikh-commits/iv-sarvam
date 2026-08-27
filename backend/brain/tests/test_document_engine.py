@@ -1399,3 +1399,138 @@ def test_an_inline_diagram_is_not_repeated_in_the_gallery():
     assert len(images) == 2, f"IV logo + one diagram expected, got {len(images)}"
     assert "Solution Architecture Diagrams" not in h1, \
         "empty gallery heading emitted for a diagram already placed inline"
+
+
+# ---------------------------------------------------------------------------
+# Discovery answers outrank the corpus.
+#
+# Run 10 carried 39 [SME REVIEW] markers even after the discovery-routing fix,
+# and the wording gave the cause away: "not in evidence", "not specified in
+# evidence", "not addressed in the available evidence". EVIDENCE means retrieved
+# corpus chunks -- other clients' past proposals. The prompt told the model to
+# ground every claim in it and to flag anything it did not support, so a fact
+# the consultant supplied got flagged whenever no past proposal happened to
+# mention it. "Proposed DR Hardware Sizing" was marked unreviewed while the
+# discovery answers said "DR sized identically to production".
+# ---------------------------------------------------------------------------
+
+def test_a_briefed_section_is_not_flagged_for_weak_corpus_evidence():
+    """The corpus cannot corroborate a fact about THIS engagement, so its
+    silence is not a reason to demand review."""
+    seen = {}
+
+    async def spy_draft(client, system_prompt, user_prompt, max_tokens=None):
+        seen["system"] = system_prompt
+        return "Drafted body."
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    async def no_evidence(c, v, query, k=8, **kw):
+        return []           # weak corpus: nothing retrieved at all
+
+    import proposal_templates
+    spec = proposal_templates.SectionSpec(
+        id="proposed_solution", title="Proposed Solution", purpose="p",
+        query_template="sizing")
+    rich = {"hardware_sizing_inputs": "Production 4 application servers at 4 CPU, "
+                                      "16 GB memory and 100 GB storage each, plus one "
+                                      "database server at 8 CPU and 64 GB.",
+            "ha_dr_requirements": "DR sized identically to production, separate site.",
+            "cluster_topology": "2 UI servers and 2 Task servers on Tomcat."}
+
+    original = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = spy_draft
+    try:
+        out = asyncio.run(document_engine.draft_section(
+            None, spec,
+            {"client_name": "Amlak", "iam_vendor": "SailPoint",
+             "proposal_type": "implementation", "rfp_text": "",
+             "discovery_answers": rich},
+            embed_fn=stub_embed, retrieve_fn=no_evidence,
+            build_grounded_system_fn=lambda chunks: "EVIDENCE",
+            top_k=8, subsections=1, max_tokens=500))
+    finally:
+        document_engine.draft_with_openrouter = original
+
+    assert out["needs_sme_review"] is False, (
+        "section flagged for review despite the consultant having briefed it")
+
+
+def test_an_unbriefed_section_with_weak_evidence_is_still_flagged():
+    """The guard must not become a blanket suppression."""
+    async def spy_draft(client, system_prompt, user_prompt, max_tokens=None):
+        return "Drafted body."
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    async def no_evidence(c, v, query, k=8, **kw):
+        return []
+
+    import proposal_templates
+    spec = proposal_templates.SectionSpec(
+        id="proposed_solution", title="Proposed Solution", purpose="p",
+        query_template="sizing")
+
+    original = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = spy_draft
+    try:
+        out = asyncio.run(document_engine.draft_section(
+            None, spec,
+            {"client_name": "Amlak", "iam_vendor": "SailPoint",
+             "proposal_type": "implementation", "rfp_text": "",
+             "discovery_answers": {}},
+            embed_fn=stub_embed, retrieve_fn=no_evidence,
+            build_grounded_system_fn=lambda chunks: "EVIDENCE",
+            top_k=8, subsections=1, max_tokens=500))
+    finally:
+        document_engine.draft_with_openrouter = original
+
+    assert out["needs_sme_review"] is True
+
+
+def test_the_prompt_ranks_client_facts_above_the_corpus():
+    tpl = document_engine._SECTION_SYSTEM_TEMPLATE
+    assert "MOST authoritative" in tpl
+    assert "its silence means nothing" in tpl
+    assert "ONLY when NEITHER source covers" in tpl
+
+
+def test_the_prompt_forbids_the_not_in_evidence_phrasing():
+    """The client does not know what our evidence corpus is, and the phrase is
+    usually wrong anyway -- the fact is normally in the client-supplied block."""
+    tpl = document_engine._SECTION_SYSTEM_TEMPLATE
+    assert "not in evidence" in tpl and "Never write" in tpl
+
+
+# ---------------------------------------------------------------------------
+# The user prompt must not contradict the system prompt.
+#
+# The system prompt establishes that CLIENT-SUPPLIED FACTS outrank EVIDENCE and
+# that corpus silence about a client fact means nothing. The per-subsection user
+# message -- sent on every call, and the more immediate instruction -- said
+# "Ground every claim in the EVIDENCE". Run 10 therefore carried 24 inline
+# markers reading "not in evidence" / "not specified in evidence", phrases the
+# system prompt explicitly forbids, including two flagging DR sizing and
+# load-balancer scope the consultant had supplied outright.
+# ---------------------------------------------------------------------------
+
+def test_drafting_prompts_do_not_ground_claims_in_evidence_alone():
+    import inspect, re
+    src = inspect.getsource(document_engine.draft_section)
+    # Any grounding instruction must name the client-supplied facts too.
+    for match in re.finditer(r'[Gg]round(?:ed)? every claim in the ([A-Z ]+)', src):
+        assert "CLIENT-SUPPLIED" in match.group(1), \
+            f"grounding instruction names only {match.group(1).strip()}"
+    assert "grounded in the EVIDENCE" not in src
+
+
+def test_the_mechanical_sme_flag_respects_client_facts():
+    """A section with rich discovery answers must not be flagged just because
+    corpus retrieval was weak -- the corpus is other clients' proposals and
+    cannot corroborate a fact about THIS engagement."""
+    import inspect
+    src = inspect.getsource(document_engine.draft_section)
+    assert "weak_corpus and not has_client_facts" in src, \
+        "the SME flag fires on retrieval similarity alone"

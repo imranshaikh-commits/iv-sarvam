@@ -63,7 +63,11 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 PRIMARY_LLM_MODEL = os.environ.get("SHILPI_PRIMARY_MODEL", "").strip() or "z-ai/glm-5.2"
 FALLBACK_LLM_MODEL = os.environ.get("SHILPI_FALLBACK_MODEL", "").strip() or "qwen/qwen3-235b-a22b-2507"
 TOP_K = int(os.environ.get("TOP_K", "8"))
-DOC_CONCURRENCY = int(os.environ.get("DOC_CONCURRENCY", os.environ.get("COMPLIANCE_CONCURRENCY", "3")))
+# Concurrency is what trips OpenRouter's in-flight budget ceiling: the limit is
+# on requests in flight at once, not on spend. Run 11 lost sixteen subsections
+# to a 402 at concurrency 3 with a 61-subsection template. Retry with backoff is
+# the real fix (see _draft_with_retry); this reduces how often it is needed.
+DOC_CONCURRENCY = int(os.environ.get("DOC_CONCURRENCY", os.environ.get("COMPLIANCE_CONCURRENCY", "2")))
 
 # Below this max-similarity the evidence is considered weak and the section is
 # flagged for SME review.
@@ -74,6 +78,12 @@ WEAK_EVIDENCE_THRESHOLD = float(os.environ.get("DOC_WEAK_EVIDENCE", "0.55"))
 MIN_DISCOVERY_FOR_GROUNDING = int(os.environ.get("DOC_MIN_DISCOVERY", "200"))
 
 SME_REVIEW_MARKER = "[SME REVIEW]"
+# A section the model was never able to attempt is NOT the same as a section
+# drafted from thin evidence, and the document must not present them alike.
+# Run 11 lost sixteen subsections to an OpenRouter 402 and labelled every one
+# "[SME REVIEW REQUIRED]" -- indistinguishable from "the corpus was quiet here".
+# Hours went into debugging a content problem that was a billing problem.
+DRAFT_FAILED_MARKER = "[DRAFTING FAILED - NOT ATTEMPTED]"
 # Marks a grounded, generic placeholder emitted when a subsection LLM call
 # returns null/empty even after one retry. Not a fabricated fact — an explicit
 # assumption that an SME must confirm/replace before client use.
@@ -377,6 +387,63 @@ async def draft_with_openrouter(
     clamped to MAX_DRAFT_TOKENS inside ``_draft_payload``.
     """
     last_exc: Exception | None = None
+    # 402 in-flight budget exhaustion is RETRYABLE and account-level, so falling
+    # back to another model does not help -- both run on the same account.
+    # Run 11 lost sixteen subsections to this: four whole sections (Timeline,
+    # Key Assumptions, Knowledge Transfer, Commercial) drafted empty, ten tables
+    # missing, and the document shipped anyway. OpenRouter returns
+    # `Retry-After` and says explicitly to retry once in-flight requests settle.
+    for attempt in range(_BUDGET_RETRIES + 1):
+        try:
+            return await _draft_across_models(client, system_prompt, user_prompt,
+                                              max_tokens=max_tokens)
+        except httpx.HTTPStatusError as e:
+            last_exc = e
+            if not _is_retryable_budget_error(e) or attempt == _BUDGET_RETRIES:
+                raise
+            wait = _retry_after_seconds(e, default=_BUDGET_BACKOFF_S * (attempt + 1))
+            log.warning("draft hit an account budget limit (attempt %d/%d); "
+                        "waiting %ss before retrying", attempt + 1,
+                        _BUDGET_RETRIES + 1, wait)
+            await asyncio.sleep(wait)
+    raise last_exc  # pragma: no cover
+
+
+# Retries and backoff for account-level budget errors. Deliberately generous:
+# the alternative is a silently truncated proposal, and OpenRouter's own hint
+# says the in-flight budget frees up as requests settle.
+_BUDGET_RETRIES = int(os.environ.get("SHILPI_BUDGET_RETRIES", "3"))
+_BUDGET_BACKOFF_S = float(os.environ.get("SHILPI_BUDGET_BACKOFF_S", "45"))
+
+
+def _is_retryable_budget_error(e: httpx.HTTPStatusError) -> bool:
+    """A 402 caused by IN-FLIGHT budget, not by an empty account.
+
+    An exhausted balance is not retryable and must fail fast; an in-flight
+    ceiling clears on its own. OpenRouter distinguishes them in the body.
+    """
+    if e.response is None or e.response.status_code != 402:
+        return False
+    try:
+        body = e.response.text.lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return ("in_flight" in body or "in-flight" in body
+            or "retry after" in body or "settle" in body)
+
+
+def _retry_after_seconds(e: httpx.HTTPStatusError, default: float) -> float:
+    header = (e.response.headers.get("Retry-After") if e.response is not None else None)
+    try:
+        return max(float(header), 1.0) if header else default
+    except (TypeError, ValueError):
+        return default
+
+
+async def _draft_across_models(client, system_prompt: str, user_prompt: str, *,
+                               max_tokens: int) -> str:
+    """Primary then fallback model. Model-level failures only."""
+    last_exc: Exception | None = None
     for model in (PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL):
         try:
             content = await _post_draft(
@@ -609,6 +676,23 @@ async def _draft_with_retry(
     return cleaned if not _is_blank(cleaned) else None
 
 
+def _draft_failed_placeholder(section_title: str, sub_title: Optional[str],
+                              error: str) -> str:
+    """Text for a (sub)section the model never successfully attempted.
+
+    Deliberately NOT the assumption placeholder: that one says "an SME must
+    write this", which is a statement about the CONTENT. This says the drafting
+    call failed, which is a statement about the SYSTEM. Conflating them sent a
+    reader looking for missing evidence when the cause was an API error.
+    """
+    what = f"{sub_title} ({section_title})" if sub_title else section_title
+    reason = (error or "").strip().splitlines()[0][:160] if error else "unknown error"
+    return (f"{DRAFT_FAILED_MARKER} This subsection was not drafted: the "
+            f"generation call for \"{what}\" did not complete ({reason}). "
+            f"This is a system failure, not a gap in the evidence or the "
+            f"discovery answers. Re-run generation before issuing this draft.")
+
+
 def _assumption_placeholder(
     context: dict,
     section_title: str,
@@ -765,10 +849,7 @@ async def draft_section(
             content = await _draft_once(user_prompt)
         except Exception as e:
             log.error("draft_section drafting failed for %s: %s", section_spec.id, e)
-            content = (
-                f"{SME_REVIEW_MARKER}: drafting failed for this section ({e}). "
-                "A subject-matter expert must author it manually."
-            )
+            content = _draft_failed_placeholder(section_title, None, str(e))
             drafting_failed = True
         # Null/empty draft (even after the retry inside _draft_once) must not
         # drop the section: emit a grounded placeholder instead.
@@ -818,10 +899,10 @@ async def draft_section(
                     client, system_prompt, user_prompt, budget)
             except Exception as e:
                 log.error("draft_section subsection %s failed for %s: %s", sub_title, section_spec.id, e)
-                sub_content = (
-                    f"{SME_REVIEW_MARKER}: drafting failed for this subsection ({e}). "
-                    "A subject-matter expert must author it manually."
-                )
+                # NOT the SME marker: this is a system failure, not a content
+                # gap, and labelling it "[SME REVIEW]" sent a reader hunting for
+                # missing evidence when run 11's real cause was a 402.
+                sub_content = _draft_failed_placeholder(section_title, sub_title, str(e))
                 drafting_failed = True
             # Null/empty subsection (even after the retry inside _draft_once) is
             # the soft-fail that used to lose ~2/3 of full-depth content: emit a
@@ -838,11 +919,18 @@ async def draft_section(
                          if sub_title.strip() else sub_content)
         content = "\n\n".join(parts).strip()
 
-    if drafting_failed:
-        needs_sme_review = True
-
     content = (content or "").strip()
-    if needs_sme_review and not content.startswith("[SME REVIEW"):
+
+    # A drafting FAILURE must not be reported as weak evidence. The banner below
+    # asserts "Retrieval found no supporting evidence (max similarity 0.00)",
+    # which is a claim about the corpus. Run 11's sixteen lost subsections
+    # carried exactly that line while the real cause was an OpenRouter 402, and
+    # the whole investigation went looking in the wrong place.
+    if drafting_failed:
+        if DRAFT_FAILED_MARKER not in content:
+            content = (f"{DRAFT_FAILED_MARKER} One or more parts of this section "
+                       f"could not be generated. Re-run before issuing.\n\n" + content)
+    elif needs_sme_review and not content.startswith("[SME REVIEW"):
         content = (
             f"[SME REVIEW: weak evidence] Retrieval found "
             f"{'no' if not chunks else 'only low-similarity'} supporting evidence "

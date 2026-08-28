@@ -1534,3 +1534,103 @@ def test_the_mechanical_sme_flag_respects_client_facts():
     src = inspect.getsource(document_engine.draft_section)
     assert "weak_corpus and not has_client_facts" in src, \
         "the SME flag fires on retrieval similarity alone"
+
+
+# ---------------------------------------------------------------------------
+# Run 11: sixteen subsections lost to an OpenRouter 402
+# ("in_flight_budget_exhausted", Retry-After: 120). Four whole sections drafted
+# empty, ten tables missing, and the document shipped labelled
+# "[SME REVIEW: weak evidence] Retrieval found no supporting evidence" -- a
+# claim about the corpus, on a failure that was a billing limit.
+# ---------------------------------------------------------------------------
+
+def test_in_flight_budget_402_is_treated_as_retryable():
+    import httpx
+    resp = httpx.Response(
+        402, headers={"Retry-After": "120"},
+        text='{"error":{"code":402,"metadata":{"reason":"in_flight_budget_exhausted"}}}',
+        request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"))
+    err = httpx.HTTPStatusError("402", request=resp.request, response=resp)
+    assert document_engine._is_retryable_budget_error(err)
+    assert document_engine._retry_after_seconds(err, default=1.0) == 120.0
+
+
+def test_an_exhausted_balance_is_not_retried_forever():
+    """A genuinely empty account must fail fast; only the in-flight ceiling
+    clears on its own."""
+    import httpx
+    resp = httpx.Response(
+        402, text='{"error":{"message":"Insufficient credits. Add more."}}',
+        request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"))
+    err = httpx.HTTPStatusError("402", request=resp.request, response=resp)
+    assert not document_engine._is_retryable_budget_error(err)
+
+
+def test_other_status_codes_are_not_mistaken_for_budget_errors():
+    import httpx
+    for code in (400, 429, 500):
+        resp = httpx.Response(code, text="{}", request=httpx.Request("POST", "https://x"))
+        err = httpx.HTTPStatusError(str(code), request=resp.request, response=resp)
+        assert not document_engine._is_retryable_budget_error(err), code
+
+
+def test_a_drafting_failure_is_not_reported_as_weak_evidence():
+    """THE run-11 lesson. A section the model never attempted must say so."""
+    text = document_engine._draft_failed_placeholder(
+        "Commercial", "Licence Bill of Quantities", "402 Payment Required")
+    assert document_engine.DRAFT_FAILED_MARKER in text
+    assert "weak evidence" not in text.lower()
+    assert "not a gap in the evidence" in text
+    assert "402" in text, "the cause must reach the page, not just the log"
+
+
+def test_the_two_markers_are_distinguishable():
+    assert document_engine.DRAFT_FAILED_MARKER != document_engine.SME_REVIEW_MARKER
+    assert "SME" not in document_engine.DRAFT_FAILED_MARKER
+
+
+def test_a_failed_section_does_not_claim_retrieval_found_nothing():
+    """CALL-SITE test. The previous test checks the placeholder text in
+    isolation; this drives draft_section with a failing generation call and
+    asserts what actually lands in the section.
+
+    Run 11's four dead sections each carried "[SME REVIEW: weak evidence]
+    Retrieval found no supporting evidence (max similarity 0.00)" while the real
+    cause was an OpenRouter 402. That banner is a claim about the corpus and it
+    was false.
+    """
+    import proposal_templates
+
+    async def boom(client, system_prompt, user_prompt, max_tokens=None):
+        raise RuntimeError("Client error '402 Payment Required'")
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    async def stub_retrieve(c, v, q, k=8, **kw):
+        return [{"chunk_text": "some evidence", "heading": "H",
+                 "client_name": "Other", "iam_vendor": "SailPoint",
+                 "similarity": 0.9}]
+
+    original = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = boom
+    try:
+        spec = proposal_templates.SectionSpec(
+            id="commercial", title="Commercial", purpose="p",
+            query_template="commercial",
+            subsections=(("Licence Bill of Quantities", "a markdown TABLE"),))
+        result = asyncio.run(document_engine.draft_section(
+            None, spec,
+            {"client_name": "Amlak", "iam_vendor": "SailPoint",
+             "proposal_type": "implementation", "rfp_text": ""},
+            embed_fn=stub_embed, retrieve_fn=stub_retrieve,
+            build_grounded_system_fn=lambda chunks: "EVIDENCE",
+            top_k=8, subsections=1, max_tokens=500))
+    finally:
+        document_engine.draft_with_openrouter = original
+
+    content = result["content"]
+    assert document_engine.DRAFT_FAILED_MARKER in content, content[:200]
+    assert "weak evidence" not in content.lower(), (
+        "a generation failure was reported as a retrieval failure")
+    assert "Retrieval found" not in content

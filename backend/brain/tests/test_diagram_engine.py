@@ -633,8 +633,9 @@ def test_a_properly_marked_decision_passes():
     assert diagram_engine.spec_shortfall(_flow(nodes, _BRANCH_EDGES)) is None
 
 
-def test_multiple_labelled_outgoing_edges_count_as_a_branch():
-    """Not every branch point is phrased as a question."""
+def test_outcome_labelled_edges_count_as_a_branch():
+    """Not every branch point is phrased as a question -- but the edge labels
+    must read as OUTCOMES of a choice, not as destinations."""
     nodes = [{"id": "a", "label": "Aggregate", "group": "HRMS"},
              {"id": "r", "label": "Route by identity type", "group": "IIQ"},
              {"id": "e", "label": "Employee path", "group": "IIQ"},
@@ -643,6 +644,53 @@ def test_multiple_labelled_outgoing_edges_count_as_a_branch():
              {"source": "r", "target": "e", "label": "Employee"},
              {"source": "r", "target": "c", "label": "Contractor"}]
     assert diagram_engine.spec_shortfall(_flow(nodes, edges)) is not None
+
+
+def test_a_provisioning_fan_out_is_not_a_branch():
+    """THE run-12 failure. These are the actual node labels the old rule
+    rejected, twice, costing the joiner-flow diagram entirely:
+
+        "Provision Accounts & Entitlements"
+        "Provision AD Account & Groups"
+        "Set Initial Password & Propagate"
+
+    Each provisions to several targets, so each has multiple labelled outgoing
+    edges. None is a choice. The corrective retry then told the model to mark
+    them as decisions, it complied, and a DIFFERENT fan-out node tripped the
+    rule -- two rounds, four nodes, no convergence.
+    """
+    for label in ("Provision Accounts & Entitlements",
+                  "Provision AD Account & Groups",
+                  "Set Initial Password & Propagate"):
+        nodes = [{"id": "p", "label": label, "group": "SailPoint IIQ"},
+                 {"id": "ad", "label": "Active Directory", "group": "AD"},
+                 {"id": "app", "label": "Target Applications", "group": "Apps"}]
+        edges = [{"source": "p", "target": "ad", "label": "AD account"},
+                 {"source": "p", "target": "app", "label": "application accounts"}]
+        assert diagram_engine.spec_shortfall(_flow(nodes, edges)) is None, label
+
+
+def test_a_shape_shortfall_never_loses_the_diagram():
+    """Runs 9 and 12 both lost the Integration / Joiner Flow because some node
+    shapes were wrong. A rectangle where a diamond belongs is cosmetic; no
+    diagram at all is a missing page."""
+    assert not diagram_engine._is_fatal_shortfall(
+        'branch points were not marked as decisions, so they would render as '
+        'plain rectangles instead of diamonds: "Provision Accounts"')
+
+
+def test_everything_except_shapes_is_still_fatal():
+    """Advisory must not mean "accept anything". The cosmetic case is
+    WHITELISTED rather than the fatal ones blacklisted, so a check added later
+    defaults to fatal -- the first version matched on "no nodes"/"no edges" and
+    missed the real wordings ("it contained 2 node(s)"), which would have let an
+    empty spec render."""
+    for fatal in ("it contained 2 node(s)",
+                  "it contained 8 nodes but only 1 edge(s), so the components are "
+                  "not connected to each other",
+                  "12 of 15 components had no connections at all",
+                  "some future check nobody has written yet"):
+        assert diagram_engine._is_fatal_shortfall(fatal), fatal
 
 
 def test_an_architecture_fan_out_is_not_a_decision():
@@ -703,3 +751,14 @@ def test_decision_correction_lists_the_valid_shapes():
     out = diagram_engine._correction_for("branch points were not marked as decisions")
     for shape in ("process", "decision", "datastore", "external"):
         assert shape in out
+
+
+def test_a_question_label_alone_is_enough():
+    """Isolates the question rule: this node's edges carry NO labels, so only
+    the "?" check can catch it. Without this the outcome-label path masks the
+    question path and a negative control on either passes."""
+    nodes = [{"id": "a", "label": "Aggregate", "group": "HRMS"},
+             {"id": "q", "label": "Manager Approval Required?", "group": "Manager"},
+             {"id": "x", "label": "Approve", "group": "Manager"}]
+    edges = [{"source": "a", "target": "q"}, {"source": "q", "target": "x"}]
+    assert diagram_engine.spec_shortfall(_flow(nodes, edges)) is not None

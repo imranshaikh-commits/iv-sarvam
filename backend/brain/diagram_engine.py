@@ -597,6 +597,42 @@ MIN_EDGE_RATIO = float(os.environ.get("SHILPI_MIN_EDGE_RATIO", "0.6"))
 MAX_ORPHAN_RATIO = float(os.environ.get("SHILPI_MAX_ORPHAN_RATIO", "0.34"))
 
 
+# Labels that read as OUTCOMES of a choice rather than destinations. A node with
+# two edges labelled "Yes"/"No" is a decision; a node with two edges labelled
+# "to Active Directory"/"to Target Applications" is a provisioning step that
+# fans out.
+_OUTCOME_LABEL_RE = re.compile(
+    r"^\s*(yes|no|y|n|true|false|approved|rejected|denied|success|failure|failed|"
+    r"pass|fail|valid|invalid|match|no match|found|not found|exists|does not exist|"
+    r"employee|contractor|new|existing|internal|external|"
+    r"if\s|when\s|otherwise|else)\b",
+    re.I)
+
+
+def _is_branch_point(node: "DiagramNode", outgoing: list) -> bool:
+    """Is this node a DECISION, or just a step that fans out?
+
+    Run 12 lost its joiner-flow diagram twice because the rule was "more than
+    one labelled outgoing edge means decision". That is false for provisioning:
+    "Provision Accounts & Entitlements", "Provision AD Account & Groups" and
+    "Set Initial Password & Propagate" all fan out to several targets and are
+    not choices. The corrective retry then told the model to mark them as
+    decisions, it complied, and a DIFFERENT fan-out node tripped the rule --
+    two rounds, four different nodes, no convergence.
+
+    A question label is the reliable signal, and it is what the model already
+    produces correctly ("Identity Already Exists?", "Manager Approval
+    Required?"). Multiple edges only count when their labels read as OUTCOMES
+    of a choice rather than as destinations.
+    """
+    if node.label.strip().endswith("?"):
+        return True
+    labelled = [(e.label or "").strip() for e in outgoing if (e.label or "").strip()]
+    if len(labelled) < 2:
+        return False
+    return sum(1 for lab in labelled if _OUTCOME_LABEL_RE.match(lab)) >= 2
+
+
 def spec_shortfall(spec: "DiagramSpec") -> str | None:
     """Describe why a spec is unusable as a diagram, or None if it is fine."""
     n = len(spec.nodes)
@@ -633,9 +669,7 @@ def spec_shortfall(spec: "DiagramSpec") -> str | None:
         for node in spec.nodes:
             if node.shape == "decision":
                 continue
-            asks = node.label.strip().endswith("?")
-            branches = [e for e in by_source.get(node.id, []) if (e.label or "").strip()]
-            if asks or len(branches) > 1:
+            if _is_branch_point(node, by_source.get(node.id, [])):
                 undeclared.append(node.label.strip()[:40])
         if undeclared:
             return ("branch points were not marked as decisions, so they would "
@@ -788,6 +822,23 @@ _DECISION_CORRECTION = (
 )
 
 
+# Shortfalls that make a diagram genuinely unusable, as opposed to imperfect.
+# An empty spec or one with no connections is not a diagram; wrong node shapes
+# still communicate the flow.
+# Only ONE shortfall is cosmetic: node shapes. Everything else spec_shortfall
+# can report -- too few nodes, too few edges, disconnected components -- means
+# the spec is not a diagram. Whitelisting the cosmetic case rather than
+# blacklisting the fatal ones means a NEW check added later defaults to fatal,
+# which is the safe direction: the first version of this matched on the words
+# "no nodes"/"no edges" and missed the actual wordings ("it contained 2
+# node(s)", "only 1 edge(s)"), so an empty spec would have been accepted.
+_COSMETIC_SHORTFALL_RE = re.compile(r"branch points were not marked", re.I)
+
+
+def _is_fatal_shortfall(shortfall: str) -> bool:
+    return not _COSMETIC_SHORTFALL_RE.search(shortfall or "")
+
+
 def _correction_for(shortfall: str) -> str:
     """Turn a rejection reason into an instruction aimed at that reason."""
     lead = f"\n\nIMPORTANT: your previous answer was rejected because {shortfall}. "
@@ -863,7 +914,17 @@ async def generate_diagram_spec(
         spec = await _attempt(user_prompt + _correction_for(shortfall))
         shortfall = spec_shortfall(spec)
     if shortfall:
-        raise ValueError(f"model returned an unusable diagram spec — {shortfall}")
+        if _is_fatal_shortfall(shortfall):
+            raise ValueError(f"model returned an unusable diagram spec — {shortfall}")
+        # COSMETIC shortfall after the retry: keep the diagram.
+        #
+        # Runs 9 and 12 both LOST the Integration / Joiner Flow entirely because
+        # some node shapes were wrong. A rectangle where a diamond belongs is a
+        # cosmetic flaw; no diagram at all is a missing page, and it is the one
+        # diagram with a direct counterpart in IV's own proposal. Rejecting a
+        # correct, complete flow over shape metadata is the wrong trade.
+        log.warning("diagram spec accepted with a cosmetic shortfall (%s); "
+                    "keeping the diagram rather than losing it", shortfall)
 
     # Preserve caller intent for title/type, then sanitize/cap everything.
     spec.title = title or spec.title

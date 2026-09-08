@@ -1446,3 +1446,41 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _runner import run_tests  # noqa: E402
 
 run_tests(globals(), "CHAT INTERVIEW GATING TESTS")
+
+
+# ---------------------------------------------------------------------------
+# Budget retry on the STRUCTURED call path (diagram specs, compliance matrix).
+#
+# The prose path got this first. Run 11 lost the compliance matrix to an
+# account-level 402 that the structured path treated as permanent, and run 12's
+# diagram-spec failure surfaced as "I couldn't produce a usable spec" -- a
+# message indistinguishable from a validation rejection, which cost a whole
+# debugging round. Same error, three call paths; this is the second.
+# ---------------------------------------------------------------------------
+
+def test_in_flight_402_is_retryable_on_the_structured_path():
+    assert app._is_retryable_budget_text(
+        "Client error '402 Payment Required' ... 'reason': 'in_flight_budget_exhausted'")
+    assert app._is_retryable_budget_text(
+        "402 - retry after your in-flight requests settle")
+
+
+def test_an_exhausted_balance_still_fails_fast():
+    """Retrying an empty account just stalls the proposal before failing."""
+    assert not app._is_retryable_budget_text(
+        "402 Payment Required: Insufficient credits. Add more at ...")
+
+
+def test_other_errors_are_not_mistaken_for_budget_errors():
+    for msg in ("400 Bad Request", "429 rate limit exceeded",
+                "500 internal error", "validation error: nodes must not be empty"):
+        assert not app._is_retryable_budget_text(msg), msg
+
+
+def test_a_budget_error_does_not_burn_the_fallback_chain():
+    """A 402 affects every model on the account, so walking the chain wastes
+    the remaining models against the same wall. _structured_across_models must
+    re-raise immediately and let the caller back off."""
+    import inspect
+    src = inspect.getsource(app._structured_across_models)
+    assert "_is_retryable_budget_text(str(e)) or model == chain[-1]" in src

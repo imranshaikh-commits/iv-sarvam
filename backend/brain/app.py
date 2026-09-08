@@ -1325,6 +1325,54 @@ async def _structured_with_fallback(response_model, messages: list[dict],
     NOTE: falling back on exception alone is not sufficient for diagram specs —
     an EMPTY spec is schema-valid, so it counts as success here and the caller
     must check the content itself (see generate_diagram_spec)."""
+    # Account-level 402 (in-flight budget) is RETRYABLE and affects every model
+    # on the account, so walking the fallback chain cannot help -- it just burns
+    # the remaining models against the same wall. Run 11 lost the compliance
+    # matrix this way, and the diagram-spec path fails with a message
+    # indistinguishable from a validation rejection, which cost a whole
+    # debugging round in run 12.
+    #
+    # The prose path got this retry first; this is the same fix in the second of
+    # three places the error occurs.
+    last_exc: Exception | None = None
+    for attempt in range(_BUDGET_RETRIES + 1):
+        try:
+            return await _structured_across_models(response_model, messages,
+                                                   models, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            last_exc = e
+            if not _is_retryable_budget_text(str(e)) or attempt == _BUDGET_RETRIES:
+                raise
+            wait = _BUDGET_BACKOFF_S * (attempt + 1)
+            log.warning("structured call hit the account in-flight budget "
+                        "(attempt %d/%d); waiting %ss", attempt + 1,
+                        _BUDGET_RETRIES + 1, wait)
+            await asyncio.sleep(wait)
+    raise last_exc  # pragma: no cover
+
+
+# Mirrors document_engine's budget retry. Matched on the message text because
+# instructor wraps the HTTP error and the status code is not reachable here.
+_BUDGET_RETRIES = int(os.environ.get("SHILPI_BUDGET_RETRIES", "3"))
+_BUDGET_BACKOFF_S = float(os.environ.get("SHILPI_BUDGET_BACKOFF_S", "45"))
+
+
+def _is_retryable_budget_text(text: str) -> bool:
+    """A 402 caused by the IN-FLIGHT ceiling, which clears on its own.
+
+    An exhausted balance is NOT retryable and must fail fast, or a proposal
+    stalls for minutes before failing anyway.
+    """
+    low = (text or "").lower()
+    if "402" not in low and "payment required" not in low:
+        return False
+    return ("in_flight" in low or "in-flight" in low
+            or "settle" in low or "retry after" in low)
+
+
+async def _structured_across_models(response_model, messages: list[dict],
+                                    models: list[str] | None = None, **kwargs):
+    """Try each model in turn. Model-level failures only."""
     ic = instructor_client()
     chain = list(models) if models else [PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL]
     for model in chain:
@@ -1335,7 +1383,9 @@ async def _structured_with_fallback(response_model, messages: list[dict],
             log.info("Structured LLM model=%s", model)
             return result
         except Exception as e:
-            if model == chain[-1]:
+            # An account budget error is not a model failure: fail out
+            # immediately so the caller can back off and retry the whole chain.
+            if _is_retryable_budget_text(str(e)) or model == chain[-1]:
                 raise
             log.warning("Structured call failed on %s (%s); falling back.", model, e)
 

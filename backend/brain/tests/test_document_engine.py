@@ -1634,3 +1634,76 @@ def test_a_failed_section_does_not_claim_retrieval_found_nothing():
     assert "weak evidence" not in content.lower(), (
         "a generation failure was reported as a retrieval failure")
     assert "Retrieval found" not in content
+
+
+# ---------------------------------------------------------------------------
+# Contents page: page numbers and working links.
+# ---------------------------------------------------------------------------
+
+def _toc_xml(sections):
+    import zipfile
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "Amlak International",
+                  "proposal_type": "implementation"},
+        sections=sections)
+    z = zipfile.ZipFile(io.BytesIO(docx_bytes))
+    return z.read("word/document.xml").decode(), z.read("word/settings.xml").decode()
+
+
+_TOC_SECTIONS = [
+    {"id": "company_profile", "title": "Company Profile",
+     "subsections": [{"title": "Inspirit Vision", "content": "a"},
+                     {"title": "Workforce and Capabilities", "content": "b"}]},
+    {"id": "commercial", "title": "Commercial",
+     "subsections": [{"title": "Licence Bill of Quantities", "content": "c"}]},
+]
+
+
+def test_every_contents_link_targets_a_real_bookmark():
+    """A link with no target is worse than plain text: it looks clickable and
+    goes nowhere."""
+    import re
+    xml, _ = _toc_xml(_TOC_SECTIONS)
+    anchors = set(re.findall(r'<w:hyperlink w:anchor="([^"]+)"', xml))
+    marks = set(re.findall(r'<w:bookmarkStart[^>]*w:name="([^"]+)"', xml))
+    assert anchors, "contents entries are not links"
+    assert not (anchors - marks), f"links with no target: {sorted(anchors - marks)}"
+
+
+def test_contents_entries_carry_page_numbers():
+    import re
+    xml, _ = _toc_xml(_TOC_SECTIONS)
+    assert len(re.findall(r"PAGEREF", xml)) >= 2, "no page-number fields"
+
+
+def test_page_numbers_resolve_without_the_reader_pressing_f9():
+    """A bare TOC field was rejected because it shows "Right-click here and
+    choose 'Update Field'" until refreshed. PAGEREF has the same failure mode
+    unless the document asks for fields to update on open."""
+    _, settings = _toc_xml(_TOC_SECTIONS)
+    assert "updateFields" in settings
+
+
+def test_subsection_headings_are_linkable_too():
+    import re
+    xml, _ = _toc_xml(_TOC_SECTIONS)
+    marks = set(re.findall(r'<w:bookmarkStart[^>]*w:name="([^"]+)"', xml))
+    assert any("Workforce" in m for m in marks), \
+        f"subsections are listed in the contents but not bookmarked: {sorted(marks)}"
+
+
+def test_every_embedded_image_is_centred():
+    """add_picture creates its own left-aligned paragraph, so diagrams and
+    reusable images sat against the left margin with a ragged right gap."""
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "implementation"},
+        sections=[{"id": "company_profile", "title": "Company Profile",
+                   "content": "Body.",
+                   "assets": [{"id": "a", "stream": io.BytesIO(_png_bytes())}]}],
+        diagrams=[_diagram("deployment", "Deployment")],
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    aligns = [p.alignment for p in doc.paragraphs if "graphicData" in p._p.xml]
+    assert aligns, "no images embedded"
+    assert all(a == WD_ALIGN_PARAGRAPH.CENTER for a in aligns), aligns

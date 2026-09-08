@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import itertools
 import logging
 import os
 import re
@@ -29,6 +30,7 @@ import httpx
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt, RGBColor
 
 import branding
@@ -958,8 +960,106 @@ _CITATION_RE = re.compile(r"\[(\d+)\]")
 
 
 
+# --- Contents-page navigation -------------------------------------------------
+#
+# The contents table listed section names as plain text: no page numbers and
+# nothing to click. A reader had to scroll and hunt. IV's own proposals carry a
+# numbered, navigable contents page.
+#
+# A bare Word TOC field is still not used -- it displays "Right-click here and
+# choose 'Update Field'" until someone presses F9, which is worse than no page
+# numbers. Instead each heading gets a BOOKMARK, each contents entry is an
+# internal HYPERLINK to it, and the page number is a PAGEREF field. Word and
+# LibreOffice resolve PAGEREF on open when `updateFields` is set in settings,
+# so the reader never sees placeholder text.
+
+_bookmark_counter = itertools.count(1)
+
+
+def _slug_bookmark(text: str) -> str:
+    """A Word-legal bookmark name: letters, digits and underscores, <= 40 chars."""
+    base = re.sub(r"[^0-9A-Za-z]+", "_", (text or "").strip()).strip("_")
+    return f"S_{base[:34]}_{next(_bookmark_counter)}"
+
+
+def _bookmark_paragraph(paragraph, name: str) -> None:
+    """Wrap a paragraph in bookmarkStart/bookmarkEnd so links can target it."""
+    bid = str(next(_bookmark_counter))
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), bid)
+    start.set(qn("w:name"), name)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), bid)
+    paragraph._p.insert(0, start)
+    paragraph._p.append(end)
+
+
+def _add_internal_link(paragraph, text: str, bookmark: str, *,
+                       bold: bool = False, size: Optional[Pt] = None,
+                       color=None):
+    """A clickable run that jumps to a bookmark in this document."""
+    link = OxmlElement("w:hyperlink")
+    link.set(qn("w:anchor"), bookmark)
+    run = OxmlElement("w:r")
+    props = OxmlElement("w:rPr")
+    if bold:
+        props.append(OxmlElement("w:b"))
+    if size is not None:
+        sz = OxmlElement("w:sz")
+        sz.set(qn("w:val"), str(int(size.pt * 2)))
+        props.append(sz)
+    if color is not None:
+        col = OxmlElement("w:color")
+        col.set(qn("w:val"), str(color))
+        props.append(col)
+    run.append(props)
+    t = OxmlElement("w:t")
+    t.set(qn("xml:space"), "preserve")
+    t.text = text
+    run.append(t)
+    link.append(run)
+    paragraph._p.append(link)
+
+
+def _add_pageref(paragraph, bookmark: str, *, size: Optional[Pt] = None) -> None:
+    """A PAGEREF field: the page a bookmark falls on, resolved by the reader."""
+    run = paragraph.add_run()
+    if size is not None:
+        run.font.size = size
+    r = run._r
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = f" PAGEREF {bookmark} \\h "
+    sep = OxmlElement("w:fldChar")
+    sep.set(qn("w:fldCharType"), "separate")
+    placeholder = OxmlElement("w:t")
+    placeholder.text = "-"
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    for el in (begin, instr, sep, placeholder, end):
+        r.append(el)
+
+
+def _enable_field_update_on_open(document: Document) -> None:
+    """Ask Word/LibreOffice to resolve PAGEREF fields when the file is opened.
+
+    Without this the page-number column shows "-" until the reader presses F9 --
+    the same defect that made a bare TOC field unacceptable.
+    """
+    try:
+        settings = document.settings.element
+        if settings.find(qn("w:updateFields")) is None:
+            el = OxmlElement("w:updateFields")
+            el.set(qn("w:val"), "true")
+            settings.append(el)
+    except Exception as e:  # noqa: BLE001 - a missing page number must not fail the doc
+        log.warning("could not enable field auto-update: %s", e)
+
+
 def _add_static_toc(document: Document, sections: list[dict],
-                    extra_titles: Optional[list[str]] = None) -> None:
+                    extra_titles: Optional[list[str]] = None) -> dict[str, str]:
     """Write a formatted contents table from the headings we already know.
 
     Renders as a real table (section | subsections) rather than a flat run of
@@ -972,21 +1072,26 @@ def _add_static_toc(document: Document, sections: list[dict],
         title = (sec.get("title") or "").strip()
         if not title:
             continue
-        subs = [ (sub.get("title") or "").strip()
-                 for sub in (sec.get("subsections") or []) ]
+        subs = [(sub.get("title") or "").strip()
+                for sub in (sec.get("subsections") or [])]
         rows.append((title, [x for x in subs if x]))
     for title in extra_titles or []:
         rows.append((title, []))
     if not rows:
         return
 
-    table = document.add_table(rows=0, cols=2)
+    # Bookmark names are assigned HERE and handed back to the section renderer,
+    # so the contents entry and the heading it targets cannot drift apart.
+    bookmarks: dict[str, str] = {}
+
+    table = document.add_table(rows=0, cols=3)
     table.style = "Table Grid"
     table.autofit = False
     for idx, (title, subs) in enumerate(rows, start=1):
         cells = table.add_row().cells
         cells[0].width = Inches(0.45)
-        cells[1].width = Inches(5.55)
+        cells[1].width = Inches(4.95)
+        cells[2].width = Inches(0.60)
 
         num = cells[0].paragraphs[0]
         num.paragraph_format.space_after = Pt(2)
@@ -994,16 +1099,24 @@ def _add_static_toc(document: Document, sections: list[dict],
         nrun.bold = True
         nrun.font.color.rgb = branding.ORANGE
 
+        mark = bookmarks.setdefault(title, _slug_bookmark(title))
         body = cells[1].paragraphs[0]
         body.paragraph_format.space_after = Pt(2)
-        body.add_run(title).bold = True
+        _add_internal_link(body, title, mark, bold=True, color=branding._NAVY_HEX)
+
+        page = cells[2].paragraphs[0]
+        page.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        page.paragraph_format.space_after = Pt(2)
+        _add_pageref(page, mark)
+
         for sub in subs:
+            sub_mark = bookmarks.setdefault(sub, _slug_bookmark(sub))
             sp = cells[1].add_paragraph()
             sp.paragraph_format.left_indent = Inches(0.18)
             sp.paragraph_format.space_after = Pt(0)
-            r = sp.add_run(sub)
-            r.font.size = Pt(9)
-            r.font.color.rgb = branding.NEUTRAL_MUTED
+            _add_internal_link(sp, sub, sub_mark, size=Pt(9),
+                               color="6B6B72")
+    return bookmarks
 
 
 def _add_toc_field(document: Document) -> None:
@@ -1245,7 +1358,13 @@ def _add_subheading(document: Document, text: str, *, level: int = 3) -> None:
 
 
 def _add_picture_fitted(document: Document, stream, *, max_w, max_h) -> None:
-    """Insert an image scaled to fit inside (max_w, max_h), keeping aspect ratio."""
+    """Insert an image scaled to fit inside (max_w, max_h), keeping aspect ratio.
+
+    CENTRED. `document.add_picture` creates its own paragraph and leaves it
+    left-aligned, so every diagram and reusable image sat hard against the left
+    margin with a ragged gap on the right -- visible against IV's own documents,
+    where images are centred.
+    """
     try:
         from PIL import Image as _PILImage
         pos = stream.tell() if hasattr(stream, "tell") else None
@@ -1256,12 +1375,20 @@ def _add_picture_fitted(document: Document, stream, *, max_w, max_h) -> None:
         if w_px and h_px:
             scale = min(max_w / w_px, max_h / h_px)
             document.add_picture(stream, width=int(w_px * scale), height=int(h_px * scale))
+            _centre_last_paragraph(document)
             return
     except Exception as e:  # noqa: BLE001 — never lose a diagram over sizing
         log.warning("could not measure diagram for fitting (%s); using width only", e)
         if hasattr(stream, "seek"):
             stream.seek(0)
     document.add_picture(stream, width=max_w)
+    _centre_last_paragraph(document)
+
+
+def _centre_last_paragraph(document: Document) -> None:
+    """Centre the paragraph add_picture just created."""
+    if document.paragraphs:
+        document.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
 
 
 # Reusable assets are supporting material, not the point of the page: sized
@@ -1320,7 +1447,8 @@ def _unplaced_diagrams(diagrams: Optional[list[dict]],
 
 
 def _add_approved_diagrams(document: Document, embeddable: list[dict],
-                           already_placed: Optional[set] = None) -> None:
+                           already_placed: Optional[set] = None,
+                           toc_bookmarks: Optional[dict] = None) -> None:
     """Embed ONLY approved, rendered architecture diagrams as images.
 
     A diagram is embedded iff status == 'approved' and it carries usable image
@@ -1341,7 +1469,9 @@ def _add_approved_diagrams(document: Document, embeddable: list[dict],
         return
 
     document.add_page_break()
-    branding.add_section_heading(document, "Solution Architecture Diagrams")
+    _dg = branding.add_section_heading(document, "Solution Architecture Diagrams")
+    if toc_bookmarks and "Solution Architecture Diagrams" in toc_bookmarks:
+        _bookmark_paragraph(_dg, toc_bookmarks["Solution Architecture Diagrams"])
     intro = document.add_paragraph()
     irun = intro.add_run(
         "The following architecture diagrams have been reviewed and approved for inclusion. "
@@ -1536,7 +1666,9 @@ def assemble_docx(
         "Compliance Matrix" if any(
             s.get("id") == COMPLIANCE_SECTION_ID for s in sections) else None,
     ) if t]
-    _add_static_toc(document, sections, _toc_extra)
+    # Bookmark names come BACK from the contents builder, so a heading and its
+    # contents entry cannot drift apart.
+    _toc_bookmarks = _add_static_toc(document, sections, _toc_extra) or {}
     document.add_page_break()
 
     # --- Sections -----------------------------------------------------------
@@ -1548,7 +1680,10 @@ def assemble_docx(
 
     aggregated_assumptions: list[str] = []
     for sec in sections:
-        heading = branding.add_section_heading(document, sec.get("title", "Untitled"))
+        _sec_title = sec.get("title", "Untitled")
+        heading = branding.add_section_heading(document, _sec_title)
+        if _sec_title in _toc_bookmarks:
+            _bookmark_paragraph(heading, _toc_bookmarks[_sec_title])
         if sec.get("needs_sme_review"):
             flag = heading.add_run("   [SME REVIEW REQUIRED]")
             flag.font.size = Pt(10)
@@ -1571,7 +1706,9 @@ def assemble_docx(
                 # an empty H2 would put a blank line in the table of contents.
                 title = (sub.get("title") or "").strip()
                 if title:
-                    document.add_heading(title, level=2)
+                    _h2 = document.add_heading(title, level=2)
+                    if title in _toc_bookmarks:
+                        _bookmark_paragraph(_h2, _toc_bookmarks[title])
                 _add_body_paragraphs(document, sub.get("content", ""))
                 # The diagram that explains THIS subsection, immediately after
                 # the prose describing it -- the way IV places them.
@@ -1606,7 +1743,8 @@ def assemble_docx(
             )
 
     # --- Architecture Diagrams (Pass 4 — approved only) --------------------
-    _add_approved_diagrams(document, _inline_diagrams, already_placed=_placed_diagrams)
+    _add_approved_diagrams(document, _inline_diagrams, already_placed=_placed_diagrams,
+                           toc_bookmarks=_toc_bookmarks)
 
     # --- Compliance Matrix (optional) --------------------------------------
     if compliance_markdown:
@@ -1638,6 +1776,10 @@ def assemble_docx(
     if include_appendices:
         _add_appendices(document, metadata,
                         skip=_superseded_appendices({s.get("id") for s in sections}))
+
+    # PAGEREF fields in the contents table resolve when the reader opens the
+    # file, so the page-number column is never a placeholder.
+    _enable_field_update_on_open(document)
 
     buffer = io.BytesIO()
     document.save(buffer)

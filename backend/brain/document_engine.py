@@ -45,6 +45,7 @@ from proposal_templates import (
     topic_for,
 )
 import asset_selection
+import scope_filter
 
 # Two per section: IV's proposals carry 37 images across 11 sections, and a
 # third of those are per-deal architecture drawings we cannot reuse.
@@ -829,7 +830,14 @@ async def draft_section(
     # seven times.
     own = section_spec.render_subsections(context)
     if own:
-        facets = own
+        # Drop subsections whose discovery inputs are all empty. A TABLE
+        # subsection with no inputs renders a header row and "To be confirmed"
+        # in every cell, which reads as work done and figures withheld. BTPN
+        # produced a 6x6 Licence BOQ and a 6x3 Payment Milestones entirely of
+        # placeholders, against an IV proposal that had neither table.
+        facets = scope_filter.filter_subsections(
+            type("_S", (), {"subsections": own})(),
+            context.get("discovery_answers"))
     else:
         n_sub = max(1, min(int(subsections), len(SUBSECTION_FACETS)))
         facets = SUBSECTION_FACETS[:n_sub] if n_sub > 1 else []
@@ -2082,6 +2090,16 @@ async def generate_proposal(
             chosen = [s for s in template if not s.optional]
     else:
         chosen = [s for s in template if not s.optional]
+
+    # Drop sections the client's own answers rule out. Measured on the first
+    # migration proposal (BTPN, a scoped ForgeRock upgrade): Shilpi produced
+    # 6,141 prose words against IV's 2,642 for the same deal, including a
+    # Decommissioning section for an in-place version upgrade and a Knowledge
+    # Transfer section the consultant had marked out of scope. A section the
+    # answers exclude is worse than a missing one: it tells a reviewer the
+    # document was not read.
+    chosen, _dropped_sections = scope_filter.select_sections(
+        chosen, discovery_answers)
 
     draft_specs = [s for s in chosen if s.id != COMPLIANCE_SECTION_ID]
 

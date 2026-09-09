@@ -50,6 +50,35 @@ def _headers(*, prefer_representation: bool = True) -> dict:
     return h
 
 
+def _why(e: Exception) -> str:
+    """The reason a Supabase call failed, INCLUDING the response body.
+
+    httpx's str(HTTPStatusError) is only the status line: "Client error '400 Bad
+    Request' for url ...". PostgREST puts the actual cause in the body -- the
+    column, the constraint, the offending value -- and every handler here was
+    throwing that away.
+
+    A real 400 read: "invalid input syntax for type uuid" / "violates check
+    constraint". Without the body, a migration proposal failing to insert
+    surfaced to the user as "the database didn't respond" and took two rounds of
+    guessing to diagnose. The database answered immediately, and precisely.
+    """
+    detail = ""
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        try:
+            body = resp.json()
+            detail = " | ".join(
+                str(body[k]) for k in ("message", "details", "hint", "code")
+                if body.get(k))
+        except Exception:  # noqa: BLE001
+            try:
+                detail = (resp.text or "")[:400]
+            except Exception:  # noqa: BLE001
+                detail = ""
+    return f"{e}{' — ' + detail if detail else ''}"
+
+
 def _table_url(table: str) -> str:
     return f"{SUPABASE_URL}/rest/v1/{table}"
 
@@ -80,7 +109,7 @@ async def create_intake_session(
         resp.raise_for_status()
         rows = resp.json()
     except Exception as e:  # noqa: BLE001 — surface as a typed error for the endpoint
-        log.error("create_intake_session failed: %s", e)
+        log.error("create_intake_session failed: %s", _why(e))
         raise SupabaseError(f"could not create intake session: {e}") from e
     if not rows:
         raise SupabaseError("create_intake_session returned no row")
@@ -99,7 +128,7 @@ async def get_intake_session(client: httpx.AsyncClient, session_id: str) -> dict
         resp.raise_for_status()
         rows = resp.json()
     except Exception as e:  # noqa: BLE001
-        log.error("get_intake_session failed: %s", e)
+        log.error("get_intake_session failed: %s", _why(e))
         return None
     return rows[0] if rows else None
 
@@ -135,7 +164,7 @@ async def patch_intake_answers(
         resp.raise_for_status()
         rows = resp.json()
     except Exception as e:  # noqa: BLE001
-        log.error("patch_intake_answers failed: %s", e)
+        log.error("patch_intake_answers failed: %s", _why(e))
         return None
     return rows[0] if rows else None
 
@@ -172,7 +201,7 @@ async def complete_intake_session(client: httpx.AsyncClient, session_id: str) ->
         )
         resp.raise_for_status()
     except Exception as e:  # noqa: BLE001
-        log.error("complete_intake_session failed: %s", e)
+        log.error("complete_intake_session failed: %s", _why(e))
         raise SupabaseError(f"could not complete intake session: {e}") from e
 
     return {"session_id": session_id, "status": "complete", "complete": True, "missing": []}
@@ -193,7 +222,7 @@ async def link_intake_to_proposal(
         resp.raise_for_status()
         rows = resp.json()
     except Exception as e:  # noqa: BLE001
-        log.error("link_intake_to_proposal failed: %s", e)
+        log.error("link_intake_to_proposal failed: %s", _why(e))
         return None
     return rows[0] if rows else None
 
@@ -241,7 +270,7 @@ async def insert_generated_proposal(
         resp.raise_for_status()
         rows = resp.json()
     except Exception as e:  # noqa: BLE001
-        log.error("insert_generated_proposal failed: %s", e)
+        log.error("insert_generated_proposal failed: %s", _why(e))
         return None
     return rows[0]["id"] if rows else None
 
@@ -287,7 +316,7 @@ async def insert_diagram(
         resp.raise_for_status()
         rows = resp.json()
     except Exception as e:  # noqa: BLE001
-        log.error("insert_diagram failed: %s", e)
+        log.error("insert_diagram failed: %s", _why(e))
         return None
     return rows[0] if rows else None
 
@@ -304,7 +333,7 @@ async def get_diagram(client: httpx.AsyncClient, diagram_id: str) -> dict | None
         resp.raise_for_status()
         rows = resp.json()
     except Exception as e:  # noqa: BLE001
-        log.error("get_diagram failed: %s", e)
+        log.error("get_diagram failed: %s", _why(e))
         return None
     return rows[0] if rows else None
 
@@ -327,7 +356,7 @@ async def list_diagrams_for_proposal(
         resp.raise_for_status()
         return resp.json() or []
     except Exception as e:  # noqa: BLE001
-        log.error("list_diagrams_for_proposal failed: %s", e)
+        log.error("list_diagrams_for_proposal failed: %s", _why(e))
         return []
 
 
@@ -350,7 +379,7 @@ async def update_diagram(
         resp.raise_for_status()
         rows = resp.json()
     except Exception as e:  # noqa: BLE001
-        log.error("update_diagram failed: %s", e)
+        log.error("update_diagram failed: %s", _why(e))
         return None
     return rows[0] if rows else None
 
@@ -465,5 +494,5 @@ async def ping(client: httpx.AsyncClient) -> bool:
         resp.raise_for_status()
         return True
     except Exception as e:  # noqa: BLE001
-        log.error("supabase ping failed: %s", e)
+        log.error("supabase ping failed: %s", _why(e))
         return False

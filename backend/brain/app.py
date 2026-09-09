@@ -826,7 +826,19 @@ def parse_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
 
     for i, (_, value_start, qid) in enumerate(boundaries):
         value_end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(reply)
-        value = reply[value_start:value_end].strip().strip(".;").strip()
+        value = reply[value_start:value_end]
+        # A value NEVER spans a newline into the next answer's list marker.
+        # People paste numbered lists ("5. proposal_type: migration\n6. ...").
+        # The next boundary starts at the LABEL, so everything between -- the
+        # newline and "6." -- was being swallowed into the value. Run 16 stored
+        # proposal_type as "migration\n6", which is not a valid type, and the
+        # generate endpoint rejected it as "the database didn't respond".
+        #
+        # Only trims a trailing line that is JUST a list marker, so a genuinely
+        # multi-line answer (client_responsibilities runs to 685 characters
+        # across several lines) is untouched.
+        value = re.sub(r"\n\s*(?:\d{1,3}[.)]|[-*\u2022])\s*$", "", value)
+        value = value.strip().strip(".;").strip()
         if value and qid not in out:
             out[qid] = value[:2000]
 
@@ -2049,6 +2061,12 @@ async def generate_proposal_endpoint(request: Request):
     # Each was invisible until an end-to-end run of that type. Deriving the set
     # from proposal_templates means a new type is accepted the moment it has a
     # template, and cannot be forgotten here again.
+    # Normalise before validating. A stray list marker or trailing whitespace
+    # from a pasted numbered answer ("migration\n6") is a formatting artefact,
+    # not a different proposal type, and rejecting it produced a database error
+    # message that named nothing.
+    proposal_type = (proposal_type or "").split("\n")[0].strip().lower()
+
     if proposal_type not in proposal_templates.VALID_PROPOSAL_TYPES:
         return JSONResponse(
             {"error": "proposal_type must be one of: "

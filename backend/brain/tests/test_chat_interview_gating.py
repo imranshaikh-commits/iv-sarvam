@@ -1791,3 +1791,55 @@ def test_rerank_is_wired_into_retrieval():
     import inspect
     src = inspect.getsource(app.retrieve_chunks)
     assert "rerank_chunks(query, deduped, k)" in src
+
+
+# ---------------------------------------------------------------------------
+# Numbered lists: a value must not swallow the next answer's list marker.
+#
+# The wide sweep (matching against all 96 questions) made a value run to the
+# next MATCHED LABEL rather than the next line, absorbing whatever sat between.
+# Run 16 captured 94 of 96 fields -- the fix working -- but stored
+# proposal_type as "migration\n6" and client_name as "Bank BTPN\n2". The
+# generate endpoint rejected the type, surfacing as "the database didn't
+# respond".
+# ---------------------------------------------------------------------------
+
+_NUMBERED = """1. client_name: Bank BTPN
+2. industry: Banking
+5. proposal_type: migration
+6. deal_size_bucket: skip"""
+
+
+def test_a_numbered_list_does_not_leak_markers_into_values():
+    got = app.parse_bucket_answers(app._all_questions_bucket(None), _NUMBERED)
+    assert got["client_name"] == "Bank BTPN"
+    assert got["proposal_type"] == "migration"
+    assert got["industry"] == "Banking"
+    for value in got.values():
+        assert "\n" not in value.rstrip(), f"list marker leaked: {value!r}"
+
+
+def test_bulleted_lists_are_handled_too():
+    bulleted = "- client_name: Bank BTPN\n- proposal_type: migration"
+    got = app.parse_bucket_answers(app._all_questions_bucket(None), bulleted)
+    assert got["client_name"] == "Bank BTPN"
+
+
+def test_a_genuinely_multi_line_answer_survives():
+    """client_responsibilities runs to 685 characters across several lines in
+    the real BTPN answer sheet. Trimming must only remove a trailing marker."""
+    multi = ("client_responsibilities: BTPN provides network connectivity;\n"
+             "hardware; databases and DR replication;\n"
+             "version control for configuration artefacts\n"
+             "assumptions: Success criteria documented in week 1")
+    got = app.parse_bucket_answers(app._all_questions_bucket(None), multi)
+    assert len(got["client_responsibilities"].splitlines()) > 1
+    assert got["assumptions"] == "Success criteria documented in week 1"
+
+
+def test_the_endpoint_normalises_a_malformed_proposal_type():
+    """Belt and braces: a formatting artefact is not a different type, and
+    rejecting it produced an error message that named nothing."""
+    import inspect
+    src = inspect.getsource(app)
+    assert 'proposal_type = (proposal_type or "").split("\\n")[0].strip().lower()' in src

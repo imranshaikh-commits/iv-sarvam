@@ -317,14 +317,40 @@ COMPACT_APP_COUNT = 10
 COMPACT_WEEKS = 20
 
 
+# Set by the drafting engine from an LLM judgement made once per proposal. When
+# present it OVERRIDES the keyword heuristic below.
+#
+# The heuristic reads words, not meaning, and got BTPN wrong in run 17. The
+# environments answer said "Pre-Production and Production exist but are out of
+# IV's scope"; the pattern saw "production" and concluded production was IN
+# scope, so the engagement scored one signal instead of two and the document
+# came out at 44 subsections against IV's 19.
+#
+# That is the same class of mistake as the colon-only parser -- pattern matching
+# where reading was required -- so the fix is the same: ask the model, keep the
+# heuristic as the offline fallback.
+SCALE_ANSWER_KEY = "_engagement_scale"
+
+
 def is_compact_engagement(answers: Optional[dict]) -> bool:
     """Is this a small engagement that warrants one of each thing?
+
+    Prefers an explicit judgement stored under SCALE_ANSWER_KEY. Falls back to
+    keyword signals when there is none, so this stays a pure function and every
+    existing test keeps working without a model.
 
     Positive evidence only. An engagement with no size signals at all is NOT
     treated as compact -- the cost of under-writing a large proposal is far
     higher than the cost of an over-long small one.
     """
     answers = answers or {}
+
+    explicit = str(answers.get(SCALE_ANSWER_KEY) or "").strip().lower()
+    if explicit in ("compact", "small"):
+        return True
+    if explicit in ("full", "large", "standard"):
+        return False
+
     signals = 0
 
     apps = str(answers.get("app_count") or "")
@@ -351,8 +377,13 @@ def is_compact_engagement(answers: Optional[dict]) -> bool:
         signals += 1
 
     envs = str(answers.get("envs") or "").lower()
-    if envs and not re.search(r"production", envs):
-        signals += 1
+    if envs:
+        # "Pre-Production and Production exist but are OUT OF IV's scope" names
+        # production and excludes it. Presence of the word is not inclusion.
+        excluded = re.search(r"production[^.]{0,60}(out of|not in|outside)\s+"
+                             r"(iv'?s?\s+)?scope", envs)
+        if excluded or not re.search(r"production", envs):
+            signals += 1
 
     return signals >= 2
 

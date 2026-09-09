@@ -290,3 +290,54 @@ def test_the_implementation_task_list_exists():
     _, instruction = found[0]
     assert "Task, Comments" in instruction
     assert "15 rows" in instruction
+
+
+# ---------------------------------------------------------------------------
+# Engagement scale is a READING task, not a keyword match.
+#
+# Run 17 captured 95 of 96 fields -- the intake fix working -- and still
+# produced 44 subsections against IV's 19. The keyword heuristic read the
+# environments answer "Pre-Production and Production exist but are out of IV's
+# scope", saw the word "production", and concluded production was IN scope. Same
+# class of mistake as the colon-only parser: pattern matching where reading was
+# required.
+# ---------------------------------------------------------------------------
+
+_RUN17 = {
+    "app_count": "skip", "duration": "skip",
+    "in_scope": "Upgrade the ForgeRock CIAM stack from V6.5.x to V7.3 on-premise",
+    "out_of_scope": "end-user training is BTPN's responsibility",
+    "is_migration": "true",
+    "envs": ("Development, SIT and UAT are in IV's scope. Pre-Production and "
+             "Production exist but are out of IV's scope"),
+}
+
+
+def test_production_named_but_excluded_reads_as_excluded():
+    """THE run-17 failure, verbatim."""
+    assert S.is_compact_engagement(_RUN17)
+
+
+def test_production_genuinely_in_scope_still_reads_as_full():
+    full = dict(_RUN17, envs="Production, DR, UAT and Development",
+                in_scope="greenfield build")
+    assert not S.is_compact_engagement(full)
+
+
+def test_an_explicit_judgement_overrides_the_heuristic():
+    """The model's reading wins; the heuristic is the offline fallback."""
+    assert S.is_compact_engagement({S.SCALE_ANSWER_KEY: "compact"})
+    assert not S.is_compact_engagement(
+        {S.SCALE_ANSWER_KEY: "full", "app_count": "2", "duration": "4 weeks"})
+
+
+def test_an_unrecognised_judgement_falls_back_to_the_heuristic():
+    assert S.is_compact_engagement(dict(_RUN17, **{S.SCALE_ANSWER_KEY: "???"}))
+
+
+def test_the_scale_judgement_is_wired_into_drafting():
+    """CALL-SITE: the judgement must reach the filters, not just exist."""
+    import inspect, document_engine
+    src = inspect.getsource(document_engine.generate_proposal)
+    assert "scale_fn(discovery_answers)" in src
+    assert "scope_filter.SCALE_ANSWER_KEY" in src

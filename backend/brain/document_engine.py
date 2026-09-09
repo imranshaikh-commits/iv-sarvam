@@ -2093,6 +2093,7 @@ async def generate_proposal(
     discovery_answers: Optional[dict] = None,
     client_logo_path: Optional[str] = None,
     asset_fns: Optional[dict] = None,
+    scale_fn: Optional[Callable] = None,
 ) -> dict:
     """Orchestrate: pick template, draft sections concurrently, assemble DOCX.
 
@@ -2123,6 +2124,22 @@ async def generate_proposal(
     # Transfer section the consultant had marked out of scope. A section the
     # answers exclude is worse than a missing one: it tells a reviewer the
     # document was not read.
+    # Judge engagement scale ONCE, before any filtering, and record it on the
+    # answers so every downstream filter reads the same decision. The keyword
+    # heuristic in scope_filter stays as the offline fallback; it misread BTPN
+    # in run 17 by treating the word "production" as inclusion when the
+    # sentence excluded it.
+    if scale_fn and discovery_answers is not None:
+        try:
+            _scale, _why = await scale_fn(discovery_answers)
+            if _scale:
+                discovery_answers = dict(discovery_answers)
+                discovery_answers[scope_filter.SCALE_ANSWER_KEY] = _scale
+                context["discovery_answers"] = discovery_answers
+                log.info("engagement scale: %s (%s)", _scale, _why[:100])
+        except Exception as e:  # noqa: BLE001 - heuristic still applies
+            log.warning("scale judgement failed: %s", e)
+
     chosen, _dropped_sections = scope_filter.select_sections(
         chosen, discovery_answers)
 

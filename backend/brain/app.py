@@ -412,6 +412,68 @@ INTENT_LLM_ENABLED = os.environ.get("SHILPI_INTENT_LLM", "1") not in ("0", "", "
 _INTENT_APPROVE_MIN_CONFIDENCE = 0.8
 
 
+# --- Engagement scale ---------------------------------------------------------
+#
+# IV wrote 53 subsections for a 42-week greenfield SailPoint build and 19 for a
+# scoped ForgeRock version upgrade. Getting this wrong in either direction is
+# expensive: too large and the document contradicts its own scope, too small and
+# it under-sells the work.
+#
+# scope_filter has a keyword heuristic, and it misread BTPN in run 17 --
+# "Pre-Production and Production exist but are OUT OF IV's scope" scored as
+# production being in scope. Judging that needs reading, so it is judged by a
+# model once per proposal and cached on the session.
+class _ScaleResult(BaseModel):
+    scale: str = Field(description="compact or full")
+    reason: str = Field(default="")
+
+
+_SCALE_PROMPT = """Judge the SIZE of an IAM engagement from its discovery answers.
+
+  compact — a scoped piece of work: a version upgrade in place, a subset of
+            environments, a handful of applications, a short duration, or
+            production explicitly out of the delivery team's scope.
+  full    — a substantial build: greenfield implementation, many applications,
+            a long duration, production and DR in scope.
+
+Read what the answers MEAN, not which words appear. "Pre-Production and
+Production exist but are out of our scope" means production is EXCLUDED.
+
+When the answers genuinely do not say, return full: under-writing a large
+proposal costs far more than an over-long small one."""
+
+
+async def judge_engagement_scale(answers: dict) -> tuple[str, str]:
+    """('compact'|'full', reason). Returns ('', '') if it cannot be judged."""
+    relevant = {k: v for k, v in (answers or {}).items()
+                if k in ("in_scope", "out_of_scope", "envs", "app_count",
+                         "user_count", "duration", "is_migration", "versions",
+                         "business_objectives", "delivery_phases",
+                         "existing_iam_platform", "deployment_model")
+                and str(v or "").strip()}
+    if not relevant:
+        return "", ""
+    listing = "\n".join(f"{k}: {v}" for k, v in relevant.items())
+    try:
+        res: _ScaleResult = await asyncio.wait_for(
+            _structured_with_fallback(
+                _ScaleResult,
+                messages=[{"role": "system", "content": _SCALE_PROMPT},
+                          {"role": "user", "content": listing[:4000]}],
+                temperature=0, max_retries=1),
+            timeout=20,
+        )
+    except Exception as e:  # noqa: BLE001 - the keyword heuristic still applies
+        log.warning("engagement scale judgement failed (%s); "
+                    "falling back to the keyword heuristic", e)
+        return "", ""
+    scale = (res.scale or "").strip().lower()
+    if scale not in ("compact", "full"):
+        return "", ""
+    log.info("engagement judged %s: %s", scale, res.reason[:120])
+    return scale, res.reason
+
+
 async def resolve_intent(text: str) -> tuple[Optional[str], str]:
     """Literal hint match first, model second.
 
@@ -2274,6 +2336,8 @@ async def generate_proposal_endpoint(request: Request):
                 # keeps document_engine free of a database dependency.
                 asset_fns={"library": fetch_approved_assets,
                            "download": download_asset},
+                # Engagement scale is a reading task, not a keyword match.
+                scale_fn=judge_engagement_scale,
             )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)

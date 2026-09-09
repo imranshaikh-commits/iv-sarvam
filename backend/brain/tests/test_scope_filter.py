@@ -157,3 +157,35 @@ def test_the_filters_are_actually_wired_into_drafting():
     draft = inspect.getsource(document_engine.draft_section)
     assert "scope_filter.filter_subsections" in draft, \
         "subsections are drafted without the evidence filter"
+
+
+def test_omitted_sections_are_named_in_the_document():
+    """CALL-SITE. Run 15 dropped three sections and said nothing, which makes a
+    deliberately scoped proposal indistinguishable from a truncated one."""
+    import io
+    import document_engine
+    from docx import Document
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "Bank BTPN", "proposal_type": "migration",
+                  "dropped_sections": [
+                      ("decommissioning", "this is an in-place version upgrade"),
+                      ("knowledge_transfer", 'the client placed "training" out of scope')]},
+        sections=[{"id": "current_state", "title": "Current State Assessment",
+                   "content": "Body."}],
+    )
+    text = "\n".join(p.text for p in Document(io.BytesIO(docx_bytes)).paragraphs)
+    assert "Sections omitted for this engagement" in text
+    assert "Decommissioning" in text and "in-place version upgrade" in text
+    assert "Knowledge Transfer" in text
+
+
+def test_no_note_when_nothing_was_dropped():
+    import io
+    import document_engine
+    from docx import Document
+    docx_bytes = document_engine.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "migration"},
+        sections=[{"id": "current_state", "title": "Current State", "content": "b"}],
+    )
+    text = "\n".join(p.text for p in Document(io.BytesIO(docx_bytes)).paragraphs)
+    assert "Sections omitted" not in text

@@ -1677,6 +1677,25 @@ def assemble_docx(
     # Bookmark names come BACK from the contents builder, so a heading and its
     # contents entry cannot drift apart.
     _toc_bookmarks = _add_static_toc(document, sections, _toc_extra) or {}
+
+    # Sections the scope filter removed, named on the page. Run 15 dropped
+    # Decommissioning, Knowledge Transfer and Project Timeline and said nothing,
+    # so a deliberately scoped proposal looked like a truncated one. A reviewer
+    # has to be able to tell the difference, and to push back if a section
+    # should have been kept.
+    _dropped = metadata.get("dropped_sections") or []
+    if _dropped:
+        note = document.add_paragraph()
+        run = note.add_run("Sections omitted for this engagement")
+        run.bold = True
+        run.font.size = Pt(10)
+        run.font.color.rgb = branding.NEUTRAL_MUTED
+        for sid, reason in _dropped:
+            line = document.add_paragraph(style="List Bullet")
+            r = line.add_run(f"{sid.replace('_', ' ').title()} — {reason}")
+            r.font.size = Pt(9)
+            r.font.color.rgb = branding.NEUTRAL_MUTED
+
     document.add_page_break()
 
     # --- Sections -----------------------------------------------------------
@@ -2165,6 +2184,13 @@ async def generate_proposal(
             # A proposal without images is a worse proposal, not a failed one.
             log.warning("asset attachment failed, drafting without images: %s", e)
 
+    # Sections omitted by the scope filter are recorded IN the document. Run 15
+    # dropped three and said nothing, which makes a deliberately scoped-down
+    # proposal indistinguishable from a broken one -- the exact failure the
+    # filter was supposed to avoid.
+    metadata = dict(metadata)
+    metadata["dropped_sections"] = _dropped_sections
+
     docx_bytes = assemble_docx(
         metadata, list(drafted), compliance_markdown,
         client_logo_path=client_logo_path,
@@ -2193,6 +2219,7 @@ async def generate_proposal(
     return {
         "docx_bytes": docx_bytes,
         "sections_meta": sections_meta,
+        "dropped_sections": _dropped_sections,
         "draft_markdown": draft_markdown,
         "filename": filename,
         "included_compliance_matrix": compliance_markdown is not None,

@@ -1484,3 +1484,82 @@ def test_a_budget_error_does_not_burn_the_fallback_chain():
     import inspect
     src = inspect.getsource(app._structured_across_models)
     assert "_is_retryable_budget_text(str(e)) or model == chain[-1]" in src
+
+
+# ---------------------------------------------------------------------------
+# Silent answer loss — the pilot blocker.
+#
+# parse_bucket_answers found fields by scanning for ":" only. An em-dash answer
+# matched nothing and was dropped with no log line and no message. A live BTPN
+# session captured 40 of 96 fields, losing required_diagram_types,
+# deployment_model, cluster_topology, delivery_phases, assumptions and raci.
+# The diagram planner fell back to one default diagram, and two runs were
+# analysed against inputs that never arrived.
+# ---------------------------------------------------------------------------
+
+def _arch_bucket():
+    import intake_template
+    tpl = intake_template.get_intake_template("migration")
+    return next(b for b in tpl["buckets"]
+                if any(q["id"] == "required_diagram_types" for q in b["questions"]))
+
+
+def test_em_dash_answers_are_captured():
+    reply = ("deployment_model — On-premise, production with high availability\n"
+             "required_diagram_types — deployment, migration phases\n"
+             "cluster_topology — 2 nodes per component across AM, IM and DS")
+    got = app.parse_bucket_answers(_arch_bucket(), reply)
+    assert set(got) >= {"deployment_model", "required_diagram_types",
+                        "cluster_topology"}, got
+    assert got["required_diagram_types"] == "deployment, migration phases"
+
+
+def test_colon_answers_still_work():
+    reply = ("deployment_model: On-premise\n"
+             "required_diagram_types: deployment, migration phases")
+    got = app.parse_bucket_answers(_arch_bucket(), reply)
+    assert len(got) == 2, got
+
+
+def test_hyphens_inside_a_value_are_not_separators():
+    """"On-premise", "6.5.x -> 7.3" and "L1-L3" all contain hyphens. Treating
+    them as separators would split values apart."""
+    got = app.parse_bucket_answers(
+        _arch_bucket(),
+        "deployment_model — On-premise, multi-node high-availability cluster")
+    assert got["deployment_model"] == "On-premise, multi-node high-availability cluster"
+
+
+def test_two_answers_on_one_line_do_not_merge():
+    got = app.parse_bucket_answers(
+        _arch_bucket(),
+        "cluster_topology — 2 nodes per component. rto_rpo — skip")
+    assert got.get("rto_rpo") == "skip"
+    assert "rto_rpo" not in (got.get("cluster_topology") or "")
+
+
+def test_a_mentioned_field_that_did_not_parse_is_reported():
+    """The consultant is the only person who knows what they typed."""
+    reply = "deployment_model: On-premise. cluster_topology 2 nodes per component"
+    got = app.parse_bucket_answers(_arch_bucket(), reply)
+    report = app.capture_report(_arch_bucket(), got, reply)
+    assert "cluster_topology" in report
+    assert "could not map" in report
+
+
+def test_unanswered_fields_are_not_reported_as_lost():
+    """Reporting fields the user never mentioned would make every area noisy
+    and train them to ignore the message."""
+    assert app.capture_report(_arch_bucket(), {}, "no idea, skip this area") == ""
+
+
+def test_nothing_is_said_when_everything_parsed():
+    reply = "\n".join(f"{q['id']}: value" for q in _arch_bucket()["questions"])
+    got = app.parse_bucket_answers(_arch_bucket(), reply)
+    assert app.capture_report(_arch_bucket(), got, reply) == ""
+
+
+def test_the_capture_report_is_wired_into_the_interview():
+    """CALL-SITE check: the report is useless if the interview never sends it."""
+    import inspect
+    assert "capture_report(bucket, recorded, q)" in inspect.getsource(app)

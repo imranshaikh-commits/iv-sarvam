@@ -668,14 +668,29 @@ def parse_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
     # semicolons are the normal way a consultant writes, so the parser has to
     # keep them.
     boundaries: list[tuple[int, int, str]] = []  # (label_start, value_start, qid)
-    for m in re.finditer(r":", reply):
+    # A label may be separated from its value by a colon OR a dash. The parser
+    # scanned only for ":" and therefore matched nothing in an em-dash-separated
+    # answer -- a natural way to write, and the format used in a live BTPN
+    # session, where it silently discarded 56 of 96 fields including
+    # required_diagram_types, deployment_model, cluster_topology, delivery_phases
+    # and raci. The diagram planner then fell back to a single default diagram
+    # and two runs were analysed against inputs that never arrived.
+    #
+    # Hyphen is deliberately NOT a separator: it appears inside values far too
+    # often ("on-premise", "6.5.x -> 7.3", "L1-L3") and would split them.
+    for m in re.finditer(r"[:\u2014\u2013]", reply):
         colon = m.start()
         # The label is whatever sits between the previous hard break and here.
         # `;` counts as a break so "a; b; label: value" still finds `label`,
         # but a semicolon NOT followed by a label simply never becomes a
         # boundary and stays inside the preceding value.
         prev = max(reply.rfind(". ", 0, colon), reply.rfind("\n", 0, colon),
-                   reply.rfind(";", 0, colon))
+                   reply.rfind(";", 0, colon),
+                   # A previous separator also ends the preceding value, or a
+                   # second "label — value" on the same line would take the
+                   # whole earlier value as its label.
+                   reply.rfind(":", 0, colon), reply.rfind("\u2014", 0, colon),
+                   reply.rfind("\u2013", 0, colon))
         label_start = prev + 1 if prev >= 0 else 0
         raw_label = reply[label_start:colon]
         # A label is short. This stops a colon deep inside prose from being
@@ -719,6 +734,47 @@ async def resolve_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str
     if parsed:
         return parsed
     return await extract_bucket_answers(bucket, reply_text)
+
+
+def capture_report(bucket: dict, captured: dict, reply_text: str) -> str:
+    """Tell the user which fields in this area did NOT survive parsing.
+
+    The consultant is the ONLY person who knows what they typed, so they are the
+    only one who can catch a field being dropped. Until now the parser discarded
+    what it could not match with no log line and no message: a live BTPN session
+    captured 40 of 96 fields, losing required_diagram_types, deployment_model,
+    cluster_topology, delivery_phases, assumptions and raci among others. The
+    diagram planner fell back to a single default diagram, and two runs were
+    analysed against inputs that had never arrived.
+
+    Silence is reserved for the case where everything was captured, or where the
+    user genuinely did not answer -- a field they never mentioned should not be
+    reported as lost.
+    """
+    questions = bucket.get("questions") or []
+    if not questions:
+        return ""
+    missing = [q["id"] for q in questions if q["id"] not in (captured or {})]
+    if not missing:
+        return ""
+
+    # Only flag a field the user appears to have MENTIONED. Reporting fields
+    # they simply did not answer would make every area noisy and train them to
+    # ignore the message.
+    low = (reply_text or "").lower()
+    mentioned = [qid for qid in missing
+                 if qid.lower() in low
+                 or _norm_label(qid).replace("_", " ") in _norm_label(low)]
+    if not mentioned:
+        return ""
+
+    total = len(questions)
+    got = total - len(missing)
+    lines = [f"_Captured {got} of {total} fields in this area. "
+             f"I could not map: {', '.join(mentioned)}._",
+             "_Re-send those as `field_name: value`, one per line, "
+             "if you want them included._"]
+    return "\n".join(lines)
 
 
 def gap_fill_bucket(missing_ids: list[str], proposal_type: str | None = None) -> dict:
@@ -2431,6 +2487,14 @@ async def chat_completions(request: Request):
                 if next_index < total:
                     parts = ([chat_state.build_recap_line(recorded)]
                              if recorded or not chat_state.is_skip(q) else [])
+                    # Name any field the user mentioned that did NOT parse. They
+                    # are the only person who knows what they typed, so they are
+                    # the only one who can catch a drop. A live session lost 56
+                    # of 96 fields with no message and no log line.
+                    _gaps = capture_report(bucket, recorded, q)
+                    if _gaps:
+                        parts.append("")
+                        parts.append(_gaps)
                     parts.append("")
                     parts.append(chat_state.build_bucket_message(tpl, next_index))
                     parts.append("")

@@ -1688,3 +1688,106 @@ def test_a_runaway_reply_is_capped_and_reported(caplog):
     assert len(out) == app._EXTRACT_REPLY_CHARS
     assert any("truncated" in r.message and "architecture" in str(r.args)
                or "truncated" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Reranking.
+#
+# A 2026 controlled comparison found cross-encoder reranking the ONLY technique
+# that reliably beat plain dense retrieval at this corpus scale -- hybrid
+# BM25+dense and multi-query expansion both finished BELOW it. There is no
+# cross-encoder in the OpenRouter chain, so this is a listwise LLM rerank.
+# ---------------------------------------------------------------------------
+
+def _chunks(n=10):
+    return [{"chunk_text": f"passage {i}", "heading": f"H{i}",
+             "iam_vendor": "ForgeRock", "similarity": 0.9 - i * 0.05}
+            for i in range(n)]
+
+
+def test_rerank_is_off_by_default():
+    """It changes what evidence reaches a client document, so it is an explicit
+    choice, decided with the retrieval scorecard."""
+    assert app.RERANK_ENABLED is False
+
+
+def test_disabled_rerank_is_a_passthrough():
+    import asyncio
+    out = asyncio.run(app.rerank_chunks("q", _chunks(), 4))
+    assert [c["heading"] for c in out] == ["H0", "H1", "H2", "H3"]
+
+
+def test_a_rerank_failure_keeps_similarity_order(monkeypatch):
+    """A reranker that drops evidence when the model is slow would be worse
+    than none: the loss is invisible in the finished document."""
+    import asyncio
+
+    async def boom(*a, **kw):
+        raise RuntimeError("model unavailable")
+
+    monkeypatch.setattr(app, "RERANK_ENABLED", True)
+    monkeypatch.setattr(app, "_structured_with_fallback", boom)
+    out = asyncio.run(app.rerank_chunks("q", _chunks(), 4))
+    assert len(out) == 4
+    assert [c["heading"] for c in out] == ["H0", "H1", "H2", "H3"]
+
+
+def test_rerank_reorders_and_honours_the_models_choice(monkeypatch):
+    import asyncio
+
+    async def ranked(*a, **kw):
+        return app._RerankResult(indices=[5, 2, 9])
+
+    monkeypatch.setattr(app, "RERANK_ENABLED", True)
+    monkeypatch.setattr(app, "_structured_with_fallback", ranked)
+    out = asyncio.run(app.rerank_chunks("q", _chunks(), 3))
+    assert [c["heading"] for c in out] == ["H5", "H2", "H9"]
+
+
+def test_invented_and_duplicate_indices_are_ignored(monkeypatch):
+    """Never trust an index the model was not shown."""
+    import asyncio
+
+    async def bad(*a, **kw):
+        return app._RerankResult(indices=[3, 3, 99, -1, 1])
+
+    monkeypatch.setattr(app, "RERANK_ENABLED", True)
+    monkeypatch.setattr(app, "_structured_with_fallback", bad)
+    out = asyncio.run(app.rerank_chunks("q", _chunks(), 4))
+    heads = [c["heading"] for c in out]
+    assert heads[:2] == ["H3", "H1"]
+    assert len(heads) == len(set(heads))
+
+
+def test_a_selective_rerank_is_topped_up(monkeypatch):
+    """The model may return fewer than k; the caller still asked for k."""
+    import asyncio
+
+    async def few(*a, **kw):
+        return app._RerankResult(indices=[7])
+
+    monkeypatch.setattr(app, "RERANK_ENABLED", True)
+    monkeypatch.setattr(app, "_structured_with_fallback", few)
+    out = asyncio.run(app.rerank_chunks("q", _chunks(), 4))
+    assert out[0]["heading"] == "H7"
+    assert len(out) == 4
+
+
+def test_an_empty_rerank_result_falls_back(monkeypatch):
+    import asyncio
+
+    async def nothing(*a, **kw):
+        return app._RerankResult(indices=[])
+
+    monkeypatch.setattr(app, "RERANK_ENABLED", True)
+    monkeypatch.setattr(app, "_structured_with_fallback", nothing)
+    out = asyncio.run(app.rerank_chunks("q", _chunks(), 4))
+    assert [c["heading"] for c in out] == ["H0", "H1", "H2", "H3"]
+
+
+def test_rerank_is_wired_into_retrieval():
+    """CALL-SITE, and it must run on the WIDER deduped list -- reranking an
+    already-trimmed top-k could only reorder what similarity had chosen."""
+    import inspect
+    src = inspect.getsource(app.retrieve_chunks)
+    assert "rerank_chunks(query, deduped, k)" in src

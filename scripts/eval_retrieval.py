@@ -387,6 +387,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--k", type=int, default=DEFAULT_TOP_K)
     ap.add_argument("--out", default="retrieval_scorecard.json")
+    ap.add_argument("--label", default="",
+                    help="Tag this run, e.g. 'rerank-on', so scorecards are "
+                         "distinguishable when comparing a config change")
     ap.add_argument("--baseline", action="store_true",
                     help="Write the result as the baseline to compare against later")
     ap.add_argument("--compare", metavar="BASELINE_JSON",
@@ -409,7 +412,7 @@ def main() -> int:
     print(f"\nwritten: {out}", file=sys.stderr)
 
     t = result["totals"]
-    print("\n=== SCORECARD ===")
+    print(f"\n=== SCORECARD ({result.get('label')}) ===")
     for key, val in t.items():
         print(f"  {key:28s} {val}")
 

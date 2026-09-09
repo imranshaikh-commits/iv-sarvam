@@ -279,7 +279,103 @@ async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], que
     vendor = detect_vendor(query)
     if vendor:
         deduped.sort(key=lambda r: (0 if vendor in (r.get("iam_vendor") or "").lower() else 1, -float(r.get("similarity") or 0)))
-    return deduped[:k]
+
+    # 4. Rerank. Runs on the WIDER deduped list, not the already-trimmed top-k,
+    #    or it could only reorder what similarity had already chosen.
+    return await rerank_chunks(query, deduped, k)
+
+
+# --- Reranking ---------------------------------------------------------------
+#
+# A 2026 controlled comparison of five retrieval strategies found cross-encoder
+# reranking the ONLY technique that reliably beat plain dense retrieval at this
+# corpus scale -- hybrid BM25+dense and multi-query expansion both finished
+# BELOW it, with multi-query posting the lowest precision of any strategy. That
+# is why hybrid search was closed rather than deferred, and why this is the one
+# retrieval change worth making.
+#
+# There is no cross-encoder in the OpenRouter chain, so this is a LISTWISE LLM
+# rerank: the model is shown the query and the candidates and returns the
+# indices worth keeping, in order. Cheaper than it sounds (one small call per
+# retrieval, no generation) and it judges relevance a cosine distance cannot --
+# whether a chunk actually ANSWERS the query rather than sharing its vocabulary.
+#
+# Off by default. It changes what evidence reaches a client document, so it is
+# an explicit choice, and the retrieval scorecard is the way to decide.
+RERANK_ENABLED = os.environ.get("SHILPI_RERANK_ENABLED", "0") not in ("0", "", "false")
+RERANK_MODEL = os.environ.get("SHILPI_RERANK_MODEL", "anthropic/claude-haiku-4.5")
+RERANK_CANDIDATES = int(os.environ.get("SHILPI_RERANK_CANDIDATES", "24"))
+RERANK_TIMEOUT_S = float(os.environ.get("SHILPI_RERANK_TIMEOUT_S", "20"))
+
+_RERANK_PROMPT = """You rank evidence for an IAM proposal writer.
+
+Given a QUERY and numbered CANDIDATE passages from past proposals, return the
+indices of the passages that genuinely help answer the query, best first.
+
+Judge whether a passage ANSWERS the query, not whether it shares vocabulary. A
+passage about a different topic that happens to use the same words is not
+relevant. Prefer specific technical content over generic marketing prose.
+
+Return AT MOST {k} indices. Return fewer if fewer are genuinely relevant -- do
+not pad the list. Never invent an index."""
+
+
+class _RerankResult(BaseModel):
+    indices: list[int] = Field(default_factory=list)
+
+
+async def rerank_chunks(query: str, chunks: list[dict], k: int) -> list[dict]:
+    """Reorder candidates by judged relevance. Fails soft to the input order.
+
+    Returns the original list unchanged on ANY failure: a reranker that drops
+    evidence when the model is slow or the JSON is malformed would be worse than
+    no reranker, because the failure is invisible in the finished document.
+    """
+    if not RERANK_ENABLED or len(chunks) <= 1:
+        return chunks[:k]
+
+    candidates = chunks[:RERANK_CANDIDATES]
+    listing = "\n\n".join(
+        f"[{i}] ({c.get('iam_vendor') or '?'} | {c.get('heading') or '?'}) "
+        f"{(c.get('chunk_text') or '')[:500]}"
+        for i, c in enumerate(candidates))
+    try:
+        result: _RerankResult = await asyncio.wait_for(
+            _structured_with_fallback(
+                _RerankResult,
+                messages=[
+                    {"role": "system", "content": _RERANK_PROMPT.format(k=k)},
+                    {"role": "user", "content": f"QUERY:\n{query}\n\nCANDIDATES:\n{listing}"},
+                ],
+                models=[RERANK_MODEL],
+                temperature=0,
+                max_retries=1,
+            ),
+            timeout=RERANK_TIMEOUT_S,
+        )
+    except Exception as e:  # noqa: BLE001 - never lose evidence to a rerank failure
+        log.warning("rerank failed (%s); keeping similarity order", e)
+        return chunks[:k]
+
+    # Only indices the model was actually shown, deduped, order preserved.
+    picked, seen = [], set()
+    for i in result.indices:
+        if isinstance(i, int) and 0 <= i < len(candidates) and i not in seen:
+            seen.add(i)
+            picked.append(candidates[i])
+
+    if not picked:
+        log.warning("rerank returned nothing usable; keeping similarity order")
+        return chunks[:k]
+
+    # Top up from the original order if the model was more selective than k.
+    for c in chunks:
+        if len(picked) >= k:
+            break
+        if c not in picked:
+            picked.append(c)
+    log.info("rerank: %d candidates -> %d selected", len(candidates), len(picked[:k]))
+    return picked[:k]
 
 
 def build_grounded_system(chunks: list[dict]) -> str:

@@ -356,6 +356,18 @@ _REJECT_HINTS = ("reject", "not right", "wrong", "change", "revise", "fix", "no 
 _REGEN_HINTS = ("regenerate", "regen", "retry", "try again", "redo", "again",
                 "another version", "another attempt", "different diagram",
                 "one more time")
+# "generate anyway" answers the pre-flight gap prompt: proceed knowing some
+# fields are empty. Without it the prompt would be a loop -- the user says
+# generate, sees the gaps, says generate again, sees them again.
+_FORCE_HINTS = ("generate anyway", "anyway", "proceed anyway", "go ahead anyway",
+                "just generate", "ignore the gaps", "draft it anyway")
+
+
+def is_force(text: str) -> bool:
+    """Did the user tell us to proceed despite known gaps?"""
+    return any(h in f" {_normalise(text)} " for h in _FORCE_HINTS)
+
+
 _DRAFT_HINTS = (
     "generate the proposal", "draft the proposal", "generate proposal",
     "draft proposal", "build the proposal", "write the proposal",
@@ -380,7 +392,10 @@ def classify_architecture_intent(text: str) -> str | None:
     padded = f" {norm} "
 
     # Drafting can be requested in a longer sentence — it is explicit either way.
-    if any(h in padded for h in _DRAFT_HINTS):
+    # "generate anyway" is the reply to the pre-flight gap prompt and must ALSO
+    # read as a draft request, or the user is stuck in a loop: they say generate,
+    # see the gaps, say generate anyway, and are told to say generate.
+    if any(h in padded for h in _DRAFT_HINTS) or is_force(text):
         return INTENT_DRAFT
     if any(h in padded for h in _REGEN_HINTS):
         return INTENT_REGENERATE

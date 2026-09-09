@@ -601,13 +601,46 @@ def test_drafting_mode_generates_the_document(monkeypatch):
         "messages": [
             {"role": "assistant", "content": "ok " + cs.encode_marker(
                 cs.ChatState(mode=cs.MODE_DRAFTING, session="s1", proposal="prop-1"))},
-            {"role": "user", "content": "generate the proposal"},
+            # "generate anyway" bypasses the pre-flight gap prompt, which
+            # otherwise fires here because this fixture has no discovery
+            # answers at all.
+            {"role": "user", "content": "generate anyway"},
         ],
         "stream": False,
     })
     content = resp.json()["choices"][0]["message"]["content"]
     assert "Download DOCX" in content
     assert cs.decode_marker(content).mode == cs.MODE_DRAFTING
+
+
+def test_the_gap_prompt_fires_before_a_wasteful_generation(monkeypatch):
+    """Only 1 of the 75 fields the templates draft from is marked required, so
+    every run so far carried 20-30 [SME REVIEW] markers -- gaps that were only
+    visible AFTER generation, when filling them costs a whole rerun."""
+    called = []
+
+    async def fake_draft(sid, pid):
+        called.append(1)
+        return "## Proposal generated"
+
+    monkeypatch.setattr(app, "generate_proposal_from_chat", fake_draft)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "ok " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_DRAFTING, session="s1", proposal="prop-1"))},
+            {"role": "user", "content": "generate the proposal"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert "still empty" in content, content[:200]
+    assert not called, "generation ran despite known gaps"
+
+
+def test_generate_anyway_proceeds():
+    assert cs.is_force("generate anyway")
+    assert cs.is_force("just generate")
+    assert not cs.is_force("generate the proposal")
 
 
 def test_drafting_mode_ignores_unrelated_chatter(monkeypatch):

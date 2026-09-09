@@ -56,6 +56,7 @@ from diagram_engine import DiagramSpec, InvalidTransition
 # keyless. Only used when an export flag is set on /v1/generate-proposal.
 import export_engine
 import proposal_templates
+import scope_filter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("shilpi-brain")
@@ -2689,10 +2690,60 @@ async def chat_completions(request: Request):
 
         # --- drafting: architecture approved, full document can be produced ---
         if state.mode == chat_state.MODE_DRAFTING:
-            if chat_state.classify_architecture_intent(q) != chat_state.INTENT_DRAFT:
+            _intent = chat_state.classify_architecture_intent(q)
+
+            # A late answer during the drafting gate is an ANSWER, not noise.
+            # The gap prompt below asks for missing fields, so the reply to it
+            # has to be captured rather than met with "say generate the
+            # proposal".
+            if _intent != chat_state.INTENT_DRAFT and state.session:
+                _late = await resolve_bucket_answers(
+                    _all_questions_bucket(None), q, None)
+                if _late:
+                    try:
+                        async with httpx.AsyncClient() as sclient:
+                            await supabase_client.patch_intake_answers(
+                                sclient, state.session, _late)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("late answer patch failed: %s", e)
+                    return _emit_chat(
+                        f"Captured: {', '.join(sorted(_late))}.\n\n"
+                        "Say **generate the proposal** when you're ready.\n\n"
+                        + chat_state.encode_marker(state), stream)
+
+            if _intent != chat_state.INTENT_DRAFT:
                 return _emit_chat(
                     chat_state.DRAFTING_PROMPT_MESSAGE + "\n\n"
                     + chat_state.encode_marker(state), stream)
+
+            # Pre-flight: name the quality-critical fields still empty BEFORE
+            # spending a generation on them. Only 1 of the 75 fields the
+            # templates draft from is marked required in the intake, which is
+            # why every run so far carried 20-30 [SME REVIEW] markers -- gaps
+            # were only visible after generation, when filling them costs a
+            # whole rerun. Shown ONCE: "generate anyway" or a second request
+            # proceeds.
+            if state.session and not chat_state.is_force(q):
+                try:
+                    async with httpx.AsyncClient() as sclient:
+                        _row = await supabase_client.get_intake_session(
+                            sclient, state.session)
+                    _ans = dict((_row or {}).get("answers") or {})
+                    if not _ans.get("_gap_prompt_shown"):
+                        _tmpl = proposal_templates.get_template(
+                            _ans.get("proposal_type") or "implementation")
+                        _keep, _ = scope_filter.select_sections(_tmpl, _ans)
+                        _gaps = scope_filter.missing_high_value(_keep, _ans)
+                        if _gaps:
+                            async with httpx.AsyncClient() as sclient:
+                                await supabase_client.patch_intake_answers(
+                                    sclient, state.session,
+                                    {"_gap_prompt_shown": "yes"})
+                            return _emit_chat(
+                                scope_filter.describe_gaps(_gaps) + "\n\n"
+                                + chat_state.encode_marker(state), stream)
+                except Exception as e:  # noqa: BLE001 - never block drafting
+                    log.warning("pre-flight gap check failed: %s", e)
 
             async def _draft() -> str:
                 msg = await generate_proposal_from_chat(state.session, state.proposal)

@@ -238,6 +238,73 @@ def filter_subsections(spec, answers: Optional[dict]) -> list:
     return kept or pairs
 
 
+# Fields that materially change a section's quality when missing. A section is
+# still drafted without them -- this is a prompt, not a gate -- but the
+# consultant is told BEFORE generation rather than discovering 26 [SME REVIEW]
+# markers afterwards.
+#
+# Only 1 of the 75 fields the templates draft from is marked required in the
+# intake, which is why every run so far has carried 20-30 markers: nothing ever
+# checked that a section had its inputs before drafting it.
+HIGH_VALUE_FIELDS: dict[str, tuple[str, ...]] = {
+    "proposed_solution": ("hardware_sizing_inputs", "deployment_model",
+                          "cluster_topology", "envs", "target_integrations"),
+    "target_state": ("hardware_sizing_inputs", "deployment_model",
+                     "cluster_topology", "envs"),
+    "scope_understanding": ("in_scope", "out_of_scope", "app_count", "user_count"),
+    "current_state": ("current_state", "existing_iam_platform", "versions"),
+    "implementation_approach": ("delivery_phases", "client_responsibilities", "raci"),
+    "delivery_approach": ("delivery_phases", "client_responsibilities"),
+    "project_timeline": ("duration", "timeline_milestones"),
+    "migration_strategy": ("existing_iam_platform", "versions", "apps_to_onboard"),
+    "assumptions_responsibilities": ("assumptions", "dependencies",
+                                     "client_responsibilities"),
+    "commercial": ("pricing_model", "payment_milestones"),
+}
+
+
+def missing_high_value(sections: list, answers: Optional[dict]) -> dict:
+    """Per section, which quality-critical fields were left empty.
+
+    Returned so the caller can ASK before drafting. Every run so far has been
+    scored against a document whose gaps were only visible after generation,
+    when the cost of filling them is a whole rerun.
+    """
+    answers = answers or {}
+    out: dict[str, list[str]] = {}
+    for spec in sections:
+        fields = HIGH_VALUE_FIELDS.get(spec.id)
+        if not fields:
+            continue
+        gaps = [f for f in fields if _is_empty(answers.get(f))]
+        if gaps:
+            out[spec.id] = gaps
+    return out
+
+
+def describe_gaps(gaps: dict) -> str:
+    """A pre-flight prompt naming what will be weak and why.
+
+    Deliberately not a blocker: a consultant often genuinely does not have a
+    figure, and refusing to draft would be worse than drafting with a marker.
+    """
+    if not gaps:
+        return ""
+    every = sorted({f for fs in gaps.values() for f in fs})
+    lines = [
+        f"**{len(every)} field(s) that shape the draft are still empty.** "
+        "Sections will be written, but these areas will carry [SME REVIEW] "
+        "markers rather than your figures:",
+        "",
+    ]
+    for sid, fields in sorted(gaps.items()):
+        lines.append(f"  - {sid.replace('_', ' ')}: {', '.join(fields)}")
+    lines += ["",
+              "Send any of them as `field_name: value`, one per line, "
+              "or say **generate anyway**."]
+    return "\n".join(lines)
+
+
 def describe_dropped(dropped: list) -> str:
     """One line per omitted section, for the chat reply."""
     if not dropped:

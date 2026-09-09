@@ -15,23 +15,29 @@
 
 ## Progress Dashboard
 
-> Quick-glance project status. Last updated: 2026-08-27 (IST).
+> Quick-glance project status. Last updated: 2026-09-09 (IST).
 
-**Overall completion: 82%**
+**Overall completion: 79%**
 `████████████████░░░░`
 
-Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 85,
+Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 60,
 0). Recompute it when a row changes rather than adjusting it by feel — the
 previous figure was hand-typed, drifted to 88% while the table said 81%, and was
 removed for that reason.
+
+**Phase 6 fell from 85% to 60% on 2026-09-09.** Not a build regression: the
+first run against a SECOND client exposed that ten runs of tuning had been
+fitting to one document, and that the intake parser silently discards roughly
+half of what a consultant types. Both were invisible while every run used the
+same benchmark.
 
 It measures **build progress against the plan**, which is not readiness. The two
 questions that gate use are below, and neither is a percentage.
 
 | | Status |
 |---|---|
-| **Can IV use this on a live deal?** | Not yet. Blocked by: the frontend is plain HTTP and this repo is public. Both small, both parked. |
-| **Would a senior IAM architect sign the output?** | **Sent for review after run 9; no verdict yet.** Ten scored runs, one reader so far. No amount of further code answers this. |
+| **Can IV use this on a live deal?** | **No.** The intake parser silently drops answers it cannot match — a real interview captured 40 of 96 fields with nothing logged. A consultant would answer 96 questions and lose half of them without being told. That alone disqualifies a pilot, before the plain-HTTP frontend and public repo. |
+| **Would a senior IAM architect sign the output?** | **Sent for review after run 9; no verdict yet.** Fifteen scored runs, one reader. And thirteen of those used the same benchmark, so the quality judgement behind them is narrower than the count suggests. |
 
 ### Phase completion
 
@@ -85,7 +91,10 @@ client-confidential proposal content and this repository is public. See
 - **Diagram detail** — swimlanes and page-fit are built and working (run 6 produced a six-lane joiner flow with real branch logic). Two gaps remain: the model ignores the `shape` field so decision points render as rectangles rather than diamonds, and hardware-spec callouts beside the boxes are not built.
 - **Durable diagram spec-template store** (per vendor + diagram type) — deferred from Pass 4.
 - **Reranking** — a 2026 controlled comparison found cross-encoder reranking the only technique that reliably beat plain dense retrieval at this corpus scale, while hybrid BM25+dense and multi-query expansion both finished BELOW it. Reranking is therefore the next retrieval change worth measuring; hybrid search is not.
-- **No verdict from a reviewer other than the builder** — ten scored runs, one reader. Run 9 has been sent to a senior IAM architect against the "would you sign this" benchmark; no response yet. Every quality judgement in this document rests on one opinion until that comes back, and no amount of further building changes it.
+- **The intake parser silently discards answers** — `parse_bucket_answers` finds fields by scanning for colons; an em-dash-separated answer matches nothing and is dropped with no log line. 40 of 96 fields captured in a live session. Two fixes needed: accept em/en dashes as separators, and report per-area capture counts back to the consultant so a missed field is visible to the only person who knows it was answered.
+- **Output is not sized to the engagement** — run 15 produced 4,897 prose words against IV's 2,642 for the same deal, 1.85x. Scope filtering removed three contradicted sections; the remaining gap is subsection COUNT (43 against IV's 19), which needs the template to scale rather than the filter to prune.
+- **Dropped sections are not reported in the document** — `scope_filter.describe_dropped` exists and is not surfaced, so run 15 omitted three sections with no explanation. A scoped-down proposal must be distinguishable from a broken one.
+- **No verdict from a reviewer other than the builder** — fifteen scored runs, one reader, and thirteen of them against the same benchmark. Run 9 has been sent to a senior IAM architect against the "would you sign this" benchmark; no response yet. Every quality judgement in this document rests on one opinion until that comes back, and no amount of further building changes it.
 - **`outcome` is `unknown` for all 112 proposals** — recording won/lost and weighting retrieval toward what actually won is the single change that would compound more than anything else here. It needs a human who knows the answers.
 - **Phase 6 pilot against historical RFPs** — not started. The `RFP/` folder in the Drive bank (20 client-authored documents, tiered `testset` during curation) is the natural test set.
 - **Visual density** — the human Amlak proposal carries 37 images; run 10 produced 14. Placement is now correct (images sit under the section heading they were chosen for, diagrams inside the subsection that explains them), but the COUNT is bounded by the library rather than the budget: Similar Experience is allowed six and took two, because only a fraction of the 113 approved corporate assets match its pattern. IV puts ten images in Case Studies; we put two. Realistic ceiling is 15–20 without new source material.
@@ -96,6 +105,58 @@ client-confidential proposal content and this repository is public. See
 - **Company Profile is thin** — 493 words but generic, because the `company_profile` chunks behind it are mostly headings and fragments rather than IV's actual profile prose. A corpus problem, not a template one.
 - **Sizing evidence is lopsided** — the retrieval scorecard measures tabular evidence per probe: `sizing_prod` scores 1.00, `sizing_dr` scores 0.12. The corpus is rich in production sizing tables and nearly bare of DR-specific ones, which is why run 7 lost its DR, UAT and Development sizing tables. No amount of retrieval tuning fixes a gap in the source material.
 - **The benchmark must stay out of the corpus** — both Amlak proposals were ingested during bulk ingestion and have been deleted. Run 7 was drafted with its own answer available, so its Similar Experience quality is genuine but its overall score is inflated. Always run the leakage check before a scored run.
+
+### Recently shipped (2026-08-27 → 09-09)
+
+**The first run against a second client changed what "good" means.** Thirteen
+runs had used the Amlak proposal — a 42-week greenfield SailPoint build. Bank
+BTPN is a scoped ForgeRock 6.5.x → 7.3 upgrade of three lower environments, and
+IV wrote a quarter of the document for it:
+
+| | IV Amlak | IV BTPN | Shilpi BTPN (run 14) | after scope filter (run 15) |
+|---|---|---|---|---|
+| Prose words | 6,648 | **2,642** | 6,141 | 4,897 |
+| Tables | 25 | **10** | 19 | 17 |
+| Top-level sections | 11 | **8** | 15 | 12 |
+
+Shilpi's BTPN output was almost exactly the size of IV's *Amlak* proposal. The
+system produced one size of document regardless of engagement, and by the
+scorecard we had been using ("more tables than the original") that looked like a
+win. Three sections directly contradicted the answers given: Decommissioning for
+an in-place version upgrade, Knowledge Transfer marked out of scope, and a
+Commercial section whose licence, pricing and milestone fields were all skipped.
+
+**Scope filtering** (`scope_filter.py`) now drops sections and table subsections
+the discovery answers positively rule out, with a stated reason for each. It
+never guesses: silence about a section is not evidence against it, core sections
+are never dropped, and it keeps everything rather than leave fewer than five.
+
+**The intake parser silently discards answers.** `parse_bucket_answers` locates
+fields by scanning for colons. An answer written with an em dash — a natural way
+to write, and the format used in a live BTPN session — matches nothing and is
+dropped with no log line. Measured on that session: **40 of 96 fields captured**,
+losing `required_diagram_types`, `deployment_model`, `ha_dr_requirements`,
+`cluster_topology`, `delivery_phases`, `assumptions`, `raci` and
+`payment_milestones` among others. The diagram planner then fell back to a
+single default diagram, and run 14 was scored against inputs half of which never
+arrived. **Not yet fixed — this is the pilot blocker.**
+
+**`migration` had to be added in five places, four of which were broken.** The
+first migration proposal ever attempted found each in turn: `get_template()`
+raised, the section→discovery map kept pre-rebuild ids, `/v1/generate-proposal`
+validated against a hardcoded `{"implementation", "mss"}`, and
+`generated_proposals_proposal_type_check` kept the old type list. Every one was
+invisible until an end-to-end run of that type. The endpoint now validates
+against the template registry, and a test greps every module for hardcoded type
+lists.
+
+**Diagnosis was slower than it needed to be, twice.** Eleven Supabase handlers
+logged only `str(exception)` — the status line — discarding the PostgREST body
+that names the column and constraint. "The database didn't respond" cost two
+rounds when the database had answered precisely. Fixed. Separately, rebuilding a
+container before capturing its logs destroyed the evidence for two failures.
+
+---
 
 ### Recently shipped (2026-08-22 → 27)
 
@@ -254,6 +315,13 @@ Shilpi is that system. He is **not a chatbot and not a search engine** — he is
 ---
 
 ## Known Gaps — Not Pilot-Ready Yet
+
+**The blocker, in one line:** the intake parser drops answers it cannot match,
+silently. A live session captured 40 of 96 fields with nothing written to the
+log. Until that is fixed, a consultant would answer 96 questions on a real deal
+and lose half of them without being told — which is worse than not having the
+tool.
+
 
 Honest about what is not done, so no one mistakes the current state for production-ready:
 

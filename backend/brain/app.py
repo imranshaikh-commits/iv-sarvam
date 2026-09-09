@@ -527,6 +527,31 @@ def _clean_answer_value(raw: str) -> str:
 _EXTRACT_TIMEOUT_S = 25.0
 
 
+# A consultant answering a 96-field interview pastes a long block. The LLM
+# fallback used a flat reply_text[:4000], which silently cut the tail off --
+# the same silent-loss class as the colon-only parser and the current-bucket-only
+# lookup. Whatever fell past 4,000 characters was never seen by the extractor
+# and never reported.
+_EXTRACT_REPLY_CHARS = int(os.environ.get("SHILPI_EXTRACT_REPLY_CHARS", "24000"))
+
+
+def _truncate_reply(reply_text: str, bucket: dict) -> str:
+    """The reply, capped only as a runaway guard -- and LOUDLY if it bites.
+
+    24,000 characters is roughly 6,000 tokens: far above any real answer, and
+    well inside the context of every model in the chain. If a reply somehow
+    exceeds it, the log says so and names the bucket, because a silently
+    truncated answer is indistinguishable from one the consultant never gave.
+    """
+    text = reply_text or ""
+    if len(text) <= _EXTRACT_REPLY_CHARS:
+        return text
+    log.warning("reply of %d chars truncated to %d for extraction in bucket %s "
+                "- answers past the cut were NOT seen",
+                len(text), _EXTRACT_REPLY_CHARS, bucket.get("id"))
+    return text[:_EXTRACT_REPLY_CHARS]
+
+
 async def extract_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
     """Map one free-text reply onto this bucket's question ids.
 
@@ -554,7 +579,8 @@ async def extract_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str
                     {"role": "system", "content": _BUCKET_EXTRACT_PROMPT},
                     {"role": "user", "content": (
                         f"QUESTIONS:\n" + "\n".join(schema_lines)
-                        + f"\n\nCONSULTANT'S REPLY:\n{reply_text[:4000]}"
+                        + f"\n\nCONSULTANT'S REPLY:\n"
+                        + _truncate_reply(reply_text, bucket)
                     )},
                 ],
                 temperature=0,

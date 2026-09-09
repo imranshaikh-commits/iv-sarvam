@@ -1666,3 +1666,25 @@ def test_the_wide_sweep_and_skip_ahead_are_wired_in():
     assert "resolve_bucket_answers(bucket, q, None)" in src
     assert "chat_state.next_unanswered_bucket(" in src
     assert "supabase_client.get_intake_session(" in src
+
+
+def test_a_long_answer_block_is_not_silently_truncated_for_extraction():
+    """The LLM fallback used a flat reply_text[:4000]. A consultant answering a
+    96-field interview pastes far more than that, and everything past the cut
+    was never seen by the extractor and never reported -- the same silent-loss
+    class as the colon-only parser and the current-bucket-only lookup."""
+    assert app._EXTRACT_REPLY_CHARS >= 20000, app._EXTRACT_REPLY_CHARS
+    realistic = "field_name: value\n" * 600          # ~10k chars
+    assert app._truncate_reply(realistic, {"id": "x"}) == realistic
+
+
+def test_a_runaway_reply_is_capped_and_reported(caplog):
+    """The cap remains as a guard, but it must say so: a silently truncated
+    answer is indistinguishable from one the consultant never gave."""
+    import logging
+    huge = "x" * (app._EXTRACT_REPLY_CHARS + 5000)
+    with caplog.at_level(logging.WARNING):
+        out = app._truncate_reply(huge, {"id": "architecture"})
+    assert len(out) == app._EXTRACT_REPLY_CHARS
+    assert any("truncated" in r.message and "architecture" in str(r.args)
+               or "truncated" in r.getMessage() for r in caplog.records)

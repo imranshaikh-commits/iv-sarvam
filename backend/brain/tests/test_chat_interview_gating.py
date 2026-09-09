@@ -1563,3 +1563,73 @@ def test_the_capture_report_is_wired_into_the_interview():
     """CALL-SITE check: the report is useless if the interview never sends it."""
     import inspect
     assert "capture_report(bucket, recorded, q)" in inspect.getsource(app)
+
+
+# ---------------------------------------------------------------------------
+# Answers pasted for OTHER areas were silently discarded.
+#
+# THE larger half of the 40-of-96 loss. parse_bucket_answers looked up only the
+# CURRENT area's question ids, so a block covering several areas -- the natural
+# way to answer a 96-field interview -- had everything outside that area matched
+# against nothing and thrown away. The interview then walked on and asked
+# questions the consultant had already answered.
+# ---------------------------------------------------------------------------
+
+_MULTI_AREA = """client_name: Bank BTPN
+industry: Banking
+iam_vendor: ForgeRock
+proposal_type: migration
+user_count: 1 million customer identities
+deployment_model: On-premise with HA
+required_diagram_types: deployment, migration phases
+cluster_topology: 2 nodes per component
+delivery_phases: PM, Components, Requirements, Design, Development
+assumptions: Success criteria documented in week 1"""
+
+
+def test_answers_for_other_areas_are_captured():
+    import asyncio, intake_template
+    tpl = intake_template.get_intake_template("migration")
+    got = asyncio.run(app.resolve_bucket_answers(tpl["buckets"][0], _MULTI_AREA, None))
+    for far_field in ("iam_vendor", "deployment_model", "required_diagram_types",
+                      "cluster_topology", "delivery_phases", "assumptions"):
+        assert far_field in got, f"{far_field} discarded: only got {sorted(got)}"
+
+
+def test_the_current_area_still_wins_on_ambiguity():
+    import asyncio, intake_template
+    tpl = intake_template.get_intake_template("migration")
+    got = asyncio.run(app.resolve_bucket_answers(
+        tpl["buckets"][0], "client_name: Bank BTPN", None))
+    assert got["client_name"] == "Bank BTPN"
+
+
+def test_already_answered_areas_are_skipped():
+    import chat_state, intake_template
+    tpl = intake_template.get_intake_template(None)
+    b0 = [q["id"] for q in chat_state.get_bucket(tpl, 0)["questions"]]
+    b1 = [q["id"] for q in chat_state.get_bucket(tpl, 1)["questions"]]
+    answered = {k: "value" for k in b0 + b1}
+    assert chat_state.next_unanswered_bucket(tpl, 0, answered) == 2
+
+
+def test_skip_ahead_stops_at_a_partial_area():
+    import chat_state, intake_template
+    tpl = intake_template.get_intake_template(None)
+    b0 = [q["id"] for q in chat_state.get_bucket(tpl, 0)["questions"]]
+    assert chat_state.next_unanswered_bucket(tpl, 0, {k: "v" for k in b0}) == 1
+
+
+def test_skip_ahead_is_a_no_op_without_answers():
+    import chat_state, intake_template
+    tpl = intake_template.get_intake_template(None)
+    assert chat_state.next_unanswered_bucket(tpl, 3, {}) == 3
+    assert chat_state.next_unanswered_bucket(tpl, 3, None) == 3
+
+
+def test_the_wide_sweep_and_skip_ahead_are_wired_in():
+    import inspect
+    src = inspect.getsource(app)
+    assert "resolve_bucket_answers(bucket, q, None)" in src
+    assert "chat_state.next_unanswered_bucket(" in src
+    assert "supabase_client.get_intake_session(" in src

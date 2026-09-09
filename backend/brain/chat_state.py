@@ -30,6 +30,7 @@ app.py — so it is fully unit-testable offline (same contract as
 from __future__ import annotations
 
 import re
+from typing import Optional
 from dataclasses import dataclass, replace
 
 # --- modes ------------------------------------------------------------------
@@ -804,6 +805,36 @@ def get_bucket(template: dict, index: int) -> dict | None:
     if 0 <= index < len(buckets):
         return buckets[index]
     return None
+
+
+def next_unanswered_bucket(template: dict, start: int,
+                          answers: Optional[dict]) -> int:
+    """The next area with at least one question still unanswered.
+
+    People paste a block covering many areas at once. Now that a reply is
+    matched against the WHOLE template, those answers are captured -- but the
+    interview would still walk to the next area and ask questions it already
+    has, which is how a 96-field interview becomes exhausting and how a
+    consultant starts skipping.
+
+    Never skips past the end, and never skips an area where anything is still
+    missing.
+    """
+    if not answers:
+        return start
+    total = bucket_count(template)
+    idx = start
+    while idx < total:
+        bucket = get_bucket(template, idx)
+        if bucket is None:
+            return idx
+        qids = [q["id"] for q in (bucket.get("questions") or [])]
+        if not qids:
+            return idx
+        if any(not str(answers.get(qid) or "").strip() for qid in qids):
+            return idx
+        idx += 1
+    return total
 
 
 def build_bucket_message(template: dict, index: int, *, first: bool = False) -> str:

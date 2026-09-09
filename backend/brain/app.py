@@ -728,9 +728,37 @@ def parse_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
     return out
 
 
-async def resolve_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
-    """Parser first (instant), LLM only if the parser can't do it."""
+def _all_questions_bucket(proposal_type: Optional[str]) -> dict:
+    """A pseudo-bucket containing EVERY question in the template."""
+    return {"id": "_all", "title": "All", "questions": list(iter_questions(proposal_type))}
+
+
+async def resolve_bucket_answers(bucket: dict, reply_text: str,
+                                 proposal_type: Optional[str] = None) -> dict[str, str]:
+    """Parser first (instant), LLM only if the parser can't do it.
+
+    Answers are matched against the WHOLE template, not just the area being
+    asked about. People paste a block covering many areas at once -- it is the
+    natural way to answer a 96-field interview -- and the parser used to look up
+    only the current bucket's question ids, so everything else was matched
+    against nothing and silently discarded.
+
+    Measured on a live BTPN session: 40 of 96 fields captured. The dash
+    separator was part of it; this was the larger part. The interview then went
+    on to ask questions the consultant had already answered.
+
+    The current bucket still wins on ambiguity, since that is what was asked.
+    """
     parsed = parse_bucket_answers(bucket, reply_text)
+
+    # Sweep the same reply for answers belonging to any OTHER area.
+    wide = parse_bucket_answers(_all_questions_bucket(proposal_type), reply_text)
+    extra = {k: v for k, v in wide.items() if k not in parsed}
+    if extra:
+        log.info("captured %d answer(s) for other areas from this reply: %s",
+                 len(extra), ", ".join(sorted(extra)))
+        parsed = {**extra, **parsed}
+
     if parsed:
         return parsed
     return await extract_bucket_answers(bucket, reply_text)
@@ -2416,7 +2444,7 @@ async def chat_completions(request: Request):
                                     session=state.session, proposal=state.proposal)))
 
                     gap = gap_fill_bucket(missing_now, ptype)
-                    recorded = await resolve_bucket_answers(gap, q)
+                    recorded = await resolve_bucket_answers(gap, q, None)
                     if recorded and state.session:
                         try:
                             async with httpx.AsyncClient() as sclient:
@@ -2466,7 +2494,10 @@ async def chat_completions(request: Request):
                 )
 
                 if not chat_state.is_skip(q):
-                    recorded = await resolve_bucket_answers(bucket, q)
+                    # None = match against EVERY question in the template, not
+                    # just this area. The interview itself is built with
+                    # get_intake_template(None) for the same reason.
+                    recorded = await resolve_bucket_answers(bucket, q, None)
                 if attached_logo:
                     recorded["client_logo"] = attached_logo
 
@@ -2482,6 +2513,22 @@ async def chat_completions(request: Request):
                                         state.session, e)
 
                 next_index = state.bucket + 1
+
+                # Skip past areas this reply already answered. A block covering
+                # several areas is now fully captured, so asking those questions
+                # again wastes the consultant's time and teaches them to skip.
+                try:
+                    _so_far: dict = {}
+                    if state.session:
+                        async with httpx.AsyncClient() as sclient:
+                            _row = await supabase_client.get_intake_session(
+                                sclient, state.session)
+                        _so_far = dict((_row or {}).get("answers") or {})
+                    _so_far.update(recorded or {})
+                    next_index = chat_state.next_unanswered_bucket(
+                        tpl, next_index, _so_far)
+                except Exception as e:  # noqa: BLE001 - never wedge the interview
+                    log.warning("bucket skip-ahead failed: %s", e)
 
                 # More areas to walk.
                 if next_index < total:

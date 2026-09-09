@@ -189,3 +189,104 @@ def test_no_note_when_nothing_was_dropped():
     )
     text = "\n".join(p.text for p in Document(io.BytesIO(docx_bytes)).paragraphs)
     assert "Sections omitted" not in text
+
+
+# ---------------------------------------------------------------------------
+# Sizing the document to the engagement.
+#
+# IV wrote 53 subsections for Amlak (42-week greenfield SailPoint build) and 19
+# for BTPN (scoped ForgeRock upgrade of three lower environments). Shilpi wrote
+# 43 for BTPN -- almost exactly the size of IV's AMLAK proposal. The difference
+# is not which topics are covered: IV writes ONE sizing table instead of four,
+# ONE RACI instead of three, and no per-tranche tables.
+# ---------------------------------------------------------------------------
+
+_COMPACT = {"app_count": "skip", "duration": "skip",
+            "in_scope": "Upgrade the ForgeRock CIAM stack from V6.5.x to V7.3",
+            "out_of_scope": "Pre-Production and Production are NOT in scope",
+            "is_migration": "Yes - version upgrade",
+            "envs": "Development, SIT and UAT"}
+
+_LARGE = {"app_count": "25 applications", "duration": "42 weeks",
+          "envs": "Production, DR, UAT, Development",
+          "in_scope": "greenfield SailPoint IdentityIQ build"}
+
+
+def test_a_scoped_upgrade_reads_as_compact():
+    assert S.is_compact_engagement(_COMPACT)
+
+
+def test_a_long_greenfield_build_does_not():
+    assert not S.is_compact_engagement(_LARGE)
+
+
+def test_no_size_signals_means_not_compact():
+    """Under-writing a large proposal costs far more than an over-long small
+    one, so absence of evidence must not read as evidence of smallness."""
+    assert not S.is_compact_engagement({})
+    assert not S.is_compact_engagement({"client_name": "X"})
+
+
+def test_one_sizing_table_for_a_compact_engagement():
+    pairs = [("Proposed Production Hardware Sizing", "t"),
+             ("Proposed DR and Non-Production Sizing", "t"),
+             ("Capability Mapping - Current to Target", "t")]
+    out = S.collapse_families(pairs, _COMPACT)
+    sizing = [h for h, _ in out if "Sizing" in h]
+    assert len(sizing) == 1, out
+    assert any("Capability Mapping" in h for h, _ in out), "unrelated pair dropped"
+
+
+def test_all_variants_survive_a_large_engagement():
+    pairs = [("Proposed Production Hardware Sizing", "t"),
+             ("Proposed DR and Non-Production Sizing", "t")]
+    assert len(S.collapse_families(pairs, _LARGE)) == 2
+
+
+def test_a_compact_section_is_capped_but_never_emptied():
+    pairs = [(f"Sub {i}", "t") for i in range(8)]
+    out = S.cap_for_scale(pairs, _COMPACT)
+    assert 1 <= len(out) <= S.COMPACT_SUBSECTIONS_PER_SECTION
+    assert S.cap_for_scale(pairs, _LARGE) == pairs
+
+
+def test_the_whole_pipeline_lands_near_ivs_own_shape():
+    """IV wrote 8 sections and 19 subsections for BTPN."""
+    import proposal_templates
+    ctx = {"client_name": "Bank BTPN", "iam_vendor": "ForgeRock",
+           "proposal_type": "migration", "rfp_text": ""}
+    answers = dict(_COMPACT, training="Out of scope")
+    keep, _ = S.select_sections(proposal_templates.get_template("migration"), answers)
+    total = 0
+    for sec in keep:
+        pairs = sec.render_subsections(ctx)
+        pairs = S.filter_subsections(type("_S", (), {"subsections": pairs})(), answers)
+        pairs = S.collapse_families(pairs, answers)
+        pairs = S.cap_for_scale(pairs, answers)
+        total += len(pairs)
+    assert len(keep) <= 11, f"{len(keep)} sections against IV's 8"
+    assert total <= 26, f"{total} subsections against IV's 19"
+
+
+def test_the_scale_filters_are_wired_into_drafting():
+    """CALL-SITE. The tests above pass whether or not document_engine calls
+    them -- the built-but-never-wired failure this project has hit six times."""
+    import inspect, document_engine
+    src = inspect.getsource(document_engine.draft_section)
+    assert "scope_filter.collapse_families" in src
+    assert "scope_filter.cap_for_scale" in src
+
+
+def test_the_implementation_task_list_exists():
+    """IV's BTPN proposal carries a 34-row task list -- the largest artefact in
+    it. Shilpi had nothing comparable; a RACI answers "who", not "what"."""
+    import proposal_templates
+    ctx = {"client_name": "X", "iam_vendor": "ForgeRock",
+           "proposal_type": "migration", "rfp_text": ""}
+    found = [(h, f) for sec in proposal_templates.get_template("migration")
+             for h, f in sec.render_subsections(ctx)
+             if "Implementation Task List" in h]
+    assert found, "no Implementation Task List in the migration template"
+    _, instruction = found[0]
+    assert "Task, Comments" in instruction
+    assert "15 rows" in instruction

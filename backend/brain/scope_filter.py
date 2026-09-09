@@ -40,6 +40,7 @@ wanted, which is far more damaging than one extra section.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Optional
 
@@ -280,6 +281,125 @@ def missing_high_value(sections: list, answers: Optional[dict]) -> dict:
         if gaps:
             out[spec.id] = gaps
     return out
+
+
+# Subsection FAMILIES. A large engagement gets every variant; a small one gets
+# one of each, which is what IV actually does.
+#
+# Measured: IV wrote 53 subsections for Amlak (42-week greenfield SailPoint
+# build) and 19 for BTPN (scoped ForgeRock version upgrade of three lower
+# environments). Shilpi wrote 43 for BTPN. The difference is not which topics
+# are covered -- it is that IV writes ONE sizing table instead of four, ONE
+# RACI instead of a legend plus two matrices, and no per-tranche tables at all.
+#
+# The first pattern in each family is the one kept.
+SUBSECTION_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("sizing", (r"production hardware sizing", r"dr .*sizing|disaster recovery.*sizing",
+                r"uat.*sizing", r"development.*sizing")),
+    ("raci", (r"raci - delivery activities", r"raci - project governance",
+              r"raci legend")),
+    ("tranche", (r"tranche 1", r"tranche 2", r"tranche 3")),
+    ("payment", (r"payment milestone - implementation",
+                 r"payment milestone - licence",
+                 r"payment milestone - resident engineer",
+                 r"payment milestone - application integration")),
+    ("boq", (r"licence bill of quantit|license bill of quantit",
+             r"total bill of quantit")),
+)
+
+_FAMILY_RE = tuple((name, tuple(re.compile(p, re.I) for p in pats))
+                   for name, pats in SUBSECTION_FAMILIES)
+
+# Below this the engagement is "compact" and gets one subsection per family.
+# Chosen from the two measured points: BTPN is 3 environments and no stated
+# duration; Amlak is 42 weeks, 25 applications and four environments.
+COMPACT_APP_COUNT = 10
+COMPACT_WEEKS = 20
+
+
+def is_compact_engagement(answers: Optional[dict]) -> bool:
+    """Is this a small engagement that warrants one of each thing?
+
+    Positive evidence only. An engagement with no size signals at all is NOT
+    treated as compact -- the cost of under-writing a large proposal is far
+    higher than the cost of an over-long small one.
+    """
+    answers = answers or {}
+    signals = 0
+
+    apps = str(answers.get("app_count") or "")
+    m = re.search(r"\d+", apps)
+    if m and int(m.group(0)) <= COMPACT_APP_COUNT:
+        signals += 1
+
+    dur = str(answers.get("duration") or "")
+    m = re.search(r"(\d+)\s*week", dur, re.I)
+    if m and int(m.group(1)) <= COMPACT_WEEKS:
+        signals += 1
+    m = re.search(r"(\d+)\s*month", dur, re.I)
+    if m and int(m.group(1)) * 4 <= COMPACT_WEEKS:
+        signals += 1
+
+    # An in-place upgrade of a subset of environments is compact by nature:
+    # nothing is built from scratch and production is often out of scope.
+    scope = " ".join(str(answers.get(k) or "")
+                     for k in ("in_scope", "out_of_scope", "is_migration",
+                               "business_objectives")).lower()
+    if re.search(r"upgrade", scope) and not re.search(r"greenfield|new (build|platform)", scope):
+        signals += 1
+    if re.search(r"production.{0,40}(not in scope|out of scope|excluded)", scope):
+        signals += 1
+
+    envs = str(answers.get("envs") or "").lower()
+    if envs and not re.search(r"production", envs):
+        signals += 1
+
+    return signals >= 2
+
+
+# A compact engagement gets at most this many subsections per section. IV wrote
+# 19 subsections across 8 sections for BTPN -- between 2 and 3 each. Family
+# collapsing alone only removes variants, and the migration template has few;
+# the rest of the gap is simply breadth.
+COMPACT_SUBSECTIONS_PER_SECTION = int(
+    os.environ.get("SHILPI_COMPACT_SUBSECTIONS", "3"))
+
+
+def cap_for_scale(pairs: list, answers: Optional[dict]) -> list:
+    """Trim a section to its leading subsections for a compact engagement.
+
+    Templates list subsections most-important-first, so the head is the right
+    thing to keep. Never trims below one -- an empty section is a rendering
+    bug, and removing a section entirely is select_sections' job.
+    """
+    if not is_compact_engagement(answers) or not pairs:
+        return pairs
+    return pairs[:max(1, COMPACT_SUBSECTIONS_PER_SECTION)]
+
+
+def collapse_families(pairs: list, answers: Optional[dict]) -> list:
+    """One subsection per family for a compact engagement.
+
+    Returns the pairs unchanged when the engagement is not compact, or when a
+    family has only one member present.
+    """
+    if not is_compact_engagement(answers) or not pairs:
+        return pairs
+    kept, seen = [], set()
+    for heading, instruction in pairs:
+        family = None
+        for name, patterns in _FAMILY_RE:
+            if any(pat.search(heading or "") for pat in patterns):
+                family = name
+                break
+        if family is None:
+            kept.append((heading, instruction))
+            continue
+        if family in seen:
+            continue
+        seen.add(family)
+        kept.append((heading, instruction))
+    return kept or pairs
 
 
 def describe_gaps(gaps: dict) -> str:

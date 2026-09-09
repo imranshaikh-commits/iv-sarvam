@@ -835,9 +835,15 @@ async def draft_section(
         # in every cell, which reads as work done and figures withheld. BTPN
         # produced a 6x6 Licence BOQ and a 6x3 Payment Milestones entirely of
         # placeholders, against an IV proposal that had neither table.
+        _ans = context.get("discovery_answers")
+        # Three filters, narrowest last:
+        #   1. evidence   — drop subsections whose inputs are all empty
+        #   2. families   — one sizing/RACI/tranche variant, not four
+        #   3. scale      — cap per section for a compact engagement
         facets = scope_filter.filter_subsections(
-            type("_S", (), {"subsections": own})(),
-            context.get("discovery_answers"))
+            type("_S", (), {"subsections": own})(), _ans)
+        facets = scope_filter.collapse_families(facets, _ans)
+        facets = scope_filter.cap_for_scale(facets, _ans)
     else:
         n_sub = max(1, min(int(subsections), len(SUBSECTION_FACETS)))
         facets = SUBSECTION_FACETS[:n_sub] if n_sub > 1 else []

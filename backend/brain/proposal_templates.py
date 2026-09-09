@@ -726,6 +726,20 @@ MIGRATION_SECTIONS: list[SectionSpec] = [
              "the phases from assessment through cutover to hypercare."),
             ("Project Deliverables",
              "deliverables as a markdown TABLE with columns Deliverable, Description, Phase."),
+            # IV's BTPN proposal carries a 34-row Implementation Task List --
+            # the largest artefact in that document and the technical heart of
+            # an upgrade proposal. Shilpi had nothing comparable; the closest
+            # was a RACI, which answers "who" rather than "what".
+            ("Implementation Task List",
+             "the work itself as a markdown TABLE with EXACTLY these columns: "
+             "Task, Comments / Assumptions. One row per discrete task, in "
+             "delivery order: requirements gathering and current-state "
+             "assessment, architecture and design, environment setup per "
+             "environment, configuration migration, data migration, "
+             "integration, functional testing, UAT support, cutover and "
+             "handover. Comments carry the assumption or dependency that task "
+             "rests on. At least 15 rows - this is the section a technical "
+             "reviewer reads most closely."),
             ("Testing and Validation Strategy",
              "how the migration is proved before cutover: data reconciliation, "
              "functional parity testing, and UAT. Reconciliation matters most - the "

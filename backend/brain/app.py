@@ -55,6 +55,7 @@ from diagram_engine import DiagramSpec, InvalidTransition
 # stdlib + Pillow, no import of app (one-way dependency), so it stays importable
 # keyless. Only used when an export flag is set on /v1/generate-proposal.
 import export_engine
+import proposal_templates
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("shilpi-brain")
@@ -1831,8 +1832,21 @@ async def generate_proposal_endpoint(request: Request):
     if sections is not None and not isinstance(sections, list):
         return JSONResponse({"error": "sections must be a list of strings"}, status_code=400)
 
-    if proposal_type not in {"implementation", "mss"}:
-        return JSONResponse({"error": "proposal_type must be 'implementation' or 'mss'"}, status_code=400)
+    # Validate against the TEMPLATE REGISTRY, never a hardcoded list. This line
+    # said {"implementation", "mss"} and was the FOURTH place `migration` was
+    # rejected after being added everywhere else:
+    #   1. get_template("migration") raised ValueError (fixed sarvam sprint)
+    #   2. _SECTION_DISCOVERY_FIELDS kept pre-rebuild section ids
+    #   3. generated_proposals_proposal_type_check kept the old type list
+    #   4. here
+    # Each was invisible until an end-to-end run of that type. Deriving the set
+    # from proposal_templates means a new type is accepted the moment it has a
+    # template, and cannot be forgotten here again.
+    if proposal_type not in proposal_templates.VALID_PROPOSAL_TYPES:
+        return JSONResponse(
+            {"error": "proposal_type must be one of: "
+                      + ", ".join(sorted(proposal_templates.VALID_PROPOSAL_TYPES))},
+            status_code=400)
     if not client_name:
         return JSONResponse({"error": "client_name is required"}, status_code=400)
     if not rfp_text:

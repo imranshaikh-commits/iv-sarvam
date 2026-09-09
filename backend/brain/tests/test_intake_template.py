@@ -178,3 +178,46 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _runner import run_tests  # noqa: E402
 
 run_tests(globals(), "INTAKE TEMPLATE TESTS")
+
+
+def test_the_generate_endpoint_accepts_every_type_it_offers():
+    """FOURTH place `migration` was rejected after being added everywhere else.
+
+    The chain a proposal type must survive:
+      1. intake_template.PROPOSAL_TYPES offers it
+      2. proposal_templates.get_template() builds it
+      3. document_engine._SECTION_DISCOVERY_FIELDS routes answers to it
+      4. /v1/generate-proposal accepts it            <- this line
+      5. generated_proposals_proposal_type_check stores it (DB, sarvam_014)
+
+    Steps 2, 3, 4 and 5 each failed in turn on the first migration proposal
+    ever attempted, and every one was invisible until an end-to-end run. This
+    asserts the API layer validates against the template REGISTRY rather than a
+    hardcoded list, so a new type cannot be forgotten here again.
+    """
+    import os
+    os.environ.setdefault("OPENROUTER_API_KEY", "test")
+    os.environ.setdefault("SUPABASE_URL", "http://test")
+    os.environ.setdefault("SUPABASE_KEY", "test")
+    import inspect, app, proposal_templates, intake_template
+    src = inspect.getsource(app)
+    assert 'proposal_type not in proposal_templates.VALID_PROPOSAL_TYPES' in src, \
+        "the endpoint validates proposal_type against a hardcoded set"
+    for ptype in intake_template.PROPOSAL_TYPES:
+        assert ptype in proposal_templates.VALID_PROPOSAL_TYPES, ptype
+
+
+def test_no_hardcoded_proposal_type_sets_outside_the_registry():
+    """A literal type list anywhere else is a future instance of the same bug."""
+    import pathlib, re
+    brain = pathlib.Path(__file__).resolve().parent.parent
+    offenders = []
+    for f in brain.glob("*.py"):
+        if f.name in ("proposal_templates.py", "intake_template.py"):
+            continue
+        for i, line in enumerate(f.read_text().splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if re.search(r'[\{\(\[][^)\}\]]*"implementation"[^)\}\]]*"mss"', line):
+                offenders.append(f"{f.name}:{i}")
+    assert not offenders, f"hardcoded proposal-type lists: {offenders}"

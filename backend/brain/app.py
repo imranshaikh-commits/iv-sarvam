@@ -378,6 +378,90 @@ async def rerank_chunks(query: str, chunks: list[dict], k: int) -> list[dict]:
     return picked[:k]
 
 
+# --- Intent, when the literal match misses -------------------------------------
+#
+# chat_state.classify_architecture_intent works from fixed hint lists. It covers
+# "approve", "go ahead", "ship it" -- but not "yep", "fine by me", "ok do it",
+# "that works", or the dozen other ways a person says yes. The failure was
+# silent: the user got a canned menu that did not say what WOULD have worked.
+#
+# Whoever uses this next will not know the magic words, and should not have to.
+# The literal match stays as the instant path; this reads anything else.
+class _IntentResult(BaseModel):
+    intent: str = Field(description="approve, reject, regenerate, draft, or unclear")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reading: str = Field(default="", description="what the user appears to want")
+
+
+_INTENT_PROMPT = """Classify a reply during architecture review of an IAM proposal.
+
+The user has been shown a diagram and asked to approve it, ask for changes, or
+regenerate it.
+
+  approve    — they accept it and want to move on ("yep", "fine", "that works")
+  reject     — they want something CHANGED, and say what
+  regenerate — they want another attempt with no specific change
+  draft      — they want the full proposal written now
+  unclear    — genuinely cannot tell
+
+Approval is a human sign-off gate. If there is ANY doubt, return unclear rather
+than approve: a wrongly-read approval puts an unreviewed diagram into a client
+document. Set confidence below 0.8 whenever you are not certain."""
+
+INTENT_LLM_ENABLED = os.environ.get("SHILPI_INTENT_LLM", "1") not in ("0", "", "false")
+_INTENT_APPROVE_MIN_CONFIDENCE = 0.8
+
+
+async def resolve_intent(text: str) -> tuple[Optional[str], str]:
+    """Literal hint match first, model second.
+
+    The hint lists are instant and cover the common words. Everything else --
+    "yep", "fine by me", "ok do it", a sentence, another language -- goes to the
+    model. Understanding the user is the system's job, not theirs.
+    """
+    literal = chat_state.classify_architecture_intent(text)
+    if literal:
+        return literal, ""
+    return await classify_intent_llm(text)
+
+
+async def classify_intent_llm(text: str) -> tuple[Optional[str], str]:
+    """(intent, reading) for a reply the hint lists could not place.
+
+    Returns (None, "") on any failure -- the caller then shows its normal
+    prompt, which is the current behaviour and safe.
+    """
+    if not INTENT_LLM_ENABLED or not (text or "").strip():
+        return None, ""
+    try:
+        res: _IntentResult = await asyncio.wait_for(
+            _structured_with_fallback(
+                _IntentResult,
+                messages=[{"role": "system", "content": _INTENT_PROMPT},
+                          {"role": "user", "content": text[:1000]}],
+                temperature=0,
+                max_retries=1,
+            ),
+            timeout=15,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("intent classification failed (%s); falling back to the prompt", e)
+        return None, ""
+
+    intent = (res.intent or "").strip().lower()
+    if intent not in {"approve", "reject", "regenerate", "draft"}:
+        return None, res.reading or ""
+    # The approval gate keeps its higher bar: a wrongly-read approval puts an
+    # unreviewed diagram into a client document, which is not symmetric with
+    # wrongly asking again.
+    if intent == "approve" and res.confidence < _INTENT_APPROVE_MIN_CONFIDENCE:
+        log.info("approval intent below confidence bar (%.2f); treating as unclear",
+                 res.confidence)
+        return None, res.reading or ""
+    log.info("intent read as %s (confidence %.2f)", intent, res.confidence)
+    return intent, res.reading or ""
+
+
 def build_grounded_system(chunks: list[dict]) -> str:
     lines = [SYSTEM_PROMPT, "\n=== EVIDENCE (from IV's past proposals) ===\n"]
     for i, c in enumerate(chunks, 1):
@@ -868,6 +952,22 @@ def _all_questions_bucket(proposal_type: Optional[str]) -> dict:
     return {"id": "_all", "title": "All", "questions": list(iter_questions(proposal_type))}
 
 
+def _answer_bearing_lines(reply_text: str) -> int:
+    """Roughly how many answers the reply LOOKS like it contains.
+
+    Used to decide whether the fast parser did a good enough job. Counts lines
+    carrying real content, ignoring list markers and blank lines.
+    """
+    lines = [ln.strip() for ln in (reply_text or "").splitlines()]
+    return sum(1 for ln in lines
+               if len(re.sub(r"^\s*(?:\d{1,3}[.)]|[-*\u2022])\s*", "", ln).split()) >= 3)
+
+
+# Below this share of what the reply appears to contain, the fast parser is
+# treated as having failed and the whole reply goes to the model.
+PARSER_COVERAGE_FLOOR = float(os.environ.get("SHILPI_PARSER_COVERAGE_FLOOR", "0.6"))
+
+
 async def resolve_bucket_answers(bucket: dict, reply_text: str,
                                  proposal_type: Optional[str] = None) -> dict[str, str]:
     """Parser first (instant), LLM only if the parser can't do it.
@@ -893,6 +993,45 @@ async def resolve_bucket_answers(bucket: dict, reply_text: str,
         log.info("captured %d answer(s) for other areas from this reply: %s",
                  len(extra), ", ".join(sorted(extra)))
         parsed = {**extra, **parsed}
+
+    # The LLM extractor used to run ONLY when the parser returned nothing at
+    # all. A reply that was 5% parseable and 95% natural language therefore got
+    # 5% captured, confidently, with no fallback -- which is how three separate
+    # format bugs (colon-only, current-bucket-only, numbered-list markers) each
+    # silently lost answers instead of falling back to something that could
+    # read them.
+    #
+    # The parser stays as the fast path for the clean case. When it covers less
+    # than PARSER_COVERAGE_FLOOR of what the reply appears to contain, the whole
+    # reply goes to the model as well and the two are merged. The parser wins on
+    # conflict: an exact label match is stronger evidence than an inference.
+    looks_like = _answer_bearing_lines(reply_text)
+    covered = len(parsed) / looks_like if looks_like else 1.0
+    if looks_like >= 2 and covered < PARSER_COVERAGE_FLOOR:
+        log.info("parser covered %d of ~%d answers (%.0f%%); asking the model "
+                 "to read the whole reply", len(parsed), looks_like, covered * 100)
+        try:
+            inferred = await extract_bucket_answers(
+                _all_questions_bucket(proposal_type), reply_text)
+        except Exception as e:  # noqa: BLE001 - the parser result still stands
+            log.warning("wide LLM extraction failed: %s", e)
+            inferred = {}
+        if inferred:
+            # The parser wins on conflict EXCEPT where its value ran on past
+            # the label into unlabelled prose. "client_name: Bank BTPN. We are
+            # a bank in Indonesia with a million users." has no second label,
+            # so the value absorbs the whole paragraph. A multi-line parser
+            # value in a reply the model could also read is exactly that case,
+            # and the model's reading is the better one.
+            merged = dict(inferred)
+            for qid, value in parsed.items():
+                sprawled = "\n" in value.strip() and qid in inferred
+                if not sprawled:
+                    merged[qid] = value
+                else:
+                    log.info("preferring the model's reading of %s: the parsed "
+                             "value ran on into unlabelled text", qid)
+            parsed = merged
 
     if parsed:
         return parsed
@@ -2732,7 +2871,7 @@ async def chat_completions(request: Request):
 
         # --- diagram plan: agree the set before generating any of it ---
         if state.mode == chat_state.MODE_DIAGRAM_PLAN:
-            intent = chat_state.classify_architecture_intent(q)
+            intent, _reading = await resolve_intent(q)
 
             if intent == chat_state.INTENT_APPROVE:
                 async def _start() -> str:
@@ -2764,7 +2903,7 @@ async def chat_completions(request: Request):
 
         # --- architecture review: the V1 approval gate, one diagram at a time ---
         if state.mode == chat_state.MODE_ARCHITECTURE:
-            intent = chat_state.classify_architecture_intent(q)
+            intent, _reading = await resolve_intent(q)
             skip = chat_state.is_skip(q)
 
             if intent == chat_state.INTENT_APPROVE or skip:
@@ -2823,14 +2962,20 @@ async def chat_completions(request: Request):
                     "that's the V1 gate. Reply **approve** for the diagram above.\n\n"
                     + chat_state.encode_marker(state), stream)
 
+            # Say what we DID understand rather than repeating the menu. A user
+            # who typed something reasonable and got a canned list has no idea
+            # which part was the problem.
+            _hint = (f"I read that as: _{_reading}_ — but I'm not confident "
+                     f"enough to act on it.\n\n" if _reading else "")
             return _emit_chat(
-                "Let me know how to proceed: **approve** this diagram, **regenerate** "
+                _hint
+                + "Let me know how to proceed: **approve** this diagram, **regenerate** "
                 "for another attempt, **skip** it, or tell me what to change.\n\n"
                 + chat_state.encode_marker(state), stream)
 
         # --- drafting: architecture approved, full document can be produced ---
         if state.mode == chat_state.MODE_DRAFTING:
-            _intent = chat_state.classify_architecture_intent(q)
+            _intent, _reading = await resolve_intent(q)
 
             # A late answer during the drafting gate is an ANSWER, not noise.
             # The gap prompt below asks for missing fields, so the reply to it

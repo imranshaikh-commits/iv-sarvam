@@ -1843,3 +1843,150 @@ def test_the_endpoint_normalises_a_malformed_proposal_type():
     import inspect
     src = inspect.getsource(app)
     assert 'proposal_type = (proposal_type or "").split("\\n")[0].strip().lower()' in src
+
+
+# ---------------------------------------------------------------------------
+# The system's job is to understand the user, not the user's job to learn the
+# magic words.
+#
+# Three format bugs in one session (colon-only separators, current-bucket-only
+# lookup, numbered-list markers) each silently lost answers, because the LLM
+# extractor ran ONLY when the regex parser returned nothing at all. A reply
+# that was 5% parseable got 5% captured, confidently. Likewise the approve gate
+# worked from a fixed hint list and answered anything else with a canned menu
+# that did not say what would have worked.
+# ---------------------------------------------------------------------------
+
+def test_a_mostly_unparseable_reply_goes_to_the_model(monkeypatch):
+    import asyncio
+    called = {}
+
+    async def fake_extract(bucket, reply):
+        called["yes"] = True
+        return {"industry": "Banking", "user_count": "1 million"}
+
+    monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
+    prose = ("We are Bank BTPN, a bank in Indonesia.\n"
+             "The vendor is ForgeRock and this is an upgrade.\n"
+             "Roughly a million customer identities in scope.")
+    got = asyncio.run(app.resolve_bucket_answers(
+        app._all_questions_bucket(None), prose, None))
+    assert called.get("yes"), "the model was never asked to read a prose reply"
+    assert "industry" in got
+
+
+def test_a_cleanly_parsed_reply_does_not_pay_for_the_model(monkeypatch):
+    """The parser stays the fast path for the clean case."""
+    import asyncio
+    called = {}
+
+    async def fake_extract(bucket, reply):
+        called["yes"] = True
+        return {}
+
+    monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
+    clean = ("client_name: Bank BTPN\nindustry: Banking\n"
+             "iam_vendor: ForgeRock\nproposal_type: migration")
+    got = asyncio.run(app.resolve_bucket_answers(
+        app._all_questions_bucket(None), clean, None))
+    assert len(got) >= 4
+    assert not called.get("yes"), "the model was called for a cleanly parsed reply"
+
+
+def test_a_clean_parsed_value_beats_the_model(monkeypatch):
+    """An exact label match on a tidy value is stronger than an inference."""
+    import asyncio
+
+    async def fake_extract(bucket, reply):
+        return {"client_name": "Something Else", "industry": "Banking"}
+
+    monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
+    # client_name is bounded by the NEXT label, so its value is clean. The
+    # trailing prose keeps parser coverage low enough to trigger the model.
+    got = asyncio.run(app.resolve_bucket_answers(
+        app._all_questions_bucket(None),
+        "client_name: Bank BTPN\nindustry: Banking\n"
+        "some prose that does not parse at all\nmore unparseable prose here", None))
+    assert got["client_name"] == "Bank BTPN"
+
+
+def test_the_model_wins_when_a_parsed_value_ran_on_into_prose(monkeypatch):
+    """"client_name: Bank BTPN. We are a bank in Indonesia with a million
+    users." has no second label, so the parser's value absorbs the whole
+    paragraph. The model's reading is the better one."""
+    import asyncio
+
+    async def fake_extract(bucket, reply):
+        return {"client_name": "Bank BTPN", "country": "Indonesia"}
+
+    monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
+    sprawling = ("client_name: Bank BTPN\nWe are a bank in Indonesia\n"
+                 "with about a million customer identities\n"
+                 "and we run ForgeRock on-premise today")
+    got = asyncio.run(app.resolve_bucket_answers(
+        app._all_questions_bucket(None), sprawling, None))
+    assert got["client_name"] == "Bank BTPN", got["client_name"]
+    assert "\n" not in got["client_name"]
+
+
+def test_a_literal_intent_is_still_instant():
+    import asyncio
+    assert asyncio.run(app.resolve_intent("approve"))[0] == "approve"
+    assert asyncio.run(app.resolve_intent("go ahead"))[0] == "approve"
+
+
+def test_an_unlisted_phrasing_reaches_the_model(monkeypatch):
+    import asyncio
+
+    async def fake(text):
+        return "approve", "they accept the diagram"
+
+    monkeypatch.setattr(app, "classify_intent_llm", fake)
+    intent, reading = asyncio.run(app.resolve_intent("yep that works for me"))
+    assert intent == "approve" and reading
+
+
+def test_a_low_confidence_approval_is_not_an_approval(monkeypatch):
+    """Approval is the human sign-off gate. A wrongly-read approval puts an
+    unreviewed diagram into a client document; wrongly asking again costs a
+    message. Those are not symmetric."""
+    import asyncio
+
+    async def unsure(*a, **kw):
+        return app._IntentResult(intent="approve", confidence=0.5,
+                                 reading="maybe an approval")
+
+    monkeypatch.setattr(app, "INTENT_LLM_ENABLED", True)
+    monkeypatch.setattr(app, "_structured_with_fallback", unsure)
+    intent, reading = asyncio.run(app.classify_intent_llm("hmm ok I guess"))
+    assert intent is None
+    assert reading
+
+
+def test_a_confident_rejection_does_not_need_the_higher_bar(monkeypatch):
+    import asyncio
+
+    async def sure(*a, **kw):
+        return app._IntentResult(intent="reject", confidence=0.5, reading="wants changes")
+
+    monkeypatch.setattr(app, "INTENT_LLM_ENABLED", True)
+    monkeypatch.setattr(app, "_structured_with_fallback", sure)
+    assert asyncio.run(app.classify_intent_llm("not quite"))[0] == "reject"
+
+
+def test_intent_failure_falls_back_to_the_prompt(monkeypatch):
+    import asyncio
+
+    async def boom(*a, **kw):
+        raise RuntimeError("model down")
+
+    monkeypatch.setattr(app, "INTENT_LLM_ENABLED", True)
+    monkeypatch.setattr(app, "_structured_with_fallback", boom)
+    assert asyncio.run(app.classify_intent_llm("yep")) == (None, "")
+
+
+def test_both_fallbacks_are_wired_in():
+    import inspect
+    src = inspect.getsource(app)
+    assert "await resolve_intent(q)" in src
+    assert "covered < PARSER_COVERAGE_FLOOR" in src

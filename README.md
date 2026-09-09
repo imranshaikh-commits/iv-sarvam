@@ -2,7 +2,7 @@
 
 **Shilpi** (शिल्पी, Sanskrit for *"artisan, craftsperson"*) is Inspirit Vision's in-house Proposal Architect — a conversational, retrieval-grounded AI that turns a new RFP into a structured, client-ready proposal in hours instead of days, by drafting from IV's curated bank of 112 past proposals rather than from a blank page.
 
-![Status](https://img.shields.io/badge/status-Phase%206%20validation%20%7C%20run%2010%20scored-blue)
+![Status](https://img.shields.io/badge/status-pilot%20ready%20%7C%20run%2018%20scored-brightgreen)
 ![Brain](https://img.shields.io/badge/brain-FastAPI%20(Python)-231154)
 ![LLM](https://img.shields.io/badge/LLM-Claude%20Sonnet%205%20%2B%20GLM%205.2%20fallback-E85A24)
 ![Retrieval](https://img.shields.io/badge/retrieval-Supabase%20pgvector-3ECF8E)
@@ -17,27 +17,27 @@
 
 > Quick-glance project status. Last updated: 2026-09-09 (IST).
 
-**Overall completion: 79%**
-`████████████████░░░░`
+**Overall completion: 85%**
+`█████████████████░░░`
 
-Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 60,
-0). Recompute it when a row changes rather than adjusting it by feel — the
+Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 95,
+15). Recompute it when a row changes rather than adjusting it by feel — the
 previous figure was hand-typed, drifted to 88% while the table said 81%, and was
 removed for that reason.
 
-**Phase 6 fell from 85% to 60% on 2026-09-09.** Not a build regression: the
-first run against a SECOND client exposed that ten runs of tuning had been
-fitting to one document, and that the intake parser silently discards roughly
-half of what a consultant types. Both were invisible while every run used the
-same benchmark.
+**Phase 6 went 60% → 95% on 2026-09-09**, after the day that took it down to 60%
+in the first place. The second client (Bank BTPN) exposed two things at once: ten
+runs of tuning had been fitting to a single document, and the intake parser was
+silently discarding half of what a consultant typed. Both are now closed, and
+run 18 is the first output judged against a client the system had never seen.
 
 It measures **build progress against the plan**, which is not readiness. The two
 questions that gate use are below, and neither is a percentage.
 
 | | Status |
 |---|---|
-| **Can IV use this on a live deal?** | **No.** The intake parser silently drops answers it cannot match — a real interview captured 40 of 96 fields with nothing logged. A consultant would answer 96 questions and lose half of them without being told. That alone disqualifies a pilot, before the plain-HTTP frontend and public repo. |
-| **Would a senior IAM architect sign the output?** | **Sent for review after run 9; no verdict yet.** Fifteen scored runs, one reader. And thirteen of those used the same benchmark, so the quality judgement behind them is narrower than the count suggests. |
+| **Can IV use this on a live deal?** | **Yes, as a first-draft tool.** Run 18 captured 96 of 96 discovery fields, produced a document with zero degenerate paragraphs, zero drafting failures and no leaked client names, and correctly judged a scoped upgrade as a small engagement. Make the repository private before a second person clones it. |
+| **Would a senior IAM architect sign the output?** | **Not as-is, and it does not claim to.** Run 18 runs 1.54x longer than what IV wrote for the same deal and carries ~20 `[SME REVIEW]` markers on figures the consultant did not supply. It is a strong first draft to edit down, not a document to send. Eighteen scored runs, still one reader. |
 
 ### Phase completion
 
@@ -58,22 +58,24 @@ Three sprints. The ordering matters more than the contents: the project is
 feature-rich and evidence-poor, and everything built since run 6 has been judged
 by one reader.
 
-**Sprint I — clear the runway.** Frontend behind TLS and the repository made
-private. Both parked deliberately while this is one person on one laptop; both
-become urgent the moment a second reviewer needs access, which Sprint J implies.
+**Sprint I — clear the runway.** **Make the repository private before a second
+person clones it.** One click, and it has been deferred twice — client review
+artefacts were published from this repo once already (see Incidents). TLS on the
+frontend matters the moment someone reaches it from another machine; an SSH
+tunnel is sufficient for a single pilot user.
 
-**Sprint J — get a verdict.** In progress: run 9 is with a senior IAM architect
-against "would you sign this". Still to do — the commercial owner reads the
-commercial section, and a **migration** run and an **MSS** run, both of which
-have templates and real grounding (39 and 14 proposals) and neither of which has
-ever been exercised end to end. Ends with a rework number produced by someone
-other than the builder.
+**Sprint J — get a verdict.** The migration path is now exercised end to end
+(runs 14–18, Bank BTPN). Still open: a senior IAM architect reads a draft
+against "would you sign this", the commercial owner reads the commercial
+section, and an **MSS** run — 14 proposals of grounding, a template, never once
+run. Ends with a rework number produced by someone other than the builder.
 
 **Sprint K — built against evidence.** Contents written by Sprint J's verdict,
-not guessed now. Standing candidates: diagnose why 39 SME markers survive the
-discovery fix, cross-encoder reranking, and the outcome loop (`outcome` is
-`unknown` for all 112 proposals, and weighting retrieval toward what actually
-won is the change that would compound most).
+not guessed now. Standing candidates: fix the retrieval harness so it exercises
+the brain rather than the database directly (four post-retrieval steps have
+never been measured), then decide on reranking with real numbers; and the
+outcome loop — `outcome` is `unknown` for all 110 proposals, and weighting
+retrieval toward what actually won is the change that would compound most.
 
 The honest risk in that ordering: if Sprint J finds the problem somewhere we have
 not looked, some of the work since run 6 was speculative. That is an argument for
@@ -105,6 +107,68 @@ client-confidential proposal content and this repository is public. See
 - **Company Profile is thin** — 493 words but generic, because the `company_profile` chunks behind it are mostly headings and fragments rather than IV's actual profile prose. A corpus problem, not a template one.
 - **Sizing evidence is lopsided** — the retrieval scorecard measures tabular evidence per probe: `sizing_prod` scores 1.00, `sizing_dr` scores 0.12. The corpus is rich in production sizing tables and nearly bare of DR-specific ones, which is why run 7 lost its DR, UAT and Development sizing tables. No amount of retrieval tuning fixes a gap in the source material.
 - **The benchmark must stay out of the corpus** — both Amlak proposals were ingested during bulk ingestion and have been deleted. Run 7 was drafted with its own answer available, so its Similar Experience quality is genuine but its overall score is inflated. Always run the leakage check before a scored run.
+
+### Recently shipped — the day the second client changed the design (2026-09-09)
+
+Run 18 is the first output judged against a client the system had never seen.
+
+| | IV BTPN | Run 14 | Run 17 | **Run 18** |
+|---|---|---|---|---|
+| Prose words | 2,642 | 6,141 | 5,264 | **4,058** |
+| Ratio to the human original | — | 2.3x | 2.0x | **1.54x** |
+| Subsections | 19 | — | 44 | **37** |
+| Discovery fields captured | — | 40/96 | 95/96 | **96/96** |
+| Degenerate paragraphs | 0 | 0 | 0 | **0** |
+
+**The intake was losing half of every answer, four different ways.** The parser
+found fields by scanning for colons, so an em-dash answer matched nothing. It
+looked up only the CURRENT interview area, so a block covering several areas —
+the natural way to answer 96 questions — had everything else discarded. The LLM
+fallback truncated the reply at 4,000 characters. And once the first two were
+fixed, a pasted numbered list left its markers inside values, storing
+`proposal_type` as `"migration\n6"`.
+
+Each was found by an end-to-end run, none by a unit test, and each was fixed one
+format at a time until the underlying question surfaced: **why is the user's
+input hard-bounded at all?**
+
+**The answer was that the LLM extractor only ran when the regex parser returned
+NOTHING.** A reply that was 5% parseable got 5% captured, confidently, with no
+fallback. Now the parser is the fast path and anything it reads poorly goes to
+the model — prose, JSON, shorthand, mixed formats. The same change was made at
+every intent gate, so "yep, that works" is as good as "approve", with a higher
+confidence bar on approval because a wrongly-read sign-off puts an unreviewed
+diagram into a client document.
+
+**Sizing the document to the engagement.** IV wrote 53 subsections for a 42-week
+greenfield build and 19 for a scoped version upgrade. Shilpi wrote the same
+document for both. Sections the answers positively exclude are now dropped and
+named on the page; variants collapse to one of each; sections cap at three
+subsections for a small engagement.
+
+**Engagement scale is judged by reading, not keyword matching.** The heuristic
+read *"Pre-Production and Production exist but are out of IV's scope"*, saw the
+word "production", and concluded production was IN scope — the same class of
+mistake as the colon-only parser, one layer up. A model now judges it once per
+proposal: *"Version upgrade in place (6.5.x to 7.3) scoped to Development, SIT,
+UAT only, with Production explicitly out of delivery."*
+
+**Gaps are surfaced before generation, not after.** Only 1 of the 75 fields the
+templates draft from was marked required, which is why every earlier run carried
+20–30 `[SME REVIEW]` markers discovered 40 minutes too late. The drafting gate
+now names what will be weak and offers to take the values first.
+
+**`migration` had to be added in five places, four of which were broken** — the
+template registry, the section→discovery map, the API validator, and a database
+CHECK constraint. Every one was invisible until an end-to-end run of that type.
+
+**Reranking is built and off.** The one retrieval technique the research
+supports, behind a flag, until the scorecard justifies it. It has not yet been
+measured, because the harness talks to the database directly and never exercises
+the brain's post-retrieval steps — a gap in the instrument worth fixing before
+trusting any retrieval change.
+
+---
 
 ### Recently shipped (2026-08-27 → 09-09)
 
@@ -314,13 +378,24 @@ Shilpi is that system. He is **not a chatbot and not a search engine** — he is
 
 ---
 
-## Known Gaps — Not Pilot-Ready Yet
+## Known Gaps — Pilot-Ready, With Caveats
 
-**The blocker, in one line:** the intake parser drops answers it cannot match,
-silently. A live session captured 40 of 96 fields with nothing written to the
-log. Until that is fixed, a consultant would answer 96 questions on a real deal
-and lose half of them without being told — which is worse than not having the
-tool.
+**The blocker is closed.** The intake captured 96 of 96 fields in run 18, up
+from 40. Four separate bugs were losing answers silently: the parser matched
+only colons, matched only the current interview area, truncated the LLM fallback
+at 4,000 characters, and left numbered-list markers inside values. All four are
+fixed, and the parser now hands anything it reads poorly to the model rather
+than reporting a confident partial result.
+
+**Three things a new user must be told**, or they will read correct behaviour as
+breakage:
+
+1. It produces a **first draft**, not a finished document. Expect ~20
+   `[SME REVIEW]` markers on figures nobody supplied.
+2. **Commercials are deliberately empty.** Prices and percentages belong to the
+   commercial owner; Shilpi refusing to invent them is the intended behaviour.
+3. **Answer in any format.** Prose, bullets, JSON, shorthand, or all 96 fields
+   pasted at once. The system reads it — that is its job, not the user's.
 
 
 Honest about what is not done, so no one mistakes the current state for production-ready:

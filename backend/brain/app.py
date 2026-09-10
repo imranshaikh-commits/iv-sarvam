@@ -2639,6 +2639,38 @@ async def chat_completions(request: Request):
     body = await request.json()
     messages = body.get("messages", [])
     stream = bool(body.get("stream", False))
+
+    # Payload shape logging, off by default.
+    #
+    # The brain reads only `text` and `image_url` parts of a message. What Open
+    # WebUI actually sends when a PDF is attached is unknown -- it may extract
+    # the text itself (useless for a raster tender), pass a file reference, or
+    # send page images. Those are three different builds, and guessing which is
+    # how this project has repeatedly shipped code against an assumption.
+    #
+    # Logs the SHAPE only: content types, keys and sizes. Never the content --
+    # an attached client tender must not end up in a container log.
+    if os.environ.get("SHILPI_LOG_PAYLOAD_SHAPE") == "1":
+        try:
+            shape = []
+            for m in (messages or [])[-2:]:
+                c = m.get("content")
+                if isinstance(c, list):
+                    parts = []
+                    for part in c:
+                        if not isinstance(part, dict):
+                            parts.append(type(part).__name__)
+                            continue
+                        t = part.get("type", "?")
+                        size = len(str(part.get(t, part))) if t in part else len(str(part))
+                        parts.append(f"{t}({size}b)")
+                    shape.append(f"{m.get('role')}: [{', '.join(parts)}]")
+                else:
+                    shape.append(f"{m.get('role')}: str({len(str(c))}b)")
+            log.info("PAYLOAD SHAPE | top-level keys=%s | %s",
+                     sorted(body.keys()), " || ".join(shape))
+        except Exception as e:  # noqa: BLE001
+            log.warning("payload shape logging failed: %s", e)
     query = last_user_text(messages)
 
     # Compliance-matrix chat trigger (explicit prefix, no fuzzy detection):

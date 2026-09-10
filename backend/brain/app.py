@@ -56,6 +56,7 @@ from diagram_engine import DiagramSpec, InvalidTransition
 # keyless. Only used when an export flag is set on /v1/generate-proposal.
 import export_engine
 import proposal_templates
+import rfp_intake
 import scope_filter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -2071,7 +2072,12 @@ async def health():
     return {"status": "ok", "model": MODEL_ID,
             "primary_model": PRIMARY_LLM_MODEL, "fallback_model": FALLBACK_LLM_MODEL,
             "assets_enabled": ASSETS_ENABLED,
-            "asset_bucket": ASSET_BUCKET if ASSETS_ENABLED else None}
+            "asset_bucket": ASSET_BUCKET if ASSETS_ENABLED else None,
+            # RFP intake reads attachments from Open WebUI's own storage. That
+            # couples us to OWUI's internal layout, which can move on an
+            # upgrade -- so a missing mount is reported here rather than
+            # surfacing later as "the document appears to be empty".
+            "rfp_uploads_mounted": rfp_intake.uploads_available()}
 
 
 @app.get("/v1/models")

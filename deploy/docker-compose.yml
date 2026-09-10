@@ -45,6 +45,19 @@ services:
       - ../scripts/sarvam.env
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      # Open WebUI's data volume, READ-ONLY.
+      #
+      # When a consultant attaches an RFP in chat, OWUI stores the file at
+      # /app/backend/data/uploads/{uuid}_{name} and sends the brain only the
+      # text it managed to extract itself. For a raster tender that is nothing:
+      # the 20-page ESNAD SOW yielded 468 characters, all page numbers. The
+      # brain therefore reads the real file from OWUI's own storage.
+      #
+      # READ-ONLY is deliberate. The brain has no business writing here, and a
+      # bug that corrupted webui.db would take the whole frontend down --
+      # including the stored connection to this service.
+      - open-webui:/owui-data:ro
 
 volumes:
   open-webui:

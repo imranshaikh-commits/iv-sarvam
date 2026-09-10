@@ -142,3 +142,69 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _runner import run_tests  # noqa: E402
 
 run_tests(globals(), "RFP INTAKE TESTS")
+
+
+# ---------------------------------------------------------------------------
+# Reading the attachment from Open WebUI's storage.
+#
+# OWUI extracts PDF text itself and sends the brain only that. For a raster
+# tender that is nothing: the ESNAD SOW gave 468 characters across 20 pages,
+# all page numbers. Confirmed by logging the payload shape -- no image_url, no
+# file reference, just strings. So the brain reads the real file from OWUI's
+# own upload directory, mounted read-only.
+# ---------------------------------------------------------------------------
+
+def _uploads_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "OWUI_UPLOADS", str(tmp_path))
+    return tmp_path
+
+
+def test_a_missing_mount_is_visible_not_silent(monkeypatch):
+    """A silently missing mount makes a deploy problem look like a bad
+    document, which sends the user looking in the wrong place."""
+    monkeypatch.setattr(R, "OWUI_UPLOADS", "/does/not/exist")
+    assert R.uploads_available() is False
+    assert R.pick_upload() == (None, [])
+
+
+def test_the_uuid_prefix_is_stripped_for_display(monkeypatch):
+    assert R.display_name(
+        "/owui-data/uploads/a43c7f9c-ae47-47de-8c16-ac0d9c53f958_SOW.pdf") == "SOW.pdf"
+    assert R.display_name("/owui-data/uploads/plain.pdf") == "plain.pdf"
+
+
+def test_a_single_recent_upload_is_chosen(tmp_path, monkeypatch):
+    _uploads_dir(tmp_path, monkeypatch)
+    (tmp_path / "a43c7f9c-ae47-47de-8c16-ac0d9c53f958_SOW.pdf").write_text("x")
+    path, ambiguous = R.pick_upload()
+    assert path and R.display_name(path) == "SOW.pdf"
+    assert ambiguous == []
+
+
+def test_two_uploads_seconds_apart_are_not_guessed_between(tmp_path, monkeypatch):
+    """Reading the WRONG tender is far worse than one extra question. Two
+    copies of SOW.pdf already exist from testing."""
+    _uploads_dir(tmp_path, monkeypatch)
+    (tmp_path / "a43c7f9c-ae47-47de-8c16-ac0d9c53f958_SOW.pdf").write_text("x")
+    (tmp_path / "b289b94e-d909-4141-8087-6e0a2f01f0a7_SOW.pdf").write_text("x")
+    path, ambiguous = R.pick_upload()
+    assert path is None
+    assert len(ambiguous) == 2
+
+
+def test_stale_uploads_are_ignored(tmp_path, monkeypatch):
+    """An RFP from last week is not the one just attached."""
+    import os, time
+    _uploads_dir(tmp_path, monkeypatch)
+    old = tmp_path / "old_SOW.pdf"
+    old.write_text("x")
+    stale = time.time() - 86400
+    os.utime(old, (stale, stale))
+    assert R.pick_upload() == (None, [])
+
+
+def test_non_documents_are_ignored(tmp_path, monkeypatch):
+    """A pasted client logo is not an RFP."""
+    _uploads_dir(tmp_path, monkeypatch)
+    (tmp_path / "logo.png").write_text("x")
+    assert R.pick_upload() == (None, [])

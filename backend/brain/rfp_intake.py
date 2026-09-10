@@ -31,7 +31,9 @@ nothing generates until a human has seen the list.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -43,6 +45,82 @@ log = logging.getLogger("shilpi-brain.rfp")
 # Without this check the extractor would run happily on an empty string and
 # report that the document contained no requirements.
 MIN_CHARS_PER_PAGE = 200
+
+
+# Where Open WebUI stores chat attachments, mounted read-only into this
+# container by deploy/docker-compose.yml.
+#
+# OWUI extracts PDF text itself and sends the brain only that text. For a raster
+# tender it is nothing -- the 20-page ESNAD SOW yielded 468 characters, all page
+# numbers -- so the brain reads the real file from OWUI's own storage instead.
+OWUI_UPLOADS = os.environ.get("SHILPI_OWUI_UPLOADS", "/owui-data/uploads")
+
+# How far back an upload can be and still count as "the file just attached".
+UPLOAD_WINDOW_S = int(os.environ.get("SHILPI_UPLOAD_WINDOW_S", "900"))
+
+_DOC_SUFFIXES = (".pdf", ".docx", ".doc", ".txt", ".md", ".rtf")
+
+
+def uploads_available() -> bool:
+    """Is OWUI's upload directory actually mounted?
+
+    Checked at startup and reported by /health. This couples the brain to Open
+    WebUI's internal layout, which can move on an upgrade -- and a silently
+    missing mount would make RFP intake fail in a way that looks like a bad
+    document rather than a bad deploy.
+    """
+    return os.path.isdir(OWUI_UPLOADS)
+
+
+def recent_uploads(window_s: int = UPLOAD_WINDOW_S) -> list[tuple[str, float]]:
+    """(path, mtime) for documents uploaded recently, newest first."""
+    if not uploads_available():
+        log.warning("OWUI uploads directory not mounted at %s", OWUI_UPLOADS)
+        return []
+    cutoff = time.time() - window_s
+    out: list[tuple[str, float]] = []
+    try:
+        for name in os.listdir(OWUI_UPLOADS):
+            if not name.lower().endswith(_DOC_SUFFIXES):
+                continue
+            path = os.path.join(OWUI_UPLOADS, name)
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if mtime >= cutoff:
+                out.append((path, mtime))
+    except OSError as e:
+        log.warning("could not list %s: %s", OWUI_UPLOADS, e)
+        return []
+    return sorted(out, key=lambda pair: pair[1], reverse=True)
+
+
+def display_name(path: str) -> str:
+    """OWUI prefixes a uuid: "a43c7f9c-..._SOW.pdf" -> "SOW.pdf"."""
+    base = os.path.basename(path)
+    return re.sub(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                  r"[0-9a-f]{12}_", "", base, flags=re.I)
+
+
+def pick_upload(window_s: int = UPLOAD_WINDOW_S) -> tuple[Optional[str], list[str]]:
+    """(chosen path, ambiguous candidates).
+
+    Returns the newest upload when it is clearly the one just attached. When two
+    files land within seconds of each other the caller must ASK: reading the
+    wrong tender is far worse than one extra question, and two copies of
+    SOW.pdf already exist from testing.
+    """
+    recent = recent_uploads(window_s)
+    if not recent:
+        return None, []
+    if len(recent) == 1:
+        return recent[0][0], []
+    newest_path, newest_mtime = recent[0]
+    contenders = [p for p, m in recent if newest_mtime - m <= 60]
+    if len(contenders) > 1:
+        return None, [display_name(p) for p in contenders]
+    return newest_path, []
 
 
 @dataclass

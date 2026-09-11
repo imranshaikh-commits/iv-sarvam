@@ -1190,6 +1190,36 @@ def capture_report(bucket: dict, captured: dict, reply_text: str) -> str:
     return "\n".join(lines)
 
 
+def _fold_vendor_scope_answers(answers: dict, recorded: dict) -> dict:
+    """Fold `vendor_scope__<slug>` answers into one vendor_scope_map dict.
+
+    `recorded` (from resolve_bucket_answers) comes back with SLUGGED keys —
+    `vendor_scope__ping_identity` — because those are real question ids in
+    the dynamic vendor_scope bucket. Everything downstream that CONSUMES the
+    scope split (document_engine's context, the diagram plan) should read
+    one dict keyed by the vendor's bare name, not N loose top-level answer
+    keys, so this is where the translation happens — once, in one place,
+    rather than re-derived by every caller.
+
+    Existing entries in answers["vendor_scope_map"] are preserved: a
+    consultant answering vendor 2's scope in a later turn must not lose
+    vendor 1's answer from an earlier turn.
+    """
+    from proposal_templates import split_vendors
+
+    vmap = dict(answers.get("vendor_scope_map") or {})
+    out = dict(recorded)
+    for vendor in split_vendors(answers.get("iam_vendor")):
+        bare = re.sub(r"\s*\(.*?\)\s*$", "", vendor).strip() or vendor
+        slug = re.sub(r"[^a-z0-9]+", "_", bare.lower()).strip("_") or "vendor"
+        key = f"vendor_scope__{slug}"
+        if key in out:
+            vmap[bare] = out.pop(key)
+    if vmap:
+        out["vendor_scope_map"] = vmap
+    return out
+
+
 def gap_fill_bucket(missing_ids: list[str], proposal_type: str | None = None) -> dict:
     """Build a pseudo-bucket containing only the still-missing required questions.
 
@@ -1377,6 +1407,7 @@ async def propose_one_diagram(
         client_name = str(answers.get("client_name") or "the client")
         proposal_type = str(answers.get("proposal_type") or "implementation")
         iam_vendor = answers.get("iam_vendor") or None
+        vendor_scope_map = answers.get("vendor_scope_map") or None
 
         if not proposal_id:
             proposal_id = await supabase_client.insert_generated_proposal(
@@ -1402,7 +1433,8 @@ async def propose_one_diagram(
                 diagram_engine.generate_diagram_spec(
                     _structured_with_fallback, title=full_title, diagram_type=dtype,
                     context_text=context, client_name=client_name,
-                    iam_vendor=iam_vendor, guidance=guidance, evidence_text=evidence,
+                    iam_vendor=iam_vendor, vendor_scope_map=vendor_scope_map,
+                    guidance=guidance, evidence_text=evidence,
                     models=DIAGRAM_LLM_MODELS or None),
                 timeout=_DIAGRAM_SPEC_TIMEOUT_S)
         except asyncio.TimeoutError:
@@ -1463,6 +1495,7 @@ async def propose_architecture(
         client_name = str(answers.get("client_name") or "the client")
         proposal_type = str(answers.get("proposal_type") or "implementation")
         iam_vendor = answers.get("iam_vendor") or None
+        vendor_scope_map = answers.get("vendor_scope_map") or None
 
         # One generated_proposal row carries the whole engagement. Status starts
         # at architecture_review — the schema already models this gate.
@@ -1504,6 +1537,7 @@ async def propose_architecture(
                             context_text=context,
                             client_name=client_name,
                             iam_vendor=iam_vendor,
+                            vendor_scope_map=vendor_scope_map,
                             guidance=guidance,
                             evidence_text=evidence,
                             models=DIAGRAM_LLM_MODELS or None,
@@ -2551,10 +2585,14 @@ def _diagram_public(row: dict) -> dict:
 async def create_diagram_endpoint(proposal_id: str, request: Request):
     """Generate a structured architecture-diagram spec (LLM) and persist as draft.
 
-    Body: {"title","diagram_type","context_text","intake_session_id"} (all
-    optional except a sensible default title). Returns the created diagram row.
-    The spec is generated via the shared _structured_with_fallback helper and
-    sanitized/capped before storage. No raw DOT is ever accepted.
+    Body: {"title","diagram_type","context_text","intake_session_id",
+    "iam_vendor","vendor_scope_map","client_name"} (all optional except a
+    sensible default title). vendor_scope_map is {"vendor name": "scope
+    description"} for multi-vendor engagements — passed through explicitly
+    since this endpoint does not fetch a stored session's answers. Returns
+    the created diagram row. The spec is generated via the shared
+    _structured_with_fallback helper and sanitized/capped before storage. No
+    raw DOT is ever accepted.
     """
     body = await request.json()
     title = (body.get("title") or "Solution Architecture").strip() or "Solution Architecture"
@@ -2562,6 +2600,16 @@ async def create_diagram_endpoint(proposal_id: str, request: Request):
     context_text = (body.get("context_text") or "").strip()
     intake_session_id = (body.get("intake_session_id") or "").strip() or None
     iam_vendor = (body.get("iam_vendor") or "").strip() or None
+    # Multi-vendor engagements: {"Ping Identity": "Access Management, CIAM",
+    # "Saviynt": "IGA, PAM"}. This endpoint does not look up a stored session
+    # (intake_session_id is persisted as metadata only, never fetched here),
+    # so unlike the chat-driven paths, the caller must pass the scope map
+    # explicitly if they want vendor-attributed diagram labelling.
+    vendor_scope_map = body.get("vendor_scope_map") or None
+    if vendor_scope_map is not None and not isinstance(vendor_scope_map, dict):
+        return JSONResponse(
+            {"error": "vendor_scope_map must be an object of {vendor: scope}"},
+            status_code=400)
     client_name = (body.get("client_name") or "the client").strip() or "the client"
 
     try:
@@ -2572,6 +2620,7 @@ async def create_diagram_endpoint(proposal_id: str, request: Request):
             context_text=context_text,
             client_name=client_name,
             iam_vendor=iam_vendor,
+            vendor_scope_map=vendor_scope_map,
             models=DIAGRAM_LLM_MODELS or None,
         )
     except Exception as e:  # noqa: BLE001
@@ -2961,8 +3010,19 @@ async def chat_completions(request: Request):
                         answers = (row or {}).get("answers") or {}
                     ptype = answers.get("proposal_type")
                     missing_now = missing_required(answers, ptype)
+                    # A second, independent gap check: a multi-vendor
+                    # iam_vendor answer with no per-vendor scope captured yet.
+                    # Checked separately from missing_required (which only
+                    # covers the STATIC template) because which questions are
+                    # needed here depends on the iam_vendor ANSWER itself, not
+                    # something known before the interview runs. Required
+                    # fields are asked first; vendor scope only once those are
+                    # clear, so a consultant is never asked two kinds of
+                    # question in the same turn.
+                    vendor_gap = (None if missing_now else
+                                 intake_template.vendor_scope_bucket(answers))
 
-                    if not missing_now:
+                    if not missing_now and not vendor_gap:
                         plan = await load_plan(state.session, answers)
                         await save_plan(state.session, plan)
                         return (chat_state.build_plan_message(plan, answers) + "\n\n"
@@ -2970,8 +3030,12 @@ async def chat_completions(request: Request):
                                     mode=chat_state.MODE_DIAGRAM_PLAN,
                                     session=state.session, proposal=state.proposal)))
 
-                    gap = gap_fill_bucket(missing_now, ptype)
+                    gap = gap_fill_bucket(missing_now, ptype) if missing_now else vendor_gap
                     recorded = await resolve_bucket_answers(gap, q, None)
+
+                    if recorded and gap["id"] == "vendor_scope":
+                        recorded = _fold_vendor_scope_answers(answers, recorded)
+
                     if recorded and state.session:
                         try:
                             async with httpx.AsyncClient() as sclient:
@@ -2980,7 +3044,20 @@ async def chat_completions(request: Request):
                         except Exception as e:  # noqa: BLE001
                             log.warning("gap-fill patch failed for %s: %s", state.session, e)
 
-                    still = [m for m in missing_now if m not in recorded]
+                    if gap["id"] == "vendor_scope":
+                        # Re-derive "still missing" from the SAME function
+                        # that built the question list, against the ANSWERS
+                        # AS THEY WOULD NOW STAND (existing answers merged
+                        # with what was just recorded this turn) — rather
+                        # than hand-matching slugs back to bare vendor names a
+                        # second time. One source of truth for "which vendors
+                        # still need a scope answer", used both to ask the
+                        # question and to check whether it was answered.
+                        merged = {**answers, **recorded}
+                        still_gap = intake_template.vendor_scope_bucket(merged)
+                        still = [q["id"] for q in still_gap["questions"]] if still_gap else []
+                    else:
+                        still = [m for m in missing_now if m not in recorded]
                     if still:
                         listed = ", ".join(f"`{m}`" for m in still)
                         return (chat_state.build_recap_line(recorded) + "\n\n"

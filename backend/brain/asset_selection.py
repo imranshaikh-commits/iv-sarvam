@@ -82,15 +82,31 @@ _VENDORS = ("sailpoint", "ping identity", "ping", "forgerock", "okta", "ibm",
             "oracle", "cyberark", "beyondtrust", "saviynt", "keycloak")
 
 
-def _mentions_other_vendor(text: str, wanted: Optional[str]) -> bool:
-    """True when the text names a vendor that is NOT the one being proposed."""
+def _mentions_other_vendor(text: str, wanted: Optional[str],
+                           wanted_vendors: Optional[list] = None) -> bool:
+    """True when the text names a vendor that is NOT one of the ones being
+    proposed.
+
+    MULTI-VENDOR: pass `wanted_vendors` (a list) for a multi-vendor
+    engagement rather than relying on `wanted` being a combined string. A
+    combined string like "Ping Identity and Saviynt" happened to work by
+    coincidence (each vendor's own name is a substring of the combined
+    string), but that is not something to depend on — a capability-scoped
+    name, a third vendor, or a vendor name that is itself a substring of
+    another would silently break it. `wanted_vendors` checks membership
+    against each vendor explicitly instead.
+    """
     low = (text or "").lower()
-    want = (wanted or "").lower()
+    candidates = [w.lower() for w in (wanted_vendors or [])] or (
+        [(wanted or "").lower()] if wanted else [])
     for v in _VENDORS:
-        if v in low and (not want or v not in want):
-            # "ping" inside "ping identity" is the same vendor, not another.
-            if want and (v in want or want.split()[0] in v):
-                continue
+        if v not in low:
+            continue
+        # "ping" inside "ping identity" is the same vendor, not another --
+        # checked against EVERY wanted vendor, not just the first/combined one.
+        is_one_of_ours = any(
+            v in want or want.split()[0] in v for want in candidates if want)
+        if not is_one_of_ours:
             return True
     return False
 
@@ -111,11 +127,18 @@ DEFAULT_ASSET_LIMIT = 2
 
 def select_assets(assets: list[dict], section_id: str,
                   iam_vendor: Optional[str] = None,
+                  iam_vendors: Optional[list] = None,
                   limit: Optional[int] = None) -> list[dict]:
     """Assets suitable for this section, best first.
 
     `assets` is the approved, placeable library (already filtered by the caller
     so this function stays pure and testable).
+
+    `iam_vendors` (multi-vendor engagements): pass the split vendor list so an
+    asset mentioning a competing vendor by name is excluded correctly for
+    EVERY proposed vendor, not just the first one / a combined string. Falls
+    back to treating `iam_vendor` as a single-item list when not given, so a
+    single-vendor call site is unaffected.
 
     Returns at most `limit`. Two per section is deliberate: IV's proposals carry
     37 images across 11 sections, so roughly three per section including
@@ -128,6 +151,7 @@ def select_assets(assets: list[dict], section_id: str,
         limit = SECTION_ASSET_LIMITS.get(section_id, DEFAULT_ASSET_LIMIT)
     kinds, pattern = rule
     rx = re.compile(pattern, re.I)
+    vendors_for_check = iam_vendors or ([iam_vendor] if iam_vendor else None)
 
     scored: list[tuple[int, dict]] = []
     for a in assets:
@@ -139,7 +163,7 @@ def select_assets(assets: list[dict], section_id: str,
         desc = f"{a.get('vision_description') or ''} {a.get('ocr_text') or ''}"
         if not rx.search(desc):
             continue
-        if _mentions_other_vendor(desc, iam_vendor):
+        if _mentions_other_vendor(desc, iam_vendor, vendors_for_check):
             continue
         # Prefer assets seen in more proposals: recurrence is the strongest
         # available evidence that IV reuses this image deliberately.

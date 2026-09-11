@@ -367,3 +367,67 @@ def missing_required(answers: dict, proposal_type: str | None = None) -> list[st
     ptype = proposal_type or answers.get("proposal_type")
     return [qid for qid in required_question_ids(ptype)
             if not _is_answered(answers.get(qid))]
+
+
+def vendor_scope_bucket(answers: dict) -> dict | None:
+    """A dynamic follow-up bucket asking which capability area each vendor
+    in a multi-vendor iam_vendor answer owns — or None when there is nothing
+    to ask (single vendor, or every vendor already has a scope answer).
+
+    WHY THIS EXISTS: "Ping Identity (Access Management, CIAM) and Saviynt
+    (IGA, PAM)" told the system two vendor NAMES but left their capability
+    split as an opaque parenthetical inside one free-text string — readable
+    in a heading, but not something the drafting prompt or diagram plan could
+    reliably act on ("when describing the architecture, Ping owns access/
+    CIAM, Saviynt owns IGA/PAM, keep them attributed separately"). Parsing
+    that split back OUT of prose is exactly the kind of silent, fragile
+    string-matching that has broken this system before (the colon-only
+    parser, the current-bucket-only lookup). Asking for it as a STRUCTURED
+    per-vendor answer is the reliable version of the same idea.
+
+    This is a DYNAMIC bucket, not a static template entry: which vendors need
+    a scope question is only known after `iam_vendor` itself is answered, so
+    it cannot be expressed as a conditional in the static template (which only
+    gates on proposal_type, evaluated before any answers exist). Built the
+    same way `gap_fill_bucket` builds a pseudo-bucket for missing required
+    fields — reusing an existing, trusted pattern rather than inventing a
+    second flow-control mechanism.
+
+    Each vendor gets its own question id (`vendor_scope__<slug>`) so a
+    consultant answering three vendors gets three short, specific prompts
+    ("What does Ping Identity own?") rather than one combined free-text box
+    that would reintroduce the exact parsing problem this avoids.
+    """
+    import re as _re
+
+    from proposal_templates import split_vendors
+
+    vendors = split_vendors(answers.get("iam_vendor"))
+    if len(vendors) < 2:
+        return None
+
+    have = answers.get("vendor_scope_map") or {}
+    questions = []
+    for vendor in vendors:
+        # Strip a parenthetical the consultant may already have typed
+        # ("Ping Identity (Access Management, CIAM)") down to the bare name
+        # for the question id and label — the PARENTHETICAL ITSELF is not
+        # trusted as the structured scope; it is only ever a hint that a
+        # split is needed. The actual scope comes from this question's
+        # answer, asked explicitly, not scraped back out of the vendor name.
+        bare = _re.sub(r"\s*\(.*?\)\s*$", "", vendor).strip() or vendor
+        if bare in have:
+            continue
+        slug = _re.sub(r"[^a-z0-9]+", "_", bare.lower()).strip("_") or "vendor"
+        questions.append(_q(
+            f"vendor_scope__{slug}",
+            f"Which capability area(s) does {bare} own in this engagement?",
+            "text", required=True,
+            note=(f"e.g. \"Access Management, CIAM\" or \"IGA, PAM\" — this "
+                 f"is what separates {bare}'s section of the architecture "
+                 f"from the other vendor's, so be specific rather than "
+                 f"restating the whole scope.")))
+    if not questions:
+        return None
+    return {"id": "vendor_scope", "title": "Multi-vendor scope split",
+            "questions": questions}

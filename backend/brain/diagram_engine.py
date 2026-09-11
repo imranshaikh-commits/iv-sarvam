@@ -855,6 +855,7 @@ async def generate_diagram_spec(
     context_text: str = "",
     client_name: str = "the client",
     iam_vendor: Optional[str] = None,
+    vendor_scope_map: Optional[dict] = None,
     guidance: str = "",
     evidence_text: str = "",
     models: list[str] | None = None,
@@ -872,12 +873,25 @@ async def generate_diagram_spec(
     to show zones, load balancing or HA. Guidance now has its own parameter and
     is never truncated; discovery answers come next; retrieved evidence is
     trimmed last because it is the most replaceable input.
+
+    vendor_scope_map (multi-vendor engagements only): {"Ping Identity":
+    "Access Management, CIAM", "Saviynt": "IGA, PAM"}. Splitting headings and
+    retrieval per vendor in the drafted TEXT is not enough on its own — the
+    architecture DIAGRAM needs the same explicit signal, or the model draws
+    one undifferentiated box instead of correctly attributing each
+    node/zone/component to the vendor that owns it.
     """
     vendor_clause = f" using {iam_vendor}" if iam_vendor else ""
     parts = [
         f"Design a '{diagram_type}' architecture diagram titled \"{title}\" "
         f"for {client_name}{vendor_clause}."
     ]
+    if vendor_scope_map and len(vendor_scope_map) > 1:
+        split = "; ".join(f"{v} owns {s}" for v, s in vendor_scope_map.items())
+        parts.append(
+            f"\nMULTI-VENDOR ENGAGEMENT — {split}. Label every node, zone or "
+            f"component with the vendor that owns it. Do not draw a single "
+            f"undifferentiated block for both vendors' capabilities.")
     if guidance.strip():
         parts.append(f"\nWHAT THIS DIAGRAM MUST SHOW (follow this closely):\n{guidance.strip()}")
     if context_text.strip():

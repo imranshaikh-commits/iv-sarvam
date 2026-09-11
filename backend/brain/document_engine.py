@@ -42,6 +42,7 @@ from proposal_templates import (
     SectionSpec,
     get_depth_tier,
     get_template,
+    split_vendors,
     topic_for,
 )
 import asset_selection
@@ -98,7 +99,7 @@ RetrieveFn = Callable[..., Awaitable[list[dict]]]
 BuildSystemFn = Callable[[list[dict]], str]
 
 _SECTION_SYSTEM_TEMPLATE = """You are Shilpi, InspiritVision's internal proposal assistant (an IAM consulting firm).
-You are drafting the "{title}" section of a {proposal_type} proposal for {client_name}{vendor_clause}.
+You are drafting the "{title}" section of a {proposal_type} proposal for {client_name}{vendor_clause}.{vendor_scope_clause}
 
 SECTION PURPOSE: {purpose}
 
@@ -141,6 +142,29 @@ OUTPUT DISCIPLINE (mandatory):
 - Stop when the section is complete. Do not pad to fill space, and never repeat a
   word or phrase to extend length.
 """
+
+
+def _vendor_scope_clause(context: dict) -> str:
+    """Explicit vendor-ownership framing for a multi-vendor engagement.
+
+    Splitting headings and retrieval per vendor (render_subsections,
+    _fanout_queries) is necessary but NOT sufficient: a section like
+    "Proposed Deployment Architecture" is deliberately drafted ONCE, showing
+    how the whole solution fits together — and without this clause, the model
+    has no signal that it must attribute components correctly rather than
+    blending two vendors' capabilities into one undifferentiated description.
+    This is injected into every section's system prompt so the distinction
+    holds even in sections that were never split.
+    """
+    vmap = (context.get("discovery_answers") or {}).get("vendor_scope_map") or {}
+    if len(vmap) < 2:
+        return ""
+    lines = "; ".join(f"{v} owns {s}" for v, s in vmap.items())
+    return (f"\n\nMULTI-VENDOR ENGAGEMENT — {lines}. When describing the "
+           f"architecture or capabilities, attribute each part to the "
+           f"correct vendor explicitly. Do not blend the two vendors' "
+           f"capabilities into one undifferentiated description, and do not "
+           f"describe one vendor as covering scope that belongs to the other.")
 
 
 def _vendor_clause(iam_vendor: Optional[str]) -> str:
@@ -485,12 +509,49 @@ def _fanout_queries(section_spec: SectionSpec, context: dict, fanout: int) -> li
 
     Query 0 is the section's base query. Extra queries append a subsection facet
     keyword so retrieval surfaces evidence for different aspects of the section.
+
+    MULTI-VENDOR: when the section's query_template contains {{ iam_vendor }}
+    and context["iam_vendors"] holds more than one name, the BASE query is
+    rendered once per vendor instead of once with a combined string. A query
+    like "Ping Identity and Saviynt solution overview" dilutes the vector
+    search against both vendors' corpus content at once; two separate queries
+    each retrieve cleanly against their own vendor's evidence, then get merged
+    and deduped by _retrieve_fanout same as any other fanned-out query.
+
+    Single-vendor proposals are unaffected: iam_vendors defaults to a
+    one-element list and this loop runs once, identical to before.
     """
-    base = section_spec.render_query(context)
-    if fanout <= 1:
-        return [base]
-    queries = [base]
-    for _title, facet in SUBSECTION_FACETS[: max(0, fanout - 1)]:
+    vendors = context.get("iam_vendors") or (
+        [context["iam_vendor"]] if context.get("iam_vendor") else [None])
+
+    is_multi_vendor_query = ("iam_vendor" in section_spec.query_template
+                             and len(vendors) > 1)
+    if is_multi_vendor_query:
+        bases = [section_spec.render_query({**context, "iam_vendor": v})
+                for v in vendors]
+    else:
+        bases = [section_spec.render_query(context)]
+
+    # One base query per vendor is a FLOOR, not a target the fanout budget can
+    # shrink below. A fanout of 1 with two vendors must still return both base
+    # queries — retrieval for a vendor that ends up with ZERO queries means
+    # that vendor's corpus evidence never reaches the drafted section at all,
+    # which is a worse failure than one fewer facet-appended query. This was
+    # caught by testing fanout=1 directly: it silently dropped the second
+    # vendor's base query entirely.
+    if not is_multi_vendor_query and fanout <= 1:
+        return bases[:1]
+    if is_multi_vendor_query and fanout <= len(bases):
+        return bases
+
+    queries = list(bases)
+    remaining = max(0, fanout - len(bases))
+    # Facet queries cycle through vendors round-robin (vendor 0's facet 0,
+    # vendor 1's facet 0, vendor 0's facet 1, ...) rather than all landing on
+    # vendor 0, so extra fanout budget also gives BOTH vendors deeper coverage
+    # instead of only the first one.
+    for idx, (_title, facet) in enumerate(SUBSECTION_FACETS[:remaining]):
+        base = bases[idx % len(bases)]
         queries.append(f"{base} — {facet}")
     return queries[:fanout]
 
@@ -805,6 +866,7 @@ async def draft_section(
         proposal_type=context.get("proposal_type", "implementation"),
         client_name=context.get("client_name", "the client"),
         vendor_clause=_vendor_clause(context.get("iam_vendor")),
+        vendor_scope_clause=_vendor_scope_clause(context),
         purpose=section_spec.purpose,
         marker=SME_REVIEW_MARKER,
         evidence=evidence_block,
@@ -1523,11 +1585,13 @@ async def _attach_assets(client, sections: list[dict], context: dict,
         return
 
     vendor = context.get("iam_vendor")
+    vendors = context.get("iam_vendors")
     used: set[str] = set()
     placed = 0
     for sec in sections:
         chosen = asset_selection.select_assets(
-            library, sec.get("id") or "", vendor, limit=_ASSETS_PER_SECTION)
+            library, sec.get("id") or "", vendor, iam_vendors=vendors,
+            limit=_ASSETS_PER_SECTION)
         attached = []
         for a in chosen:
             # One image appears once per document, however many sections it
@@ -2145,13 +2209,22 @@ async def generate_proposal(
 
     draft_specs = [s for s in chosen if s.id != COMPLIANCE_SECTION_ID]
 
+    # A multi-vendor answer ("Ping Identity ... and Saviynt ...") is split into
+    # a list so per-vendor headings and retrieval queries can render/query
+    # cleanly for EACH vendor instead of once with a diluted combined string.
+    # Single-vendor proposals get a one-element list — everything downstream
+    # that reads iam_vendors falls back to iterating once, unchanged.
+    _vendors = split_vendors(iam_vendor)
     context = {
         "client_name": client_name,
         "iam_vendor": iam_vendor or "",
+        "iam_vendors": _vendors,
         "proposal_type": proposal_type,
         "rfp_text": rfp_text or "",
         "discovery_answers": discovery_answers or {},
     }
+    if len(_vendors) > 1:
+        log.info("multi-vendor proposal: %s", _vendors)
 
     sem = asyncio.Semaphore(DOC_CONCURRENCY)
 

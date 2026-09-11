@@ -17,7 +17,87 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+import re
+
 from jinja2 import Template
+
+# Multi-vendor engagements are real: ESNAD asked for Ping Identity (Access
+# Management, CIAM) AND Saviynt (IGA, PAM) as two separate platforms in one
+# proposal, and the system had no way to represent that — iam_vendor was a
+# single string, templated verbatim into 47 places across this file, producing
+# headings like "Why Ping Identity (Access Management, CIAM) and Saviynt (IGA,
+# PAM)" and retrieval queries that diluted vector search against BOTH vendors'
+# corpus content at once instead of hitting either cleanly.
+#
+# split_vendors() is DELIBERATELY CONSERVATIVE. A single vendor name is never
+# more valuable to split incorrectly than a genuine multi-vendor answer is to
+# leave combined — a wrongly-split single vendor ("Micro Focus" ->
+# ["Micro", "Focus"]) corrupts every retrieval query in the proposal, while a
+# wrongly-combined multi-vendor answer just falls back to today's (known,
+# imperfect) single-string behaviour. So this only splits on an explicit " and "
+# or a comma, and only when what results actually looks like a set of distinct
+# product names rather than a single vendor's own multi-word name.
+_VENDOR_SPLIT_RE = re.compile(r"\s*(?:,\s*(?:and\s+)?|\s+and\s+)\s*", re.I)
+
+# A handful of known product/vendor names where "and" is part of the name
+# itself, not a separator between two vendors. Matched against the WHOLE
+# string, not a substring search -- "Ping Identity and Saviynt" contains the
+# substring "Identity and" (from "Ping IdentITY AND Saviynt") without being
+# one of these names, and a substring match on that phrase silently blocked
+# a genuine two-vendor split. Anchored to ^...$ so only an exact name match
+# suppresses splitting.
+_KNOWN_AND_NAMES = (
+    r"identity\s+and\s+access\s+management(\s+inc)?",
+    r"research\s+and\s+markets",
+)
+_VENDOR_AND_IS_PART_OF_NAME = re.compile(
+    r"^(?:" + "|".join(_KNOWN_AND_NAMES) + r")$", re.I)
+
+
+def split_vendors(iam_vendor: Optional[str]) -> list[str]:
+    """A single iam_vendor answer -> a list of one or more vendor names.
+
+    "Ping Identity (Access Management, CIAM) and Saviynt (IGA, PAM)" ->
+    ["Ping Identity (Access Management, CIAM)", "Saviynt (IGA, PAM)"]
+
+    "SailPoint" -> ["SailPoint"]  (single vendor, list of one, unchanged
+    behaviour throughout the rest of this file)
+
+    Splits on commas inside parentheses are protected: "Ping Identity (Access
+    Management, CIAM)" is ONE vendor with a two-item capability list, not two
+    vendors, because the comma is nested inside "(...)".
+    """
+    text = (iam_vendor or "").strip()
+    if not text:
+        return []
+    if _VENDOR_AND_IS_PART_OF_NAME.search(text):
+        return [text]
+
+    # Split on top-level commas/and only — never inside parentheses, which is
+    # where a single vendor's capability list lives ("Ping Identity (Access
+    # Management, CIAM)").
+    parts, depth, buf = [], 0, ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        if depth == 0:
+            m = _VENDOR_SPLIT_RE.match(text, i)
+            if m and buf.strip():
+                parts.append(buf.strip())
+                buf = ""
+                i = m.end()
+                continue
+        buf += ch
+        i += 1
+    if buf.strip():
+        parts.append(buf.strip())
+
+    parts = [p for p in parts if p]
+    return parts if len(parts) > 1 else [text]
 
 # Sentinel section id: this section is produced by the compliance-matrix
 # pipeline (run_compliance_matrix) rather than by free-form LLM drafting.
@@ -133,13 +213,45 @@ class SectionSpec:
         return " ".join(Template(self.title).render(**context).split())
 
     def render_subsections(self, context: dict) -> list[tuple[str, str]]:
-        """Subsection (heading, instruction) pairs with context substituted."""
+        """Subsection (heading, instruction) pairs with context substituted.
+
+        MULTI-VENDOR EXPANSION: a heading that literally contains
+        ``{{ iam_vendor }}`` is rendered ONCE PER VENDOR when
+        ``context["iam_vendors"]`` holds more than one name, instead of once
+        with a combined string like "Why Ping Identity and Saviynt".
+
+        Why this matters: every ``{{ iam_vendor }}`` heading also drives a
+        retrieval query for that subsection (see ``render_query`` and
+        ``document_engine.draft_section``). A combined vendor string in a
+        query dilutes the vector search against BOTH vendors' corpus content
+        at once, and "Why Ping Identity and Saviynt" reads as one confused
+        pitch rather than two clean, evidence-backed cases.
+
+        A heading with NO ``{{ iam_vendor }}`` token (e.g. "Access
+        Certification", "Who Has Access Today") is vendor-agnostic — it
+        describes a capability the combined solution has, not one vendor's
+        pitch — and is rendered exactly once regardless of vendor count.
+
+        Single-vendor proposals get ``iam_vendors = [iam_vendor]``: one
+        iteration, byte-identical output to before this existed.
+        """
+        vendors = context.get("iam_vendors") or (
+            [context["iam_vendor"]] if context.get("iam_vendor") else [None])
+
         out: list[tuple[str, str]] = []
         for heading, instruction in self.subsections:
-            out.append((
-                " ".join(Template(heading).render(**context).split()),
-                " ".join(Template(instruction).render(**context).split()),
-            ))
+            if "iam_vendor" in heading and len(vendors) > 1:
+                for vendor in vendors:
+                    vctx = {**context, "iam_vendor": vendor}
+                    out.append((
+                        " ".join(Template(heading).render(**vctx).split()),
+                        " ".join(Template(instruction).render(**vctx).split()),
+                    ))
+            else:
+                out.append((
+                    " ".join(Template(heading).render(**context).split()),
+                    " ".join(Template(instruction).render(**context).split()),
+                ))
         return out
 
 

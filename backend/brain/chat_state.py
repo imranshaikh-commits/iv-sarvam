@@ -450,6 +450,27 @@ DIAGRAM_TYPE_MAP: dict[str, str] = {
     "customer journey": "sequence",
     "user journey": "sequence",
     "authentication journey": "sequence",
+    # PAM and IGA are their own formal domains in a full IAM SOW (ESNAD's RFP
+    # gives each an independent requirement register, PAM-01..11 and IGA-01..12,
+    # with its own deliverable — "PAM Config Document", "IGA Config Document").
+    # Without an entry here, apply_plan_edit's word-overlap check against this
+    # map can NEVER succeed for "add a Privileged Access Management diagram",
+    # whatever the phrasing — every request silently falls through to the
+    # re-prompt with no explanation of why it failed.
+    #
+    # Bare 3-letter acronyms ("pam", "iga") are deliberately NOT added as keys:
+    # apply_plan_edit filters key words to len > 3 before matching, so a
+    # 3-character key reduces to an EMPTY word list. The add-loop correctly
+    # guards against an empty list matching everything (`if key_words and ...`),
+    # so a bare acronym key would simply never fire rather than fire on any
+    # request. Multi-word phrases below match reliably; a bare "PAM" typed by a
+    # user still matches nothing on its own, which is a known, narrower gap.
+    "privileged access management": "flow",
+    "privileged access": "flow",
+    "identity governance": "flow",
+    "identity governance and administration": "flow",
+    "access certification": "flow",
+    "governance": "flow",
 }
 
 # Cap how many diagrams one review round generates — each is an LLM call plus a
@@ -663,6 +684,20 @@ _DROP_HINTS = ("drop", "remove", "delete", "skip", "without", "don't need",
                "do not need", "no need for", "exclude")
 _ADD_HINTS = ("add", "include", "also want", "plus a", "and a")
 
+# apply_plan_edit's word-overlap match filters DIAGRAM_TYPE_MAP keys to words
+# longer than 3 characters, so a bare acronym key ("pam", "iga") reduces to an
+# empty word list and can never match — "add a PAM diagram" or "add PAM Flow"
+# would silently fail even though "add a Privileged Access Management diagram"
+# succeeds. Checked as a direct substring match BEFORE the word-overlap loop,
+# so a real IAM domain acronym is recognised on its own rather than requiring
+# the user to spell out the full phrase.
+_DIAGRAM_ACRONYMS: dict[str, str] = {
+    "pam": "privileged access management",
+    "iga": "identity governance",
+    "sso": "customer journey",
+    "mfa": "authentication journey",
+}
+
 
 def apply_plan_edit(plan: list[tuple[str, str]], text: str) -> list[tuple[str, str]]:
     """Apply a free-text edit to the diagram plan, deterministically.
@@ -686,9 +721,20 @@ def apply_plan_edit(plan: list[tuple[str, str]], text: str) -> list[tuple[str, s
             out = kept
 
     if any(h in padded for h in _ADD_HINTS):
+        # A bare acronym ("add PAM Flow") is redirected to the full phrase it
+        # stands for, since the word-overlap loop below can never match a key
+        # that reduces to an empty word list (any key <= 3 characters). Longest
+        # acronym first so "SSO" inside a longer already-typed phrase can't
+        # pre-empt a more specific match.
+        redirect_text = padded
+        for acro, full_phrase in sorted(_DIAGRAM_ACRONYMS.items(),
+                                        key=lambda kv: -len(kv[0])):
+            if f" {acro} " in padded:
+                redirect_text = f"{padded} {full_phrase} "
+                break
         for key, engine_type in DIAGRAM_TYPE_MAP.items():
             key_words = [w for w in _normalise(key).split() if len(w) > 3]
-            if key_words and all(w in padded for w in key_words):
+            if key_words and all(w in redirect_text for w in key_words):
                 title = key.strip().title().replace("/", " / ")
                 if all(_normalise(title) != _normalise(t) for t, _ in out):
                     if len(out) < MAX_DIAGRAMS_PER_ROUND:

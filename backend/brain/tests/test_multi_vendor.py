@@ -377,6 +377,92 @@ async def _fake_structured(model, messages, models=None, **kw):
     return _valid_stub_spec()
 
 
+# ---------------------------------------------------------------------------
+# 7. apply_plan_edit — diagram plan "add"/"drop" was UNTESTED before this,
+#    which is exactly how it shipped with no PAM/IGA vocabulary at all.
+# ---------------------------------------------------------------------------
+
+import chat_state as cs  # noqa: E402
+
+_ESNAD_PLAN = [
+    ("Solution Architecture", "architecture"),
+    ("Integration / Joiner Flow", "flow"),
+]
+
+
+def test_add_privileged_access_management_flow_the_exact_failing_phrase():
+    """THE live-run failure, verbatim. Before the fix, DIAGRAM_TYPE_MAP had no
+    key overlapping any word in "Privileged Access Management", so this
+    request failed identically no matter how it was phrased — not a fuzzy-
+    match miss, a missing vocabulary entry."""
+    out = cs.apply_plan_edit(_ESNAD_PLAN, "add Privileged Access Management Flow")
+    added = out[len(_ESNAD_PLAN):]
+    assert added, "the exact phrase that failed live still adds nothing"
+    assert added[0][0] == "Privileged Access Management"
+
+
+def test_add_iga_diagram():
+    out = cs.apply_plan_edit(_ESNAD_PLAN, "add IGA diagram")
+    added = out[len(_ESNAD_PLAN):]
+    assert added and added[0][0] == "Identity Governance"
+
+
+def test_add_bare_pam_acronym():
+    """A 3-character key reduces to an EMPTY word list under the >3-char
+    filter, so a bare acronym ("pam") could never match on its own even
+    after the full-phrase key existed. The acronym redirect handles this
+    without weakening the length filter everywhere else."""
+    out = cs.apply_plan_edit(_ESNAD_PLAN, "add PAM Flow")
+    added = out[len(_ESNAD_PLAN):]
+    assert added and added[0][0] == "Privileged Access Management"
+
+
+def test_add_full_phrase_still_works_directly():
+    out = cs.apply_plan_edit(_ESNAD_PLAN, "add a Privileged Access Management diagram")
+    added = out[len(_ESNAD_PLAN):]
+    assert added and added[0][0] == "Privileged Access Management"
+
+
+def test_a_bare_acronym_key_never_matches_everything():
+    """Regression guard for the near-miss found while fixing this: an empty
+    key_words list (from a <=3-char key) must be REJECTED, not treated as a
+    vacuous match against every input. If "pam"/"iga" were ever added as
+    direct DIAGRAM_TYPE_MAP keys instead of via the acronym redirect, this
+    would catch it firing on unrelated add requests."""
+    out = cs.apply_plan_edit(_ESNAD_PLAN, "add a completely unrelated diagram type xyz")
+    added = out[len(_ESNAD_PLAN):]
+    assert not added, f"an unrelated request incorrectly added: {added}"
+
+
+def test_existing_diagram_vocabulary_still_works_unaffected():
+    """The acronym redirect and new PAM/IGA entries must not disturb any
+    pre-existing diagram type."""
+    out = cs.apply_plan_edit(_ESNAD_PLAN, "add a user journey diagram")
+    added = out[len(_ESNAD_PLAN):]
+    assert added and added[0][1] == "sequence"
+
+
+def test_add_does_not_duplicate_a_diagram_already_in_the_plan():
+    plan_with_pam = _ESNAD_PLAN + [("Privileged Access Management", "flow")]
+    out = cs.apply_plan_edit(plan_with_pam, "add Privileged Access Management Flow")
+    assert len(out) == len(plan_with_pam), "a diagram already in the plan was duplicated"
+
+
+def test_drop_still_works_alongside_the_new_vocabulary():
+    plan = _ESNAD_PLAN + [("Privileged Access Management", "flow")]
+    out = cs.apply_plan_edit(plan, "drop the privileged access management diagram")
+    titles = [t for t, _ in out]
+    assert "Privileged Access Management" not in titles
+    assert len(out) == 2
+
+
+def test_an_unmatched_request_leaves_the_plan_untouched_and_reprompts():
+    """No silent guessing: a genuinely unmatched request must change nothing,
+    so the caller's re-prompt logic (PLAN_REPROMPT) fires correctly."""
+    out = cs.apply_plan_edit(_ESNAD_PLAN, "add something entirely nonsensical qqzxy")
+    assert out == _ESNAD_PLAN
+
+
 def test_diagram_spec_call_builds_a_prompt_naming_both_vendors():
     """End-to-end through generate_diagram_spec's prompt assembly (not just
     the source-code check above) — confirms the vendor_scope_map argument

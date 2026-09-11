@@ -2723,6 +2723,16 @@ async def chat_completions(request: Request):
                     shape.append(f"{m.get('role')}: str({len(str(c))}b)")
             log.info("PAYLOAD SHAPE | top-level keys=%s | %s",
                      sorted(body.keys()), " || ".join(shape))
+            # One-time content preview, gated separately from the shape log so
+            # it is never on by accident: a client tender's text must not sit
+            # in a container log longer than needed to diagnose this.
+            if os.environ.get("SHILPI_LOG_PAYLOAD_PREVIEW") == "1":
+                last_user = next((m for m in reversed(messages or [])
+                                  if m.get("role") == "user"), None)
+                if last_user:
+                    txt = last_user.get("content")
+                    txt = txt if isinstance(txt, str) else str(txt)
+                    log.info("PAYLOAD PREVIEW (first 800 chars) | %s", txt[:800])
         except Exception as e:  # noqa: BLE001
             log.warning("payload shape logging failed: %s", e)
     query = last_user_text(messages)

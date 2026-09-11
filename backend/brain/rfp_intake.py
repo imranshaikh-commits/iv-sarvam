@@ -35,7 +35,7 @@ import os
 import re
 import time
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field as PField
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -457,9 +457,30 @@ one: this system will show every value to a human with this page number
 attached, so a value must be traceable to what is actually written here."""
 
 
+class _FieldValue(BaseModel):
+    """One discovery field the page states. STRICT schema, not a free dict --
+    a loosely-typed dict[str, str] gave Instructor nothing to enforce, so the
+    model was free to key it however it liked ("client name" vs "client_name"),
+    and every value with a key not EXACTLY matching field_ids was silently
+    dropped. Both live runs on ESNAD came back with 0 fields despite the model
+    genuinely reading the pages (8 gates extracted correctly, which use free
+    text and were unaffected)."""
+    field_id: str = PField(description="must be one of the provided field ids, exactly")
+    value: str
+
+
+class _RequirementItem(BaseModel):
+    """A numbered requirement line. Same fix as _FieldValue: list[dict] let the
+    model return keys as "ref"/"Ref"/"id"/"reference" interchangeably, and the
+    merge code only checked two of those spellings. A strict schema removes the
+    ambiguity instead of guessing at it after the fact."""
+    ref: str = PField(description="the requirement reference, e.g. AM-04, ILM-01")
+    text: str
+
+
 class _PageExtraction(BaseModel):
-    field_values: dict[str, str] = {}
-    requirements: list[dict] = []
+    field_values: list[_FieldValue] = []
+    requirements: list[_RequirementItem] = []
     eligibility_gates: list[str] = []
     structure_headings: list[str] = []
 
@@ -528,13 +549,21 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
             page_ex = await _extract_page_text(text_pages[i], field_ids, structured_fn)
 
         page_no = i + 1
-        for fid, val in (page_ex.field_values or {}).items():
-            if fid in field_ids and val and fid not in seen_fields:
-                seen_fields.add(fid)
-                ex.fields.append(ExtractedField(fid, str(val)[:2000], page_no))
+        for fv in (page_ex.field_values or []):
+            fid = (fv.field_id or "").strip()
+            val = (fv.value or "").strip()
+            # Tolerate the model normalising a field id slightly (a stray
+            # space, different case) rather than dropping it outright -- the
+            # STRICT schema fixes the structural ambiguity; this handles the
+            # residual case variance schemas don't catch.
+            canon = fid.strip().lower().replace(" ", "_").replace("-", "_")
+            matched = fid if fid in field_ids else next(
+                (f for f in field_ids if f.lower() == canon), None)
+            if matched and val and matched not in seen_fields:
+                seen_fields.add(matched)
+                ex.fields.append(ExtractedField(matched, val[:2000], page_no))
         for r in (page_ex.requirements or []):
-            ref = str(r.get("ref") or r.get("id") or "").strip()
-            text = str(r.get("text") or "").strip()
+            ref, text = (r.ref or "").strip(), (r.text or "").strip()
             if ref and text:
                 ex.requirements.append(Requirement(ref=ref, text=text[:600], page=page_no))
         for g in (page_ex.eligibility_gates or []):

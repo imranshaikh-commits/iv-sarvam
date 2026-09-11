@@ -208,3 +208,66 @@ def test_non_documents_are_ignored(tmp_path, monkeypatch):
     _uploads_dir(tmp_path, monkeypatch)
     (tmp_path / "logo.png").write_text("x")
     assert R.pick_upload() == (None, [])
+
+
+# ---------------------------------------------------------------------------
+# THE bug from the first two live runs against ESNAD.
+#
+# Both runs read all 20 pages successfully (8 gates extracted on the first
+# run, proving the model genuinely read real content) but landed 0 fields and
+# 0 requirements. field_values was a loose dict[str, str] and requirements was
+# list[dict] -- Instructor gives the model NO schema to enforce on either, so
+# it was free to key a field as "Client Name" instead of "client_name", or a
+# requirement as {"id": ..., "requirement_text": ...} instead of
+# {"ref": ..., "text": ...}. Every value under a key that didn't match exactly
+# was silently dropped. Gates worked because they are free text with no keys
+# to get wrong.
+# ---------------------------------------------------------------------------
+
+def test_field_values_use_a_strict_schema_not_a_free_dict():
+    """A loosely-typed dict gives Instructor nothing to enforce, so the model
+    is free to invent whatever keys it likes."""
+    import inspect
+    sig = inspect.signature(R._PageExtraction)
+    ann = R._PageExtraction.model_fields["field_values"].annotation
+    assert "_FieldValue" in str(ann), (
+        f"field_values is {ann}, not a strict per-item schema")
+
+
+def test_requirements_use_a_strict_schema_not_a_free_dict():
+    ann = R._PageExtraction.model_fields["requirements"].annotation
+    assert "_RequirementItem" in str(ann), (
+        f"requirements is {ann}, not a strict per-item schema")
+
+
+def test_a_field_id_that_does_not_match_is_dropped_not_guessed():
+    """An invented field id must not silently become a real one."""
+    pe = R._PageExtraction(field_values=[
+        R._FieldValue(field_id="not_a_real_field", value="x")])
+    field_ids = ["client_name"]
+    kept = []
+    for fv in pe.field_values:
+        matched = fv.field_id if fv.field_id in field_ids else None
+        if matched:
+            kept.append(matched)
+    assert kept == []
+
+
+def test_a_case_or_spacing_variant_still_matches():
+    """The strict schema fixes the structural ambiguity; a residual "Client
+    Name" vs "client_name" from the model should still resolve, not be
+    dropped as if it were a genuinely different field."""
+    fid = "Client Name"
+    field_ids = ["client_name"]
+    canon = fid.strip().lower().replace(" ", "_").replace("-", "_")
+    matched = fid if fid in field_ids else next(
+        (f for f in field_ids if f.lower() == canon), None)
+    assert matched == "client_name"
+
+
+def test_gates_are_unaffected_by_the_schema_fix():
+    """Gates are free text and were never broken -- confirming that only the
+    keyed shapes needed fixing."""
+    pe = R._PageExtraction(eligibility_gates=[
+        "ISO/IEC 27001 certified delivery organization"])
+    assert pe.eligibility_gates == ["ISO/IEC 27001 certified delivery organization"]

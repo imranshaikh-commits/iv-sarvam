@@ -1990,3 +1990,161 @@ def test_both_fallbacks_are_wired_in():
     src = inspect.getsource(app)
     assert "await resolve_intent(q)" in src
     assert "covered < PARSER_COVERAGE_FLOOR" in src
+
+
+# ---------------------------------------------------------------------------
+# The RFP upload path: same destination as the interview, different entry.
+#
+# Both paths write into the SAME intake_sessions.answers object, so everything
+# downstream (diagram plan, scope filtering, drafting) is untouched. The design
+# constraint is that an RFP states what the CLIENT wants and says nothing about
+# what IV proposes -- iam_vendor, differentiators and commercials still need a
+# human, whichever door was used to get here.
+# ---------------------------------------------------------------------------
+
+def test_router_offers_the_rfp_path():
+    assert "1b" in cs.ROUTER_MESSAGE
+    assert "RFP" in cs.ROUTER_MESSAGE or "SOW" in cs.ROUTER_MESSAGE
+
+
+def test_rfp_wording_is_recognised_at_the_router(monkeypatch):
+    async def fake_create(*a, **kw):
+        return "sess-rfp-1"
+
+    async def fake_extract(text):
+        import rfp_intake
+        return rfp_intake.RfpExtraction(
+            fields=[rfp_intake.ExtractedField("client_name", "ESNAD", 3)],
+            pages_read=20, used_vision=True, source_name="SOW.pdf"), ""
+
+    monkeypatch.setattr(app.supabase_client, "create_intake_session", fake_create)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers",
+                        lambda *a, **kw: _AwaitableNone())
+    monkeypatch.setattr(app, "run_rfp_extraction", fake_extract)
+
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "ok " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_ROUTER))},
+            {"role": "user", "content": "1b"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert "ESNAD" in content
+    assert cs.decode_marker(content).mode == cs.MODE_RFP_REVIEW
+
+
+class _AwaitableNone:
+    def __await__(self):
+        async def _x():
+            return None
+        return _x().__await__()
+
+
+def test_a_missing_upload_offers_the_interview_as_a_fallback(monkeypatch):
+    async def fake_create(*a, **kw):
+        return "sess-rfp-2"
+
+    async def no_file(text):
+        return None, "I don't see a document attached in the last few minutes."
+
+    monkeypatch.setattr(app.supabase_client, "create_intake_session", fake_create)
+    monkeypatch.setattr(app, "run_rfp_extraction", no_file)
+
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "ok " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_ROUTER))},
+            {"role": "user", "content": "use this SOW"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert "interview" in content.lower()
+    assert cs.decode_marker(content).mode == cs.MODE_ROUTER
+
+
+def test_a_correction_in_rfp_review_is_captured_and_stays_in_review(monkeypatch):
+    async def fake_resolve(bucket, text, ptype):
+        return {"iam_vendor": "SailPoint"}
+
+    monkeypatch.setattr(app, "resolve_bucket_answers", fake_resolve)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers",
+                        lambda *a, **kw: _AwaitableNone())
+
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "ok " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_RFP_REVIEW, session="sess-rfp-3"))},
+            {"role": "user", "content": "iam_vendor: SailPoint"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert "continue" in content.lower()
+    assert cs.decode_marker(content).mode == cs.MODE_RFP_REVIEW
+
+
+def test_continue_moves_from_rfp_review_to_the_diagram_plan(monkeypatch):
+    async def fake_get_session(client_, sid):
+        return {"answers": {
+            "client_name": "ESNAD", "industry": "Mining", "iam_vendor": "SailPoint",
+            "proposal_type": "implementation", "business_objectives": "x",
+            "proposal_depth": "full"}}
+
+    async def fake_complete(*a, **kw):
+        return {}
+
+    async def fake_load_plan(session, answers=None):
+        return [("Solution Architecture", "architecture")]
+
+    async def fake_save_plan(session, plan):
+        return None
+
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "complete_intake_session", fake_complete)
+    monkeypatch.setattr(app, "load_plan", fake_load_plan)
+    monkeypatch.setattr(app, "save_plan", fake_save_plan)
+
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "ok " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_RFP_REVIEW, session="sess-rfp-4"))},
+            {"role": "user", "content": "continue"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert cs.decode_marker(content).mode == cs.MODE_DIAGRAM_PLAN
+
+
+def test_continue_blocks_on_ivs_own_missing_decisions(monkeypatch):
+    """iam_vendor cannot come from the RFP. "continue" must not silently
+    proceed to a diagram plan for a vendor nobody chose."""
+    async def fake_get_session(client_, sid):
+        return {"answers": {"client_name": "ESNAD", "industry": "Mining"}}
+
+    async def fake_complete(*a, **kw):
+        return {}
+
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "complete_intake_session", fake_complete)
+
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "ok " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_RFP_REVIEW, session="sess-rfp-5"))},
+            {"role": "user", "content": "continue"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert "IV's decisions" in content
+    assert cs.decode_marker(content).mode == cs.MODE_RFP_REVIEW
+
+
+def test_1a_alone_routes_to_new_proposal():
+    """Isolates the first-token fix: "1b" also matches via wants_rfp_upload's
+    phrase fallback, but "1a" has no such fallback and depends on this alone."""
+    assert cs.classify_router_choice("1a") == cs.CHOICE_NEW_PROPOSAL

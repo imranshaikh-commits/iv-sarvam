@@ -45,13 +45,14 @@ from dataclasses import dataclass, replace
 #                path). Sticky, so follow-up questions stay in RAG mode.
 MODE_ROUTER = "router"
 MODE_INTERVIEW = "interview"
+MODE_RFP_REVIEW = "rfp_review"  # extracting from an uploaded RFP/SOW
 MODE_DIAGRAM_PLAN = "diagram_plan"
 MODE_ARCHITECTURE = "architecture"
 MODE_DRAFTING = "drafting"
 MODE_VAULT = "vault"
 
 VALID_MODES = frozenset({
-    MODE_ROUTER, MODE_INTERVIEW, MODE_DIAGRAM_PLAN, MODE_ARCHITECTURE,
+    MODE_ROUTER, MODE_INTERVIEW, MODE_RFP_REVIEW, MODE_DIAGRAM_PLAN, MODE_ARCHITECTURE,
     MODE_DRAFTING, MODE_VAULT,
 })
 
@@ -213,13 +214,28 @@ def find_chat_state(messages: list[dict]) -> ChatState | None:
 # --- router -----------------------------------------------------------------
 ROUTER_MESSAGE = """Hi, I'm **Shilpi**, Inspirit Vision's proposal architect. What would you like to do?
 
-**1. Start a new proposal / RFP** — I'll run a short discovery interview, propose an architecture for your approval, then draft the full document grounded in IV's past work.
+**1. Start a new proposal**
+   **1a.** Answer a short discovery interview, or
+   **1b.** Attach the client's RFP/SOW and I'll read it — I'll show you what I
+   found, with the page it came from, and only ask about what's genuinely IV's
+   call (vendor, positioning, commercials).
 
 **2. Search past proposals** — ask me anything about the proposals already in the vault (clients, vendors, architectures, scope, how we've positioned something before) and I'll answer with citations.
 
 **3. Something else** — a question, a second opinion, or just thinking out loud.
 
 Reply with **1**, **2**, or **3** — or just tell me in your own words."""
+
+
+_RFP_UPLOAD_HINTS = (
+    "1b", "upload", "attach", "rfp", "sow", "read the rfp", "read the sow",
+    "use the rfp", "use this rfp", "use the sow", "use this sow",
+)
+
+
+def wants_rfp_upload(text: str) -> bool:
+    """Did the user choose the RFP path rather than the interview?"""
+    return any(h in f" {_normalise(text)} " for h in _RFP_UPLOAD_HINTS)
 
 
 _NEW_PROPOSAL_HINTS = (
@@ -268,7 +284,11 @@ def classify_router_choice(text: str) -> str | None:
     # Bare numeric / lettered choice.
     bare = _normalise(raw)
     first_token = bare.split()[0] if bare.split() else ""
-    if first_token in {"1", "one", "a"}:
+    # "1a" / "1b" are the two new-proposal sub-choices offered in
+    # ROUTER_MESSAGE. wants_rfp_upload() distinguishes them once inside the
+    # CHOICE_NEW_PROPOSAL branch; the router itself only needs to know the
+    # user picked option 1.
+    if first_token in {"1", "1a", "1b", "one", "a"}:
         return CHOICE_NEW_PROPOSAL
     if first_token in {"2", "two", "b"}:
         return CHOICE_VAULT
@@ -280,7 +300,7 @@ def classify_router_choice(text: str) -> str | None:
     padded = f" {bare} "
     if any(h in padded for h in _VAULT_HINTS):
         return CHOICE_VAULT
-    if any(h in padded for h in _NEW_PROPOSAL_HINTS):
+    if any(h in padded for h in _NEW_PROPOSAL_HINTS) or wants_rfp_upload(text):
         return CHOICE_NEW_PROPOSAL
     if any(h in padded for h in _DISCUSS_HINTS):
         return CHOICE_DISCUSS

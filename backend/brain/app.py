@@ -56,6 +56,7 @@ from diagram_engine import DiagramSpec, InvalidTransition
 # keyless. Only used when an export flag is set on /v1/generate-proposal.
 import export_engine
 import proposal_templates
+import intake_template
 import rfp_intake
 import scope_filter
 
@@ -442,6 +443,53 @@ Production exist but are out of our scope" means production is EXCLUDED.
 
 When the answers genuinely do not say, return full: under-writing a large
 proposal costs far more than an over-long small one."""
+
+
+async def rfp_structured_call(response_model, messages: list[dict]):
+    """Adapter so rfp_intake never imports app.py.
+
+    Same arrangement as document_engine's retrieve_fn/embed_fn: rfp_intake
+    takes the model call as an injected function, so it stays free of app.py's
+    dependency surface and is independently testable.
+    """
+    return await _structured_across_models(
+        response_model, messages, models=[PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL])
+
+
+async def run_rfp_extraction(display_name_: str) -> tuple[Optional[rfp_intake.RfpExtraction], str]:
+    """Find, read and extract the RFP just attached. (extraction, error) pair.
+
+    error is user-facing text for the ambiguous/missing/failed cases; extraction
+    is None whenever error is set.
+    """
+    path, ambiguous = rfp_intake.pick_upload()
+    if ambiguous:
+        names = ", ".join(sorted(set(ambiguous)))
+        return None, (f"I see {len(ambiguous)} documents uploaded at nearly the "
+                      f"same time ({names}) and can't tell which one you mean. "
+                      f"Attach just the one you want read, or tell me its name.")
+    if not path:
+        if not rfp_intake.uploads_available():
+            return None, ("I can't reach the upload storage right now (a deploy "
+                          "issue, not your document). Use the interview instead "
+                          "for now.")
+        return None, ("I don't see a document attached in the last few minutes. "
+                      "Attach the RFP or SOW file and try again.")
+
+    field_ids = [q["id"] for q in intake_template.iter_questions(None)]
+    with tempfile.TemporaryDirectory(prefix="rfp-") as tmp:
+        try:
+            ex = await rfp_intake.extract_rfp(
+                path, rfp_intake.display_name(path), field_ids,
+                rfp_structured_call, tmp)
+        except Exception as e:  # noqa: BLE001
+            log.error("RFP extraction failed: %s", e)
+            return None, ("Reading that document failed. Try again, or use the "
+                          "interview instead.")
+    if not ex.fields and not ex.requirements:
+        return None, ("I read the document but could not extract anything "
+                      "usable from it. Use the interview instead.")
+    return ex, ""
 
 
 async def judge_engagement_scale(answers: dict) -> tuple[str, str]:
@@ -2756,7 +2804,10 @@ async def chat_completions(request: Request):
 
             if choice == chat_state.CHOICE_NEW_PROPOSAL:
                 # Create the intake session up front so every subsequent answer
-                # has somewhere durable to land.
+                # has somewhere durable to land. Shared by BOTH paths below --
+                # interview answers and RFP-extracted answers land in the same
+                # place, so everything downstream of discovery (diagram plan,
+                # scope filtering, drafting) is unchanged either way.
                 try:
                     async with httpx.AsyncClient() as sclient:
                         session_id = await supabase_client.create_intake_session(
@@ -2772,6 +2823,34 @@ async def chat_completions(request: Request):
                         + chat_state.encode_marker(chat_state.ChatState(mode=chat_state.MODE_ROUTER)),
                         stream,
                     )
+
+                if chat_state.wants_rfp_upload(q):
+                    ex, err = await run_rfp_extraction(q)
+                    if err:
+                        return _emit_chat(
+                            err + "\n\nOr say **interview** to answer questions instead.\n\n"
+                            + chat_state.encode_marker(chat_state.ChatState(
+                                mode=chat_state.MODE_ROUTER)),
+                            stream,
+                        )
+                    try:
+                        async with httpx.AsyncClient() as sclient:
+                            await supabase_client.patch_intake_answers(
+                                sclient, session_id, ex.answers())
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("could not persist RFP extraction: %s", e)
+                    reply = rfp_intake.describe_extraction(
+                        ex, len(list(intake_template.iter_questions(None))))
+                    gate_prompt = rfp_intake.describe_gates(ex.gates)
+                    if gate_prompt:
+                        reply += "\n\n---\n\n" + gate_prompt
+                    return _emit_chat(
+                        reply + "\n\n"
+                        + chat_state.encode_marker(chat_state.ChatState(
+                            mode=chat_state.MODE_RFP_REVIEW, session=session_id)),
+                        stream,
+                    )
+
                 tpl = get_intake_template(None)
                 return _emit_chat(
                     chat_state.build_bucket_message(tpl, 0, first=True) + "\n\n"
@@ -2795,6 +2874,62 @@ async def chat_completions(request: Request):
                 + chat_state.encode_marker(chat_state.ChatState(mode=chat_state.MODE_VAULT)),
                 stream,
             )
+
+        # --- reviewing an RFP extraction ---
+        #
+        # Converges on the SAME plan/draft path as the interview: "continue"
+        # completes the intake session and moves to the diagram plan, exactly
+        # like the interview's last answer does. A correction is captured the
+        # same wide-sweep way an interview reply is, since the same format
+        # rules apply -- prose, JSON, `field: value`, whatever the user types.
+        if state.mode == chat_state.MODE_RFP_REVIEW:
+            if chat_state.is_force(q) or re.search(r"\bcontinue\b", q, re.I):
+                try:
+                    async with httpx.AsyncClient() as sclient:
+                        row = await supabase_client.get_intake_session(sclient, state.session)
+                        answers = (row or {}).get("answers") or {}
+                        await supabase_client.complete_intake_session(sclient, state.session)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("completing RFP-derived session failed: %s", e)
+                    answers = {}
+                ptype = answers.get("proposal_type")
+                missing_now = missing_required(answers, ptype)
+                if missing_now:
+                    listed = ", ".join(f"`{m}`" for m in missing_now)
+                    return _emit_chat(
+                        f"Before the architecture proposal, I still need: {listed}. "
+                        "These are IV's decisions, not the client's -- an RFP does "
+                        "not state them.\n\n"
+                        + chat_state.encode_marker(state), stream)
+                plan = await load_plan(state.session, answers)
+                await save_plan(state.session, plan)
+                return _emit_chat(
+                    "Discovery is complete and saved.\n\n"
+                    + chat_state.build_plan_message(plan, answers) + "\n\n"
+                    + chat_state.encode_marker(chat_state.ChatState(
+                        mode=chat_state.MODE_DIAGRAM_PLAN, session=state.session)),
+                    stream)
+
+            # A correction, not "continue": capture it against the WHOLE
+            # template (same as a mid-interview multi-area paste) and stay in
+            # this mode so the user can keep correcting or say continue.
+            recorded = await resolve_bucket_answers(_all_questions_bucket(None), q, None)
+            if recorded and state.session:
+                try:
+                    async with httpx.AsyncClient() as sclient:
+                        await supabase_client.patch_intake_answers(
+                            sclient, state.session, recorded)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("RFP correction patch failed: %s", e)
+            if not recorded:
+                return _emit_chat(
+                    "I didn't catch a value to update there. Send corrections as "
+                    "`field_name: value`, or say **continue** to move on.\n\n"
+                    + chat_state.encode_marker(state), stream)
+            return _emit_chat(
+                chat_state.build_recap_line(recorded)
+                + "\n\nSay **continue** when you're ready, or correct more fields.\n\n"
+                + chat_state.encode_marker(state), stream)
 
         # --- interview in progress ---
         if state.mode == chat_state.MODE_INTERVIEW:

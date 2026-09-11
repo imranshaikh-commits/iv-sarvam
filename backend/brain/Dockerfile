@@ -6,6 +6,10 @@ WORKDIR /app
 #   but the binary is required for PDF export to actually produce output.
 # fonts-dejavu-core -> a minimal font set so LibreOffice renders text without
 #   falling back to unstyled defaults.
+# poppler-utils -> `pdftoppm` to rasterise a client RFP/SOW for vision-model
+#   reading. Most client tenders arrive as scanned or "Print to PDF" documents
+#   with no usable text layer -- the ESNAD SOW that motivated this yielded 468
+#   characters across 20 pages, all of them page numbers.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         graphviz \
@@ -13,6 +17,7 @@ RUN apt-get update \
         fonts-dejavu-core \
         curl ca-certificates \
         librsvg2-bin \
+        poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # D2 renders architecture diagrams with real nested containers (DMZ / secure

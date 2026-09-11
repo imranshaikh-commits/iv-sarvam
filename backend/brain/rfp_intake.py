@@ -34,6 +34,8 @@ import logging
 import os
 import re
 import time
+
+from pydantic import BaseModel
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -382,6 +384,186 @@ def describe_gates(gates: list[EligibilityGate]) -> str:
               "Tell me which of these IV does **not** meet, or say **all met** "
               "to continue."]
     return "\n".join(lines)
+
+
+# --- Rasterising --------------------------------------------------------------
+
+RASTER_DPI = int(os.environ.get("SHILPI_RFP_RASTER_DPI", "150"))
+MAX_RFP_PAGES = int(os.environ.get("SHILPI_MAX_RFP_PAGES", "60"))
+
+
+def rasterise(pdf_path: str, out_dir: str) -> list[str]:
+    """PNG per page, in order. Empty list on any failure -- never partial.
+
+    A partial rasterisation (page 12 of 20 failed silently) is worse than none:
+    it would extract a confident answer set from an incomplete document and
+    never say so. `pdftoppm` either produces every page or the caller is told
+    nothing was read.
+    """
+    import subprocess
+    os.makedirs(out_dir, exist_ok=True)
+    prefix = os.path.join(out_dir, "pg")
+    try:
+        subprocess.run(
+            ["pdftoppm", "-r", str(RASTER_DPI), "-png",
+             "-f", "1", "-l", str(MAX_RFP_PAGES), pdf_path, prefix],
+            check=True, capture_output=True, timeout=180)
+    except Exception as e:  # noqa: BLE001
+        log.error("rasterising %s failed: %s", pdf_path, e)
+        return []
+    pages = sorted(f for f in os.listdir(out_dir) if f.startswith("pg-"))
+    return [os.path.join(out_dir, f) for f in pages]
+
+
+def read_text_layer(pdf_path: str) -> list[str]:
+    """Per-page text via pdftotext. Empty strings where a page has none."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["pdftotext", "-layout", pdf_path, "-"],
+            check=True, capture_output=True, timeout=60, text=True)
+    except Exception as e:  # noqa: BLE001
+        log.warning("text-layer read failed for %s: %s", pdf_path, e)
+        return []
+    # pdftotext separates pages with a form-feed character.
+    return out.stdout.split("\x0c")
+
+
+# --- Vision extraction ---------------------------------------------------------
+#
+# One page per call rather than the whole document at once. A 20-page tender in
+# a single vision call risks the model summarising rather than transcribing, and
+# a truncated response loses the back half silently. One page at a time is
+# slower but each page's extraction is independently verifiable against its
+# image -- the same reason diagrams are approved one at a time in this system.
+
+_PAGE_EXTRACT_PROMPT = """You are reading ONE PAGE of a client RFP or Statement
+of Work for an IAM (Identity and Access Management) proposal.
+
+Transcribe what this page states. Do not summarise, do not infer anything not
+written on the page, and do not carry over content from other pages.
+
+Return, for THIS PAGE ONLY:
+- field_values: any of these that this page states outright: {field_ids}
+- requirements: numbered requirement lines (e.g. "AM-04", "ILM-01") with their
+  reference and full text
+- eligibility_gates: mandatory bidder qualifications, ONLY if this page is
+  explicitly about vendor/bidder qualifications
+- structure_headings: numbered/bulleted section names, ONLY if this page
+  explicitly mandates the proposal's response structure
+
+Leave anything not on THIS page empty. A wrong answer is worse than an empty
+one: this system will show every value to a human with this page number
+attached, so a value must be traceable to what is actually written here."""
+
+
+class _PageExtraction(BaseModel):
+    field_values: dict[str, str] = {}
+    requirements: list[dict] = []
+    eligibility_gates: list[str] = []
+    structure_headings: list[str] = []
+
+
+async def extract_page_vision(image_path: str, field_ids: list[str],
+                              structured_fn) -> "_PageExtraction":
+    """One page, read visually. Fails to an empty extraction, never raises.
+
+    `structured_fn` is injected (rather than importing app.py) to keep this
+    module free of app.py's dependency surface -- same arrangement as
+    document_engine's retrieve_fn/embed_fn.
+    """
+    import base64
+    try:
+        with open(image_path, "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode("ascii")
+        messages = [
+            {"role": "system", "content": _PAGE_EXTRACT_PROMPT.format(
+                field_ids=", ".join(field_ids))},
+            {"role": "user", "content": [
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            ]},
+        ]
+        return await structured_fn(_PageExtraction, messages)
+    except Exception as e:  # noqa: BLE001 - one bad page must not sink the SOW
+        log.warning("vision extraction failed for %s: %s", image_path, e)
+        return _PageExtraction()
+
+
+async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
+                      structured_fn, tmp_dir: str) -> RfpExtraction:
+    """The whole pipeline: text-layer check -> rasterise if needed -> per-page
+    extraction -> merge.
+
+    First value wins per field (earlier pages are more likely to state facts
+    like client name and scope; later repeats are usually restatement). Every
+    requirement and gate across all pages is kept -- under-collecting those
+    costs a mark in evaluation, unlike a duplicated field value.
+    """
+    text_pages = read_text_layer(pdf_path)
+    use_vision = needs_vision(text_pages)
+
+    ex = RfpExtraction(source_name=source_name,
+                       pages_read=len(text_pages) or 0, used_vision=use_vision)
+
+    if not use_vision:
+        # A usable text layer: mandated structure and gates can be read
+        # directly; field values still need per-page interpretation, so the
+        # SAME per-page loop runs, just against text instead of images.
+        pass
+
+    if use_vision:
+        images = rasterise(pdf_path, tmp_dir)
+        if not images:
+            log.error("could not rasterise %s; extraction is EMPTY, not partial",
+                     source_name)
+            return ex
+        ex.pages_read = len(images)
+
+    seen_fields: set = set()
+    for i in range(ex.pages_read):
+        if use_vision:
+            page_ex = await extract_page_vision(images[i], field_ids, structured_fn)
+        else:
+            page_ex = await _extract_page_text(text_pages[i], field_ids, structured_fn)
+
+        page_no = i + 1
+        for fid, val in (page_ex.field_values or {}).items():
+            if fid in field_ids and val and fid not in seen_fields:
+                seen_fields.add(fid)
+                ex.fields.append(ExtractedField(fid, str(val)[:2000], page_no))
+        for r in (page_ex.requirements or []):
+            ref = str(r.get("ref") or r.get("id") or "").strip()
+            text = str(r.get("text") or "").strip()
+            if ref and text:
+                ex.requirements.append(Requirement(ref=ref, text=text[:600], page=page_no))
+        for g in (page_ex.eligibility_gates or []):
+            if g and len(g.split()) >= 5:
+                ex.gates.append(EligibilityGate(text=str(g)[:400], page=page_no))
+        if page_ex.structure_headings and not ex.mandated_structure:
+            ex.mandated_structure = [str(h)[:80] for h in page_ex.structure_headings]
+
+    log.info("RFP extraction: %s, %d pages, %d fields, %d requirements, %d gates",
+             source_name, ex.pages_read, len(ex.fields), len(ex.requirements),
+             len(ex.gates))
+    return ex
+
+
+async def _extract_page_text(text: str, field_ids: list[str],
+                             structured_fn) -> "_PageExtraction":
+    """The text-layer counterpart to extract_page_vision, for a readable PDF."""
+    if not (text or "").strip():
+        return _PageExtraction()
+    try:
+        messages = [
+            {"role": "system", "content": _PAGE_EXTRACT_PROMPT.format(
+                field_ids=", ".join(field_ids))},
+            {"role": "user", "content": text[:6000]},
+        ]
+        return await structured_fn(_PageExtraction, messages)
+    except Exception as e:  # noqa: BLE001
+        log.warning("text extraction failed: %s", e)
+        return _PageExtraction()
 
 
 def requirement_coverage(requirements: list[Requirement],

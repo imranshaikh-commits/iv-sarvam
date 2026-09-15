@@ -2249,8 +2249,36 @@ async def generate_proposal(
         sections is not None and COMPLIANCE_SECTION_ID in {s.strip().lower() for s in sections}
     )
     if want_compliance and run_compliance_matrix_fn and render_matrix_markdown_fn:
+        # Prefer requirements already extracted from the source RFP (vision-
+        # extracted per-page, with original ref ids and page numbers intact)
+        # over re-deriving them from rfp_text via a second LLM call. This
+        # matters most for a SCANNED RFP with no text layer: rfp_text is
+        # legitimately empty for those, so the re-derivation path would find
+        # nothing to extract from, and the first live run against one (ESNAD)
+        # shipped a proposal with zero requirement citations as a direct
+        # result. See app.py's RFP-upload handler, which persists this list.
+        _extracted_reqs = None
+        _raw_reqs = (discovery_answers or {}).get("extracted_requirements")
+        if _raw_reqs:
+            try:
+                import json as _json
+                _parsed = _json.loads(_raw_reqs) if isinstance(_raw_reqs, str) else _raw_reqs
+                # Plain dicts, not a Requirement instance: document_engine.py
+                # cannot import app.Requirement without an import cycle (app.py
+                # already imports generate_proposal FROM this module). The
+                # dict is turned into a real Requirement on the other side, in
+                # run_compliance_matrix, the one place both the class and this
+                # data can meet without the cycle.
+                _extracted_reqs = [
+                    {"id": r.get("id") or r.get("ref") or "",
+                     "text": r.get("text") or "", "category": r.get("category")}
+                    for r in _parsed if (r.get("text") or "").strip()
+                ] or None
+            except Exception as e:  # noqa: BLE001 - fall back to rfp_text re-derivation
+                log.warning("could not parse extracted_requirements: %s", e)
         try:
-            matrix = await run_compliance_matrix_fn(client, rfp_text, None, top_k)
+            matrix = await run_compliance_matrix_fn(
+                client, rfp_text, _extracted_reqs, top_k)
             compliance_markdown = render_matrix_markdown_fn(matrix)
         except Exception as e:
             log.error("Compliance matrix generation failed: %s", e)

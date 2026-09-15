@@ -793,6 +793,39 @@ _BUCKET_EXTRACT_PROMPT = (
     "object, never a leading colon or the question label repeated back."
 )
 
+# Used instead of _BUCKET_EXTRACT_PROMPT when sweeping the ENTIRE 96-field
+# template rather than one topic bucket the consultant was actually asked
+# about. The positional bare-list rule above is safe within a small bucket a
+# consultant is looking at ("Acme, Banking, India" for exactly three visible
+# questions) but unsafe against the full template: client_name, industry and
+# country are declared FIRST in the schema, so any bare comma-separated phrase
+# with no labels gets positionally mapped onto them regardless of content.
+#
+# Confirmed live: a correction reply of "Ping Identity (Access Management,
+# CIAM) and Saviynt (IGA, PAM)" — meant to answer iam_vendor — has no labels
+# and contains commas, so it was mapped positionally onto client_name (->
+# "Ping Identity (Access Management, CIAM)"), industry, and country instead.
+# The proposal's DOCX body was still correct (client_name had been set
+# correctly earlier and other code read it before this corruption), but the
+# output FILENAME was built from the now-corrupted value and named the vendor
+# instead of the client.
+_WIDE_SWEEP_EXTRACT_PROMPT = (
+    "You map a consultant's free-text reply onto a fixed set of discovery questions.\n"
+    "Return ONLY answers you can support from the reply. Never invent a value, never "
+    "guess, and never restate the question as the answer. Omit any question the reply "
+    "does not address. Use only the exact question_id values provided. For select/"
+    "multiselect questions prefer one of the listed options; for booleans use true/false.\n"
+    "This reply may address ANY of a large number of unrelated topics, not just one — do "
+    "NOT positionally map a bare comma-separated or unlabelled phrase onto whichever "
+    "questions happen to be listed first. Only extract a value when the reply clearly "
+    "and unambiguously names what it is answering (an explicit label, or content that "
+    "obviously matches one specific question and no other) — for example, a vendor or "
+    "product name only ever answers iam_vendor-type questions, never client_name, "
+    "industry or country, even if it appears early in an unlabelled list.\n"
+    "Each 'value' must be the plain answer text only — never JSON, never a wrapper "
+    "object, never a leading colon or the question label repeated back."
+)
+
 # Sometimes the model returns the whole pair object, or JSON, as the *value*
 # ("{\"question_id\": \"diagram_count\", \"value\": \"4\"}"), or leaves a stray
 # leading colon (": 2026"). Both showed up in live testing and leaked into the
@@ -843,8 +876,16 @@ def _truncate_reply(reply_text: str, bucket: dict) -> str:
     return text[:_EXTRACT_REPLY_CHARS]
 
 
-async def extract_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str]:
+async def extract_bucket_answers(bucket: dict, reply_text: str,
+                                 wide_sweep: bool = False) -> dict[str, str]:
     """Map one free-text reply onto this bucket's question ids.
+
+    wide_sweep=True selects _WIDE_SWEEP_EXTRACT_PROMPT instead of
+    _BUCKET_EXTRACT_PROMPT: the positional bare-list mapping rule in the
+    normal prompt is unsafe against the full 96-field template (see that
+    prompt's docstring for the live failure this caused — an unlabelled
+    correction reply got positionally mapped onto client_name/industry/
+    country simply because those are declared first in the schema).
 
     Fail-soft AND fail-fast by design: on timeout or any extraction failure the
     caller still advances the interview and preserves the raw reply, because a
@@ -862,12 +903,13 @@ async def extract_bucket_answers(bucket: dict, reply_text: str) -> dict[str, str
             bits.append(f" | options: {', '.join(str(o) for o in q['options'])}")
         schema_lines.append("".join(bits))
 
+    system_prompt = _WIDE_SWEEP_EXTRACT_PROMPT if wide_sweep else _BUCKET_EXTRACT_PROMPT
     try:
         resp: _ExtractedAnswers = await asyncio.wait_for(
             _structured_with_fallback(
                 _ExtractedAnswers,
                 messages=[
-                    {"role": "system", "content": _BUCKET_EXTRACT_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": (
                         f"QUESTIONS:\n" + "\n".join(schema_lines)
                         + f"\n\nCONSULTANT'S REPLY:\n"
@@ -1123,7 +1165,7 @@ async def resolve_bucket_answers(bucket: dict, reply_text: str,
                  "to read the whole reply", len(parsed), looks_like, covered * 100)
         try:
             inferred = await extract_bucket_answers(
-                _all_questions_bucket(proposal_type), reply_text)
+                _all_questions_bucket(proposal_type), reply_text, wide_sweep=True)
         except Exception as e:  # noqa: BLE001 - the parser result still stands
             log.warning("wide LLM extraction failed: %s", e)
             inferred = {}
@@ -2012,10 +2054,30 @@ def validate_coverage(entry: CoverageEntry, chunks: list[dict]) -> CoverageEntry
 
 
 async def run_compliance_matrix(
-    client: httpx.AsyncClient, rfp_text: str, requirements: list[str] | None = None, top_k: int = TOP_K
+    client: httpx.AsyncClient, rfp_text: str,
+    requirements: list[str] | list[Requirement] | None = None, top_k: int = TOP_K
 ) -> ComplianceMatrix:
     truncated = False
-    if requirements:
+    # Duck-typed rather than isinstance(requirements[0], Requirement):
+    # document_engine.py calls this function but cannot import app.Requirement
+    # without an import cycle (app.py already imports from document_engine).
+    # A plain string means "please extract requirements from this"; anything
+    # with a .text attribute means "these are already extracted, use them
+    # as-is" — that's the actual distinction that matters here, not the class.
+    if requirements and not isinstance(requirements[0], str):
+        # Already-structured requirements arrive as plain dicts from
+        # document_engine.py (which cannot import app.Requirement without an
+        # import cycle) -- constructed into real Requirement instances HERE,
+        # the one place both the class and the caller's plain-dict data meet.
+        reqs = [
+            r if isinstance(r, Requirement) else
+            Requirement(id=(r.get("id") or f"REQ-{i:03d}"), text=r.get("text", ""),
+                       category=r.get("category"))
+            for i, r in enumerate(requirements[:MAX_REQUIREMENTS], 1)
+            if isinstance(r, Requirement) or (r.get("text") or "").strip()
+        ]
+        truncated = len(requirements) > MAX_REQUIREMENTS
+    elif requirements:
         reqs = [Requirement(id=f"REQ-{i:03d}", text=t) for i, t in enumerate(requirements[:MAX_REQUIREMENTS], 1)]
         truncated = len(requirements) > MAX_REQUIREMENTS
     else:
@@ -2894,8 +2956,32 @@ async def chat_completions(request: Request):
                         )
                     try:
                         async with httpx.AsyncClient() as sclient:
+                            # ex.answers() only carries the 96 discovery
+                            # fields. The 56 numbered requirements ESNAD's
+                            # SOW specified (ILM-*, AM-*, PAM-*, IGA-*,
+                            # CIAM-*) were extracted correctly but then had
+                            # NOWHERE to land: generate_proposal's compliance
+                            # matrix re-derives requirements from rfp_text
+                            # via a SEPARATE LLM call, and rfp_text is empty
+                            # for a vision-extracted (scanned, no text layer)
+                            # SOW like this one — there is no page text to
+                            # put there, only structured per-page extraction.
+                            # The first live ESNAD proposal shipped with ZERO
+                            # requirement citations and no compliance matrix
+                            # as a direct result. Persisting the structured
+                            # list here, and having run_compliance_matrix
+                            # prefer it (see app.py's generate_proposal_from_chat
+                            # and run_compliance_matrix), closes that gap
+                            # without needing rfp_text to exist at all.
+                            to_persist = dict(ex.answers())
+                            if ex.requirements:
+                                to_persist["extracted_requirements"] = json.dumps([
+                                    {"id": r.ref, "text": r.text,
+                                     "category": None, "page": r.page}
+                                    for r in ex.requirements
+                                ])
                             await supabase_client.patch_intake_answers(
-                                sclient, session_id, ex.answers())
+                                sclient, session_id, to_persist)
                     except Exception as e:  # noqa: BLE001
                         log.warning("could not persist RFP extraction: %s", e)
                     reply = rfp_intake.describe_extraction(

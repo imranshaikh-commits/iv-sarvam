@@ -131,7 +131,7 @@ def test_choosing_option_2_switches_to_vault_mode():
 
 def test_interview_advances_to_the_next_bucket(monkeypatch):
     """THE core regression: answering bucket 0 must produce bucket 1, not bucket 0."""
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         return {"client_name": "AWS", "industry": "Tech", "country": "India"}
 
     async def fake_patch(c, sid, answers):
@@ -188,7 +188,7 @@ def test_value_sanitiser_unwraps_json_and_strips_stray_colons():
 
 def test_long_answer_containing_reset_does_not_restart_interview(monkeypatch):
     """REGRESSION at the handler level: the area-15 answer must advance to 16."""
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         return {"pain_points": "password reset volume"}
 
     async def fake_patch(c, sid, answers):
@@ -250,7 +250,7 @@ def test_extraction_timeout_still_advances_the_interview(monkeypatch):
 
 
 def test_streaming_interview_answer_sends_keepalive_first(monkeypatch):
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         return {"client_name": "AWS"}
 
     async def fake_patch(c, sid, answers):
@@ -424,7 +424,7 @@ def test_owui_task_prompt_does_not_mutate_state():
 
 # --- architecture gate ------------------------------------------------------
 def test_discovery_completion_enters_diagram_plan_mode(monkeypatch):
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         return {"case_studies_include": "x"}
 
     async def fake_patch(c, sid, answers):
@@ -464,7 +464,7 @@ def test_discovery_completion_enters_diagram_plan_mode(monkeypatch):
 
 
 def test_missing_required_keeps_interview_mode(monkeypatch):
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         return {}
 
     async def fake_patch(c, sid, answers):
@@ -716,7 +716,7 @@ def test_parser_refuses_prose_so_the_llm_gets_it():
 def test_resolver_prefers_the_parser_and_skips_the_llm(monkeypatch):
     called = {"llm": False}
 
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         called["llm"] = True
         return {}
 
@@ -728,7 +728,7 @@ def test_resolver_prefers_the_parser_and_skips_the_llm(monkeypatch):
 
 
 def test_resolver_falls_back_to_the_llm_for_prose(monkeypatch):
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         return {"business_objectives": "consolidate"}
 
     monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
@@ -943,7 +943,7 @@ def test_discovery_completion_proposes_a_plan_not_four_diagrams(monkeypatch):
     dropped diagrams. The plan must come first, and generate nothing."""
     generated = {"n": 0}
 
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         return {"x": "y"}
 
     async def fake_patch(c, sid, answers):
@@ -1282,7 +1282,7 @@ def test_attachment_on_a_non_branding_area_is_ignored(monkeypatch):
         seen.update(answers)
         return {"id": sid}
 
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         return {"client_name": "Acme"}
 
     monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
@@ -1861,7 +1861,7 @@ def test_a_mostly_unparseable_reply_goes_to_the_model(monkeypatch):
     import asyncio
     called = {}
 
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         called["yes"] = True
         return {"industry": "Banking", "user_count": "1 million"}
 
@@ -1880,7 +1880,7 @@ def test_a_cleanly_parsed_reply_does_not_pay_for_the_model(monkeypatch):
     import asyncio
     called = {}
 
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         called["yes"] = True
         return {}
 
@@ -1897,7 +1897,7 @@ def test_a_clean_parsed_value_beats_the_model(monkeypatch):
     """An exact label match on a tidy value is stronger than an inference."""
     import asyncio
 
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         return {"client_name": "Something Else", "industry": "Banking"}
 
     monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)
@@ -1916,7 +1916,7 @@ def test_the_model_wins_when_a_parsed_value_ran_on_into_prose(monkeypatch):
     paragraph. The model's reading is the better one."""
     import asyncio
 
-    async def fake_extract(bucket, reply):
+    async def fake_extract(bucket, reply, wide_sweep=False):
         return {"client_name": "Bank BTPN", "country": "Indonesia"}
 
     monkeypatch.setattr(app, "extract_bucket_answers", fake_extract)

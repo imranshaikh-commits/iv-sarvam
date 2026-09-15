@@ -558,6 +558,184 @@ def test_asset_selection_call_site_passes_iam_vendors_through():
         "select_assets is called without passing iam_vendors through")
 
 
+# ---------------------------------------------------------------------------
+# 8. RFP-extracted requirements reaching the compliance matrix.
+#
+# THE ESNAD live-run failure: rfp_intake.py's vision extraction correctly
+# found 56 numbered requirements (ILM-*, AM-*, PAM-*, IGA-*, CIAM-*) with
+# page numbers, but nothing ever persisted them past the extraction request.
+# document_engine's compliance-matrix call passed a hardcoded None for
+# requirements, so run_compliance_matrix fell back to re-deriving them from
+# rfp_text via a SECOND LLM call — and rfp_text was empty, because ESNAD's
+# SOW is a scanned PDF with no text layer: there was no page text to put
+# there, only structured per-page vision extraction. Zero requirements
+# reached the drafted proposal as a direct, deterministic result.
+# ---------------------------------------------------------------------------
+
+def test_run_compliance_matrix_recognises_structured_requirements():
+    """A plain-string list means "please extract requirements from this
+    text"; a dict/object list means "these are already extracted, use them
+    as-is". document_engine.py sends dicts specifically because it cannot
+    import app.Requirement without an import cycle (app.py imports FROM
+    document_engine already)."""
+    string_list = ["some requirement text"]
+    dict_list = [{"id": "AM-04", "text": "Risk-based conditional access", "category": None}]
+
+    assert isinstance(string_list[0], str)
+    assert not isinstance(dict_list[0], str)
+
+
+def test_structured_requirements_construct_with_original_ref_ids_preserved():
+    """A compliance matrix citing "AM-04" is directly traceable back to
+    ESNAD's own numbering — renumbering to generic REQ-001 would break that
+    traceability for a tender evaluator checking coverage against their own
+    requirement register."""
+    extracted_dicts = [
+        {"id": "AM-04", "text": "Risk-based conditional access policies cover location", "category": None},
+        {"id": "PAM-01", "text": "Credential vaulting for all privileged and service accounts", "category": None},
+    ]
+    reqs = [
+        r if isinstance(r, app.Requirement) else
+        app.Requirement(id=(r.get("id") or f"REQ-{i:03d}"), text=r.get("text", ""),
+                        category=r.get("category"))
+        for i, r in enumerate(extracted_dicts[:app.MAX_REQUIREMENTS], 1)
+        if isinstance(r, app.Requirement) or (r.get("text") or "").strip()
+    ]
+    assert [r.id for r in reqs] == ["AM-04", "PAM-01"]
+    assert reqs[0].text.startswith("Risk-based conditional access")
+
+
+def test_empty_text_requirements_are_dropped_not_constructed_as_blanks():
+    extracted_dicts = [
+        {"id": "AM-04", "text": "Real requirement text", "category": None},
+        {"id": "AM-05", "text": "   ", "category": None},
+        {"id": "AM-06", "text": "", "category": None},
+    ]
+    reqs = [
+        r if isinstance(r, app.Requirement) else
+        app.Requirement(id=(r.get("id") or f"REQ-{i:03d}"), text=r.get("text", ""),
+                        category=r.get("category"))
+        for i, r in enumerate(extracted_dicts[:app.MAX_REQUIREMENTS], 1)
+        if isinstance(r, app.Requirement) or (r.get("text") or "").strip()
+    ]
+    assert [r.id for r in reqs] == ["AM-04"]
+
+
+def test_extracted_requirements_round_trip_through_json_persistence():
+    """The exact path a real RFP upload takes: rfp_intake.Requirement objects
+    -> JSON string (as stored in Supabase's answers jsonb) -> parsed back out
+    in document_engine.py -> plain dicts ready for run_compliance_matrix."""
+    import json
+
+    class _FakeExtracted:
+        def __init__(self, ref, text, page):
+            self.ref, self.text, self.page = ref, text, page
+
+    extracted = [_FakeExtracted("AM-04", "Risk-based conditional access policies", 3),
+                _FakeExtracted("PAM-01", "Credential vaulting for privileged accounts", 5)]
+
+    persisted = json.dumps([
+        {"id": r.ref, "text": r.text, "category": None, "page": r.page}
+        for r in extracted
+    ])
+
+    raw = persisted
+    parsed = json.loads(raw) if isinstance(raw, str) else raw
+    result = [
+        {"id": r.get("id") or r.get("ref") or "", "text": r.get("text") or "",
+         "category": r.get("category")}
+        for r in parsed if (r.get("text") or "").strip()
+    ]
+    assert result == [
+        {"id": "AM-04", "text": "Risk-based conditional access policies", "category": None},
+        {"id": "PAM-01", "text": "Credential vaulting for privileged accounts", "category": None},
+    ]
+
+
+def test_no_extracted_requirements_falls_back_to_rfp_text_derivation():
+    """A plain interview-driven proposal (no RFP upload at all) has no
+    extracted_requirements key in discovery_answers. This must fall back to
+    the original rfp_text-based extraction path, not break."""
+    discovery_answers = {"client_name": "Some Client"}  # no extracted_requirements key
+    raw_reqs = discovery_answers.get("extracted_requirements")
+    assert raw_reqs is None
+
+
+def test_compliance_matrix_persistence_is_wired_into_the_rfp_upload_handler():
+    """CALL-SITE check — the fix is useless if the RFP upload path never
+    actually writes extracted_requirements into the session answers."""
+    import inspect
+    src = inspect.getsource(app)
+    assert "extracted_requirements" in src, (
+        "extracted_requirements is never persisted anywhere in app.py")
+
+
+def test_document_engine_reads_extracted_requirements_from_discovery_answers():
+    """CALL-SITE check — document_engine.py must actually READ the persisted
+    field, not just have app.py write it into a void."""
+    import inspect
+    src = inspect.getsource(de)
+    assert 'discovery_answers or {}).get("extracted_requirements")' in src, (
+        "document_engine.py never reads extracted_requirements back out")
+
+
+# ---------------------------------------------------------------------------
+# 9. Wide-sweep extraction must not positionally overwrite client_name.
+#
+# THE ESNAD live-run failure: a correction reply of "Ping Identity (Access
+# Management, CIAM) and Saviynt (IGA, PAM)" -- meant to answer iam_vendor --
+# has no field labels and contains commas, so the wide-sweep LLM extractor
+# positionally mapped it onto client_name, industry and country simply
+# because those are declared FIRST in the 96-field schema. The DOCX body was
+# still correct (client_name had been set correctly earlier and drafting read
+# it before the corruption), but the output FILENAME was built from the
+# now-corrupted client_name and named the vendor instead of ESNAD.
+# ---------------------------------------------------------------------------
+
+def test_wide_sweep_uses_a_different_stricter_prompt():
+    """The narrow-bucket prompt's positional bare-list rule is unsafe against
+    the full template and must not be reused verbatim for the wide sweep."""
+    assert app._BUCKET_EXTRACT_PROMPT != app._WIDE_SWEEP_EXTRACT_PROMPT
+    assert "do NOT positionally map" in app._WIDE_SWEEP_EXTRACT_PROMPT
+    assert "do NOT positionally map" not in app._BUCKET_EXTRACT_PROMPT
+
+
+def test_extract_bucket_answers_accepts_wide_sweep_flag():
+    import inspect
+    sig = inspect.signature(app.extract_bucket_answers)
+    assert "wide_sweep" in sig.parameters
+    assert sig.parameters["wide_sweep"].default is False
+
+
+def test_the_wide_sweep_call_site_passes_wide_sweep_true():
+    """CALL-SITE check — the stricter prompt exists but is useless if the
+    actual wide-sweep call inside resolve_bucket_answers never selects it."""
+    import inspect
+    src = inspect.getsource(app.resolve_bucket_answers)
+    assert "wide_sweep=True" in src, (
+        "resolve_bucket_answers' wide sweep never opts into the stricter prompt")
+
+
+def test_the_narrow_bucket_fallback_still_uses_the_default_prompt(monkeypatch):
+    """resolve_bucket_answers' final single-bucket fallback (when parsing
+    finds nothing at all) is a genuinely narrow, small bucket -- the original
+    positional bare-list rule is safe there and must be UNCHANGED."""
+    import asyncio
+
+    captured = {}
+
+    async def capturing_extract(bucket, reply, wide_sweep=False):
+        captured["wide_sweep"] = wide_sweep
+        return {}
+
+    monkeypatch.setattr(app, "extract_bucket_answers", capturing_extract)
+    small_bucket = {"id": "engagement",
+                    "questions": [{"id": "iam_vendor", "label": "IAM vendor", "type": "text"}]}
+    asyncio.run(app.resolve_bucket_answers(small_bucket, "SailPoint", None))
+    assert captured.get("wide_sweep") is False, (
+        "the narrow single-bucket fallback must not opt into the wide-sweep prompt")
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))

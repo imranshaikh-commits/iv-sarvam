@@ -383,6 +383,7 @@ async def _fake_structured(model, messages, models=None, **kw):
 # ---------------------------------------------------------------------------
 
 import chat_state as cs  # noqa: E402
+import rfp_intake  # noqa: E402
 
 _ESNAD_PLAN = [
     ("Solution Architecture", "architecture"),
@@ -734,6 +735,52 @@ def test_the_narrow_bucket_fallback_still_uses_the_default_prompt(monkeypatch):
     asyncio.run(app.resolve_bucket_answers(small_bucket, "SailPoint", None))
     assert captured.get("wide_sweep") is False, (
         "the narrow single-bucket fallback must not opt into the wide-sweep prompt")
+
+
+# ---------------------------------------------------------------------------
+# 10. "all met" advances past the eligibility gate.
+#
+# THE live-run failure: rfp_intake.describe_gates() tells the user to say
+# "all met" to continue, but MODE_RFP_REVIEW's handler only recognised
+# is_force()'s drafting-gap vocabulary and the literal word "continue" --
+# "all met" fell through to the correction branch and produced "I didn't
+# catch a value to update there", the same shape as "add PAM Flow" not
+# matching DIAGRAM_TYPE_MAP earlier: a prompt promised a keyword the
+# receiving code never actually checked for.
+# ---------------------------------------------------------------------------
+
+def test_all_met_is_recognised_as_advancing_the_gate():
+    import re
+    assert re.search(r"(?<!not )\ball met\b", "all met", re.I)
+    assert re.search(r"(?<!not )\ball met\b", "All met", re.I)
+    assert re.search(r"(?<!not )\ball met\b", "all met, lets proceed", re.I)
+
+
+def test_not_all_met_does_not_falsely_advance():
+    """"Not all met, we lack local presence" contains the substring "all
+    met" too, and is a genuine disqualification concern the gate exists to
+    catch. Advancing past it would be worse than the original bug."""
+    import re
+    assert not re.search(r"(?<!not )\ball met\b", "not all met, we lack local presence", re.I)
+    assert not re.search(r"(?<!not )\ball met\b", "Not all met - missing ISO cert", re.I)
+
+
+def test_the_rfp_review_handler_checks_for_all_met():
+    """CALL-SITE check — the regex working in isolation is not enough if the
+    actual MODE_RFP_REVIEW branch never uses it."""
+    import inspect
+    src = inspect.getsource(app)
+    assert r'\ball met\b' in src, (
+        "the RFP review handler never checks for the phrase its own prompt tells the user to say")
+
+
+def test_the_gates_prompt_and_the_handler_agree_on_the_phrase():
+    """The two sides of this contract -- what rfp_intake tells the user to
+    type, and what app.py listens for -- must name the SAME phrase, or this
+    exact bug recurs with different wording on either side."""
+    gates = [rfp_intake.EligibilityGate(text="ISO/IEC 27001 certified delivery organization", page=4)]
+    prompt = rfp_intake.describe_gates(gates)
+    assert "all met" in prompt.lower()
 
 
 if __name__ == "__main__":

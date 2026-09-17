@@ -3028,7 +3028,20 @@ async def chat_completions(request: Request):
         # same wide-sweep way an interview reply is, since the same format
         # rules apply -- prose, JSON, `field: value`, whatever the user types.
         if state.mode == chat_state.MODE_RFP_REVIEW:
-            if chat_state.is_force(q) or re.search(r"\bcontinue\b", q, re.I):
+            # "all met" is what rfp_intake.describe_gates() tells the user to
+            # say (see that function's prompt text), but nothing here ever
+            # listened for it -- only is_force()'s drafting-gap vocabulary and
+            # the literal word "continue" advanced the flow. Same bug shape as
+            # "add PAM Flow" not matching DIAGRAM_TYPE_MAP: a prompt promised a
+            # keyword the receiving code never actually checked for.
+            #
+            # The negative lookbehind matters: "not all met, we lack local
+            # presence" contains the substring "all met" too, and that message
+            # is a genuine disqualification concern the gate exists to catch --
+            # advancing past it would be worse than the original bug, not a
+            # fix of it.
+            if (chat_state.is_force(q) or re.search(r"\bcontinue\b", q, re.I)
+                    or re.search(r"(?<!not )\ball met\b", q, re.I)):
                 try:
                     async with httpx.AsyncClient() as sclient:
                         row = await supabase_client.get_intake_session(sclient, state.session)

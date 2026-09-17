@@ -801,6 +801,174 @@ def test_the_gates_prompt_and_the_handler_agree_on_the_phrase():
     assert "all met" in prompt.lower()
 
 
+# ---------------------------------------------------------------------------
+# 11. LLM fallback for diagram-plan "add" requests the fixed vocabulary
+#     cannot cover.
+#
+# THE actual scope of the problem, measured directly: 23 of 30 reasonable
+# ESNAD-domain add-phrasings ("add Access Management diagram", "add RBAC
+# diagram", "add Federation diagram", "add SoD diagram"...) failed against
+# DIAGRAM_TYPE_MAP. Three individual gaps (PAM, Identity Governance, Identity
+# Lifecycle) had already been patched in reactively, one live failure at a
+# time, before this was actually counted -- patching vocabulary entries one
+# at a time was never going to converge, because the space of what a
+# consultant might type for a diagram domain is genuinely open-ended.
+#
+# apply_plan_edit (the deterministic function) is UNCHANGED -- see the tests
+# above, all still passing. apply_plan_edit_async wraps it and falls back to
+# an LLM call, with structured_fn injected the same way document_engine.py
+# and diagram_engine.py already take their structured-call functions, since
+# app.py (which owns _structured_with_fallback) imports FROM chat_state.py,
+# not the reverse.
+# ---------------------------------------------------------------------------
+
+async def _fake_llm_add(title: str, engine_type: str = "flow"):
+    async def fn(model, messages, **kw):
+        return model(title=title, engine_type=engine_type)
+    return fn
+
+
+def test_apply_plan_edit_itself_is_unchanged_and_still_synchronous():
+    """The deterministic fast path must stay exactly as it was -- untouched,
+    synchronous, zero-cost for the common case."""
+    import inspect
+    assert not inspect.iscoroutinefunction(cs.apply_plan_edit)
+
+
+def test_async_wrapper_tries_the_deterministic_path_first():
+    """A phrase the fixed vocabulary already covers must not reach the LLM
+    at all -- the fallback is for what apply_plan_edit finds nothing for."""
+    import asyncio
+
+    called = {"yes": False}
+
+    async def track(model, messages, **kw):
+        called["yes"] = True
+        return model(title="X", engine_type="architecture")
+
+    out = asyncio.run(cs.apply_plan_edit_async(
+        _ESNAD_PLAN, "add Privileged Access Management Flow", structured_fn=track))
+    added = out[len(_ESNAD_PLAN):]
+    assert added and added[0][0] == "Privileged Access Management"
+    assert not called["yes"], "the deterministic match already succeeded; the LLM should never have been called"
+
+
+def test_llm_fallback_covers_a_previously_failing_domain(monkeypatch=None):
+    """One representative case from the 23 that failed deterministically --
+    "Access Management" has no DIAGRAM_TYPE_MAP entry and never will, given
+    how many phrasings of it exist."""
+    import asyncio
+
+    async def fake(model, messages, **kw):
+        return model(title="Access Management", engine_type="flow")
+
+    out = asyncio.run(cs.apply_plan_edit_async(
+        _ESNAD_PLAN, "add Access Management diagram", structured_fn=fake))
+    added = out[len(_ESNAD_PLAN):]
+    assert added and added[0] == ("Access Management", "flow")
+
+
+def test_llm_fallback_fails_soft_on_any_exception():
+    """A slow or broken model call must leave the plan untouched, exactly
+    like the deterministic path's own "matches nothing" behaviour -- never
+    crash the chat turn."""
+    import asyncio
+
+    async def broken(model, messages, **kw):
+        raise RuntimeError("network down")
+
+    out = asyncio.run(cs.apply_plan_edit_async(
+        _ESNAD_PLAN, "add Access Management diagram", structured_fn=broken))
+    assert out == _ESNAD_PLAN
+
+
+def test_llm_fallback_rejects_an_invalid_engine_type():
+    """The model is constrained to the engine's own closed diagram-type set.
+    A hallucinated type must never reach the plan, or diagram generation
+    downstream would fail on a type it does not recognise."""
+    import asyncio
+
+    async def bad_type(model, messages, **kw):
+        return model(title="Something", engine_type="not_a_real_engine_type")
+
+    out = asyncio.run(cs.apply_plan_edit_async(
+        _ESNAD_PLAN, "add Something diagram", structured_fn=bad_type))
+    assert out == _ESNAD_PLAN
+
+
+def test_llm_fallback_does_not_duplicate_an_existing_diagram():
+    import asyncio
+
+    plan_with_am = _ESNAD_PLAN + [("Access Management", "flow")]
+
+    async def fake(model, messages, **kw):
+        return model(title="Access Management", engine_type="flow")
+
+    out = asyncio.run(cs.apply_plan_edit_async(
+        plan_with_am, "add Access Management diagram", structured_fn=fake))
+    assert out == plan_with_am
+
+
+def test_llm_fallback_respects_the_max_diagrams_cap():
+    import asyncio
+
+    full_plan = [(f"Diagram {i}", "architecture") for i in range(cs.MAX_DIAGRAMS_PER_ROUND)]
+
+    async def fake(model, messages, **kw):
+        return model(title="One More", engine_type="architecture")
+
+    out = asyncio.run(cs.apply_plan_edit_async(
+        full_plan, "add one more diagram", structured_fn=fake))
+    assert out == full_plan
+
+
+def test_no_structured_fn_behaves_exactly_like_the_deterministic_function():
+    """A caller that passes structured_fn=None (or omits it) must get IDENTICAL
+    behaviour to calling apply_plan_edit directly -- no silent difference."""
+    import asyncio
+    sync_result = cs.apply_plan_edit(_ESNAD_PLAN, "add Access Management diagram")
+    async_result = asyncio.run(cs.apply_plan_edit_async(_ESNAD_PLAN, "add Access Management diagram"))
+    assert sync_result == async_result == _ESNAD_PLAN  # neither can match: no vocabulary entry
+
+
+def test_a_drop_request_never_reaches_the_llm():
+    """Drop only ever matches against titles ALREADY in the plan -- no
+    vocabulary gap is possible there, so the LLM call would be pure waste."""
+    import asyncio
+
+    called = {"yes": False}
+
+    async def track(model, messages, **kw):
+        called["yes"] = True
+        return model(title="X", engine_type="architecture")
+
+    plan = _ESNAD_PLAN + [("Privileged Access Management", "flow")]
+    out = asyncio.run(cs.apply_plan_edit_async(
+        plan, "drop the privileged access management diagram", structured_fn=track))
+    assert "Privileged Access Management" not in [t for t, _ in out]
+    assert not called["yes"]
+
+
+def test_the_chat_handler_call_site_uses_the_async_wrapper_with_a_real_structured_fn():
+    """CALL-SITE check — the async fallback is useless if app.py's actual
+    diagram-plan-edit handler still calls the old synchronous-only function."""
+    import inspect
+    src = inspect.getsource(app)
+    assert "chat_state.apply_plan_edit_async(" in src, (
+        "the chat handler still calls the deterministic-only apply_plan_edit, "
+        "so the LLM fallback is dead code nothing ever reaches")
+    assert "structured_fn=_structured_with_fallback" in src
+
+
+def test_llm_add_fallback_type_is_valid():
+    """chat_state._LLM_ADD_ENGINE_TYPES is a hand-kept duplicate of
+    diagram_engine.DIAGRAM_TYPES (to avoid chat_state.py importing
+    diagram_engine.py for one constant) -- this keeps the two from drifting
+    apart silently."""
+    import diagram_engine
+    assert set(cs._LLM_ADD_ENGINE_TYPES) == set(diagram_engine.DIAGRAM_TYPES)
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))

@@ -3316,7 +3316,8 @@ async def chat_completions(request: Request):
                         r = await supabase_client.get_intake_session(sc, state.session)
                     answers = (r or {}).get("answers") or {}
                 current = await load_plan(state.session, answers)
-                edited = chat_state.apply_plan_edit(current, q)
+                edited = await chat_state.apply_plan_edit_async(
+                    current, q, structured_fn=_structured_with_fallback)
                 if edited == current:
                     return chat_state.PLAN_REPROMPT + "\n\n" + chat_state.encode_marker(state)
                 await save_plan(state.session, edited)

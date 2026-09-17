@@ -33,6 +33,8 @@ import re
 from typing import Optional
 from dataclasses import dataclass, replace
 
+from pydantic import BaseModel
+
 # --- modes ------------------------------------------------------------------
 # router       : we have asked what the user wants to do; awaiting their choice.
 # interview    : walking the discovery buckets; ``bucket`` is the index awaiting an
@@ -713,6 +715,17 @@ def apply_plan_edit(plan: list[tuple[str, str]], text: str) -> list[tuple[str, s
     Only drops and adds are supported, matched against the plan's own titles and
     the known diagram vocabulary — no LLM call, and no guessing: an instruction
     that matches nothing leaves the plan untouched so the caller re-prompts.
+
+    This is the FAST PATH. It is deliberately narrow: a fixed keyword
+    dictionary can never cover the open-ended space of what a consultant might
+    type for a diagram domain ("add Access Management diagram", "add Federation
+    diagram", "add RBAC diagram" — measured: 23 of 30 reasonable ESNAD-domain
+    phrasings failed here). apply_plan_edit_async wraps this and falls back to
+    an LLM call when this finds nothing to add, which is where an unbounded
+    request actually belongs. This function stays synchronous and untouched so
+    the drop path (matching only against titles ALREADY in the plan, where no
+    vocabulary gap is possible) keeps its instant, zero-cost, fully
+    deterministic behaviour.
     """
     norm = _normalise(text)
     padded = f" {norm} "
@@ -749,6 +762,77 @@ def apply_plan_edit(plan: list[tuple[str, str]], text: str) -> list[tuple[str, s
                         out.append((title, engine_type))
                 break
     return out
+
+
+# The engine's own closed diagram-type set (diagram_engine.DIAGRAM_TYPES) is
+# duplicated here as a plain tuple, not imported, to avoid chat_state.py
+# taking a dependency on diagram_engine.py for one constant. Kept in sync by
+# the test that asserts the two match (test_llm_add_fallback_type_is_valid).
+_LLM_ADD_ENGINE_TYPES = ("architecture", "flow", "sequence", "network",
+                         "data_flow", "component")
+
+_LLM_ADD_PROMPT = (
+    "A consultant is editing a proposed set of architecture diagrams for an "
+    "IAM (Identity and Access Management) proposal, and asked to ADD one that "
+    "is not in the fixed vocabulary this tool already tried. Read what "
+    "diagram they are asking for and return:\n"
+    "  title: a short, specific diagram title (Title Case, e.g. "
+    "\"Privileged Access Management Flow\")\n"
+    f"  engine_type: exactly one of {', '.join(_LLM_ADD_ENGINE_TYPES)}\n"
+    "If the request is not asking to add a diagram at all (e.g. it is "
+    "actually 'approve' or a drop request that slipped through), return an "
+    "empty title so the caller knows nothing was added."
+)
+
+
+class _LlmDiagramAdd(BaseModel):
+    title: str = ""
+    engine_type: str = "architecture"
+
+
+async def apply_plan_edit_async(
+    plan: list[tuple[str, str]], text: str,
+    structured_fn=None,
+) -> list[tuple[str, str]]:
+    """apply_plan_edit's fast deterministic path, with an LLM fallback for
+    ADD requests the fixed vocabulary does not cover.
+
+    structured_fn is injected (same pattern as document_engine.py and
+    diagram_engine.py's structured-call parameters) rather than imported,
+    since app.py's _structured_with_fallback lives in the module that imports
+    FROM chat_state.py, not the reverse — importing it here would be a cycle.
+    Callers that pass structured_fn=None get exactly today's deterministic-
+    only behaviour, so every existing caller and test keeps working unchanged.
+
+    Fails soft: any LLM error, timeout, or a returned title that fails
+    validation leaves the plan untouched, exactly like the deterministic
+    path's existing "matches nothing" behaviour — this is a convenience
+    layer, never a requirement for the chat to keep working.
+    """
+    out = apply_plan_edit(plan, text)
+    if out != plan or not structured_fn:
+        return out
+    if not any(h in f" {_normalise(text)} " for h in _ADD_HINTS):
+        return out
+    if len(plan) >= MAX_DIAGRAMS_PER_ROUND:
+        return out
+
+    try:
+        result: _LlmDiagramAdd = await structured_fn(
+            _LlmDiagramAdd,
+            messages=[{"role": "system", "content": _LLM_ADD_PROMPT},
+                     {"role": "user", "content": text}],
+        )
+    except Exception:  # noqa: BLE001 - fail soft, caller re-prompts as before
+        return out
+
+    title = (result.title or "").strip()
+    engine_type = (result.engine_type or "").strip().lower()
+    if not title or engine_type not in _LLM_ADD_ENGINE_TYPES:
+        return out
+    if any(_normalise(title) == _normalise(t) for t, _ in plan):
+        return out  # already in the plan under this title
+    return plan + [(title, engine_type)]
 
 
 PLAN_REPROMPT = (

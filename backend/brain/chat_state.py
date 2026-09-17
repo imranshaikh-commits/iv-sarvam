@@ -471,6 +471,14 @@ DIAGRAM_TYPE_MAP: dict[str, str] = {
     "identity governance and administration": "flow",
     "access certification": "flow",
     "governance": "flow",
+    # Third domain missing on the ESNAD live run, same shape as PAM/IGA above:
+    # the SOW's ILM-01..12 requirements (provisioning, deprovisioning, joiner/
+    # mover/leaver, orphan detection) have no matching key, so "add Identity
+    # Lifecycle Flow diagram" failed identically regardless of phrasing.
+    "identity lifecycle": "flow",
+    "identity lifecycle management": "flow",
+    "joiner mover leaver": "flow",
+    "joiner/mover/leaver": "flow",
 }
 
 # Cap how many diagrams one review round generates — each is an LLM call plus a

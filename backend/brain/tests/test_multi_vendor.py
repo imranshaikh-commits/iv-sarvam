@@ -408,6 +408,24 @@ def test_add_iga_diagram():
     assert added and added[0][0] == "Identity Governance"
 
 
+def test_add_identity_lifecycle_flow_the_exact_failing_phrase():
+    """THE second live-run failure on the SAME chat session that hit the PAM
+    gap: "add Identity Lifecycle Flow diagram" failed identically, because
+    DIAGRAM_TYPE_MAP had no key overlapping "identity lifecycle" either.
+    ESNAD's SOW specifies this as its own domain (ILM-01..12: provisioning,
+    deprovisioning, joiner/mover/leaver, orphan detection)."""
+    out = cs.apply_plan_edit(_ESNAD_PLAN, "add Identity Lifecycle Flow diagram")
+    added = out[len(_ESNAD_PLAN):]
+    assert added, "the exact phrase that failed live still adds nothing"
+    assert added[0][0] == "Identity Lifecycle"
+
+
+def test_add_joiner_mover_leaver_diagram():
+    out = cs.apply_plan_edit(_ESNAD_PLAN, "add a joiner mover leaver diagram")
+    added = out[len(_ESNAD_PLAN):]
+    assert added and added[0][0] == "Joiner Mover Leaver"
+
+
 def test_add_bare_pam_acronym():
     """A 3-character key reduces to an EMPTY word list under the >3-char
     filter, so a bare acronym ("pam") could never match on its own even

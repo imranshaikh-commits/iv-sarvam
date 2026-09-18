@@ -1401,8 +1401,24 @@ def _add_prose_paragraphs(document: Document, text: str) -> None:
             heading = re.match(r"^(#{1,6})\s+(.*)$", line)
             if heading:
                 _flush()
+                # The SUBSECTION containing this drafted text is already
+                # rendered at H2 by the template mechanism (see
+                # _draft_section / assemble_docx). The model's OWN markdown
+                # headers inside its drafted prose therefore belong ONE level
+                # BELOW that -- starting at H3, not H2 -- or the model's
+                # first "#" stacks a second, visually indistinguishable H2
+                # directly inside a subsection that is already H2.
+                #
+                # Capped at H5, not silently flattened to H3 regardless of
+                # depth: IV's own proposals genuinely nest to H5 (e.g.
+                # "Saviynt EIC Logical Architecture" H3 -> a named capability
+                # H4 -> a specific workflow step H5). The template has no
+                # subsection instruction that asks a model to write that
+                # deep YET (that is the next piece of this sprint), but the
+                # renderer must not be the reason a model that DOES produce
+                # nested structure gets flattened.
                 _add_subheading(document, heading.group(2).strip(),
-                                level=min(3, len(heading.group(1)) + 1))
+                                level=min(5, len(heading.group(1)) + 2))
                 continue
 
             if _BULLET_MARKER_RE.match(line):

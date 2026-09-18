@@ -1338,3 +1338,272 @@ def test_is_saas_is_wired_into_the_real_context_builder():
     src = inspect.getsource(de)
     assert '"is_saas": _is_saas' in src
     assert "_is_saas = _looks_like_saas(" in src
+
+
+# ---------------------------------------------------------------------------
+# 16. Sprint 2 -- heading-depth cap. A model's OWN markdown headers inside
+#     drafted prose were silently flattened to H3 regardless of depth, and
+#     its FIRST header stacked a second, indistinguishable H2 directly
+#     inside a subsection that is already H2 (rendered by the template
+#     mechanism before this drafted content even begins).
+#
+# IV's own proposals genuinely nest to H5 (e.g. "Saviynt EIC Logical
+# Architecture" H3 -> a named capability H4 -> a specific workflow step H5).
+# The renderer capping at H3 was ONE reason Shilpi's output stayed flatter
+# than IV's, independent of whether any subsection instruction currently
+# asks a model to write that deep (a separate, following piece of this
+# sprint).
+# ---------------------------------------------------------------------------
+
+def _render_headings(markdown_body: str) -> list[tuple[str, str]]:
+    """[(style_name, text)] for every real Word heading produced from a
+    drafted body's own markdown, via the ACTUAL rendering function -- not a
+    hand-simulated version of its logic."""
+    import io
+    from docx import Document
+    docx_bytes = de.assemble_docx(
+        metadata={"client_name": "X", "proposal_type": "implementation"},
+        sections=[{"id": "solution_overview", "title": "Solution Overview",
+                  "content": markdown_body}])
+    d = Document(io.BytesIO(docx_bytes))
+    return [(p.style.name, p.text.strip()) for p in d.paragraphs
+           if p.style.name.startswith("Heading") and p.text.strip()]
+
+
+def test_single_hash_no_longer_collides_with_the_subsections_own_h2():
+    """A model's first "#" header must land BELOW the subsection heading
+    that contains it, not stack a second, visually identical H2 inside an
+    H2 -- confirmed by checking it renders at H3 or deeper, never H2."""
+    headings = _render_headings("# First Capability\n\nSome prose.")
+    styles = [s for s, t in headings if t == "First Capability"]
+    assert styles == ["Heading 3"], styles
+
+
+def test_relative_nesting_depth_is_preserved_not_flattened():
+    """THE core bug: "##" and "###" used to render IDENTICALLY (both capped
+    to H3). A genuinely two-level-deep model output must produce two
+    genuinely different heading levels."""
+    body = (
+        "# Workforce Identity and Access Management\n\n"
+        "Core SSO and directory services.\n\n"
+        "## SSO and MFA\n\n"
+        "Adaptive authentication.\n\n"
+        "### Adaptive Risk Authentication\n\n"
+        "Risk scoring by device, location and behaviour.\n\n"
+        "## Orchestration\n\n"
+        "No-code flow builder."
+    )
+    headings = _render_headings(body)
+    got = {t: s for s, t in headings}
+    assert got["Workforce Identity and Access Management"] == "Heading 3"
+    assert got["SSO and MFA"] == "Heading 4"
+    assert got["Adaptive Risk Authentication"] == "Heading 5"
+    # Same depth (2 hashes) as "SSO and MFA" -- must land at the SAME level,
+    # not drift, proving this is a genuinely relative-depth mapping and not an
+    # incrementing counter that happens to produce plausible-looking output.
+    assert got["Orchestration"] == "Heading 4"
+
+
+def test_deeper_than_h5_is_capped_not_left_unbounded():
+    """H5 is IV's own observed maximum. Capping rather than rendering H6+
+    avoids an LLM that gets over-enthusiastic with markdown depth producing
+    a heading level Word barely supports and no human proposal ever uses."""
+    headings = _render_headings("##### Very Deep Point\n\nSome text.")
+    styles = [s for s, t in headings if t == "Very Deep Point"]
+    assert styles == ["Heading 5"], styles
+
+
+def test_the_cap_change_is_the_real_live_code_not_a_stale_copy():
+    """CALL-SITE check -- confirms the actual rendering function contains
+    the new mapping, not just that a standalone reimplementation of it
+    behaves correctly."""
+    import inspect
+    src = inspect.getsource(de._add_prose_paragraphs)
+    assert "min(5, len(heading.group(1)) + 2)" in src
+
+
+# ---------------------------------------------------------------------------
+# 17. The Solution Overview instruction actually REQUESTS nested structure,
+#     not just that the renderer could handle it if asked.
+#
+# Raising the heading cap (test group 16) is necessary but not sufficient:
+# checked directly, ZERO subsection instructions asked a model to structure
+# its own output with markdown headers at all -- the cap fix alone changes
+# nothing in practice. IV's equivalent section (Solution Overview PingOne
+# AIC- IAM) has NINE H5 sub-points (SSO/MFA, Multiple Channel Support,
+# Orchestration, PingGateway, Use Cases, Application Integrations, Adaptive
+# Risk Authentication, Ping ID App...); Shilpi's instruction produced flat,
+# undifferentiated prose for the same content.
+# ---------------------------------------------------------------------------
+
+def test_solution_overview_instruction_asks_for_nested_markdown():
+    tpl = pt.get_template("implementation")
+    so = next(s for s in tpl if s.id == "solution_overview")
+    ctx = {"client_name": "X", "iam_vendor": "Ping Identity",
+          "iam_vendors": ["Ping Identity"], "proposal_type": "implementation",
+          "is_saas": True}
+    instr = dict(so.render_subsections(ctx))["Ping Identity Solution Overview"]
+    assert "##" in instr, "instruction never asks for a markdown header at all"
+    assert "capability area" in instr.lower()
+    assert "reviewer scanning the headers" in instr
+
+
+def test_solution_overview_still_fans_out_per_vendor_after_the_rewrite():
+    """The rewrite must not have broken the EXISTING, separately-tested
+    per-vendor heading fanout from Sprint 1 -- the heading token
+    "{{ iam_vendor }}" must survive untouched."""
+    tpl = pt.get_template("implementation")
+    so = next(s for s in tpl if s.id == "solution_overview")
+    vendors = pt.split_vendors("Ping Identity for Access Management and CIAM, "
+                               "Saviynt for IGA and PAM")
+    ctx = {"client_name": "X", "iam_vendor": "x", "iam_vendors": vendors,
+          "proposal_type": "implementation", "is_saas": True}
+    headings = [h for h, _ in so.render_subsections(ctx)]
+    assert "Ping Identity Solution Overview" in headings
+    assert "Saviynt Solution Overview" in headings
+
+
+def test_end_to_end_a_compliant_model_response_renders_correctly_nested():
+    """The FULL chain: instruction asks for structure -> a realistic
+    model response that follows it -> the actual DOCX renderer -> real,
+    correctly-nested Word headings. Not three separate unit checks, one
+    pipeline run confirming they fit together."""
+    # A response shaped the way the instruction asks for -- capability
+    # areas at "##", named sub-features at "###" only where there is
+    # something specific to say, matching IV's own observed pattern.
+    compliant_response = (
+        "Ping Identity delivers workforce and customer identity through a "
+        "cloud-native platform.\n\n"
+        "## Authentication Methods\n\n"
+        "SSO and adaptive MFA across web and mobile channels.\n\n"
+        "### Adaptive Risk Authentication\n\n"
+        "Risk scoring considers device posture, location and behavioural "
+        "signals before stepping up authentication.\n\n"
+        "## Session and Orchestration\n\n"
+        "A no-code flow builder for authentication journeys.\n\n"
+        "### PingGateway\n\n"
+        "Reverse-proxy enforcement point for legacy application integration.\n\n"
+        "## Administrative Tooling\n\n"
+        "A single console for policy, connector and journey configuration."
+    )
+    headings = _render_headings(compliant_response)
+    got = {t: s for s, t in headings}
+    assert got["Authentication Methods"] == "Heading 4"
+    assert got["Adaptive Risk Authentication"] == "Heading 5"
+    assert got["Session and Orchestration"] == "Heading 4"
+    assert got["PingGateway"] == "Heading 5"
+    assert got["Administrative Tooling"] == "Heading 4"
+    # Three capability areas, two of which have a named sub-feature --
+    # matching IV's own pattern of 2-3 sub-points per capability area, not
+    # every area padded out uniformly.
+    area_count = sum(1 for s, t in headings if s == "Heading 4")
+    assert area_count == 3
+
+
+# ---------------------------------------------------------------------------
+# 18. RACI matrices gain vendor columns.
+#
+# IV's own RACI has FOUR party columns (ESNAD, IV, Ping Identity, Saviynt).
+# Both of Shilpi's RACI tables hardcoded exactly two columns (Inspirit
+# Vision, client) regardless of how many vendors were in the engagement --
+# a multi-vendor proposal had nowhere in its RACI to show which vendor
+# a given responsibility actually belongs to.
+# ---------------------------------------------------------------------------
+
+def _raci_instruction(heading, ctx):
+    tpl = pt.get_template("implementation")
+    impl = next(s for s in tpl if s.id == "implementation_approach")
+    return dict(impl.render_subsections(ctx))[heading]
+
+
+def test_raci_columns_include_each_vendor_in_order():
+    """IV's own column order: client, IV, then each vendor, then
+    description. Matched exactly, not just "vendors appear somewhere"."""
+    ctx = {"client_name": "ESNAD", "iam_vendor": "x",
+          "iam_vendors": ["Ping Identity", "Saviynt"],
+          "proposal_type": "implementation", "is_saas": True}
+    instr = _raci_instruction("RACI - Delivery Activities", ctx)
+    assert ("Deliverable / Activity, ESNAD, Inspirit Vision, Ping Identity, "
+           "Saviynt, Description / Comments") in instr
+
+
+def test_raci_single_vendor_unaffected_in_shape():
+    """A single-vendor proposal (every prior scored run -- Amlak, BTPN) must
+    still get exactly one vendor column, same as it always effectively had,
+    and NONE of the multi-vendor caveat language."""
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+          "iam_vendors": ["SailPoint"], "proposal_type": "implementation",
+          "is_saas": False}
+    instr = _raci_instruction("RACI - Delivery Activities", ctx)
+    assert "Deliverable / Activity, X, Inspirit Vision, SailPoint, Description" in instr
+    assert "MULTI-VENDOR" not in instr
+
+
+def test_raci_multi_vendor_gets_the_dont_mark_everyone_caveat():
+    """Without this, a model asked to fill 4 party columns per row would
+    plausibly mark every vendor R/A/C/I on every row uniformly -- which
+    misrepresents who actually does the work as badly as having no vendor
+    columns at all."""
+    ctx = {"client_name": "ESNAD", "iam_vendor": "x",
+          "iam_vendors": ["Ping Identity", "Saviynt"],
+          "proposal_type": "implementation", "is_saas": True}
+    for heading in ("RACI - Project Governance", "RACI - Delivery Activities"):
+        instr = _raci_instruction(heading, ctx)
+        assert "MULTI-VENDOR" in instr
+        assert "leave" in instr.lower() and "blank" in instr.lower()
+
+
+def test_raci_scales_to_a_third_future_partner_without_code_changes():
+    """EXTENSIBILITY check: the column list is generated from iam_vendors,
+    not a hardcoded pair -- a third (or fourth) partner just works."""
+    ctx = {"client_name": "X", "iam_vendor": "x",
+          "iam_vendors": ["Ping Identity", "Saviynt", "CyberArk"],
+          "proposal_type": "implementation", "is_saas": True}
+    instr = _raci_instruction("RACI - Delivery Activities", ctx)
+    assert "Ping Identity, Saviynt, CyberArk" in instr
+
+
+# ---------------------------------------------------------------------------
+# 19. Licence BOQ fans out per vendor, Total BOQ stays the rollup.
+#
+# IV's actual document: "Ping Identity BOQ" (15x5) and "Saviynt BOQ" (6x4)
+# as fully separate tables, plus one project-level "Project BOQ" rollup.
+# Shilpi had one "Licence Bill of Quantities" shared across every vendor in
+# the engagement -- the same class of problem the multi-vendor heading
+# fanout mechanism from Sprint 1 already solves elsewhere, just not applied
+# here.
+# ---------------------------------------------------------------------------
+
+def test_licence_boq_fans_out_per_vendor():
+    tpl = pt.get_template("implementation")
+    comm = next(s for s in tpl if s.id == "commercial")
+    ctx = {"client_name": "ESNAD", "iam_vendor": "x",
+          "iam_vendors": ["Ping Identity", "Saviynt"],
+          "proposal_type": "implementation", "is_saas": True}
+    headings = [h for h, _ in comm.render_subsections(ctx)]
+    assert "Ping Identity Licence Bill of Quantities" in headings
+    assert "Saviynt Licence Bill of Quantities" in headings
+
+
+def test_total_boq_stays_singular_as_the_rollup():
+    """The combined/rollup table must NOT fan out -- IV has exactly one
+    project-level BOQ alongside the per-vendor detail tables, not one
+    "Total BOQ" per vendor."""
+    tpl = pt.get_template("implementation")
+    comm = next(s for s in tpl if s.id == "commercial")
+    ctx = {"client_name": "ESNAD", "iam_vendor": "x",
+          "iam_vendors": ["Ping Identity", "Saviynt"],
+          "proposal_type": "implementation", "is_saas": True}
+    headings = [h for h, _ in comm.render_subsections(ctx)]
+    assert headings.count("Total Bill of Quantities") == 1
+
+
+def test_licence_boq_single_vendor_unaffected_in_shape():
+    tpl = pt.get_template("implementation")
+    comm = next(s for s in tpl if s.id == "commercial")
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+          "iam_vendors": ["SailPoint"], "proposal_type": "implementation",
+          "is_saas": False}
+    headings = [h for h, _ in comm.render_subsections(ctx)]
+    assert "SailPoint Licence Bill of Quantities" in headings
+    assert headings.count("Total Bill of Quantities") == 1

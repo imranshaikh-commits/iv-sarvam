@@ -443,7 +443,18 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
             # 97 approved examples of and barely used.
             ("{{ iam_vendor }} Solution Overview",
              "the platform itself: what the product is, its core components, and "
-             "how they fit together. Vendor-level, not client-specific."),
+             "how they fit together. Vendor-level, not client-specific. "
+             "STRUCTURE THIS AS NESTED MARKDOWN, not flat prose: one '## ' "
+             "header per major capability area the evidence supports (for "
+             "example: authentication methods, session and orchestration, "
+             "channel/mobile support, integration patterns, administrative "
+             "tooling -- named per what this specific product actually "
+             "offers, not this generic list). Under a capability area, use "
+             "'### ' for a named sub-feature only where the evidence gives "
+             "genuine, specific detail to write about -- do not invent a "
+             "sub-heading with nothing under it. A reviewer scanning the "
+             "headers alone, without reading the prose, should be able to "
+             "tell what the product does."),
             ("Comprehensive Identity Governance Platform",
              "the breadth of the governance platform across identity lifecycle, "
              "access request, certification, policy and analytics - what a single "
@@ -603,14 +614,33 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "R = Responsible, A = Accountable, C = Consulted, I = Informed."),
             ("RACI - Project Governance",
              "governance responsibilities as a markdown TABLE with columns "
-             "Deliverable / Activity, Inspirit Vision, {{ client_name }}, "
-             "Description / Comments. Cover ways of working, steering committee, "
+             "Deliverable / Activity, {{ client_name }}, Inspirit Vision"
+             "{% for v in iam_vendors %}, {{ v }}{% endfor %}, "
+             "Description / Comments. "
+             "{% if iam_vendors|length > 1 %}"
+             "This is a MULTI-VENDOR engagement: mark R/A/C/I for a vendor "
+             "ONLY on rows where that vendor genuinely has a role (e.g. a "
+             "licensing decision for a module only one vendor supplies); "
+             "leave the cell blank rather than marking every vendor on "
+             "every row uniformly, which would misrepresent who actually "
+             "does the work. "
+             "{% endif %}"
+             "Cover ways of working, steering committee, "
              "project tools, status reporting, change control, and risk and issue "
              "management. At least 10 rows."),
             ("RACI - Delivery Activities",
              "delivery responsibilities as a markdown TABLE with EXACTLY these "
-             "columns: Deliverable / Activity, Inspirit Vision, {{ client_name }}, "
-             "Description / Comments. Cover scope definition, product acquisition, environment "
+             "columns: Deliverable / Activity, {{ client_name }}, Inspirit Vision"
+             "{% for v in iam_vendors %}, {{ v }}{% endfor %}, "
+             "Description / Comments. "
+             "{% if iam_vendors|length > 1 %}"
+             "This is a MULTI-VENDOR engagement: mark R/A/C/I for a vendor "
+             "ONLY on rows describing work that vendor's own platform "
+             "performs (e.g. only the PAM vendor is Responsible for "
+             "privileged session recording); leave other vendors' cells "
+             "blank on that row rather than marking every vendor uniformly. "
+             "{% endif %}"
+             "Cover scope definition, product acquisition, environment "
              "provisioning, design, build, integration, testing, UAT, cutover and "
              "handover. Use the responsibilities supplied at discovery. At least "
              "12 rows."),
@@ -699,10 +729,13 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
         purpose="Commercial structure and basis. Figures belong to the commercial owner.",
         query_template=f"commercial structure, license bill of quantities, implementation pricing basis, payment milestones, resident engineer {_CTX}",
         subsections=(
-            ("Licence Bill of Quantities",
-             "the licence line items as a markdown TABLE with columns Item, Description, "
-             "Quantity, Unit, Basis. Leave price cells as 'To be confirmed' - Shilpi does "
-             "NOT invent commercial figures."),
+            ("{{ iam_vendor }} Licence Bill of Quantities",
+             "the licence line items for {{ iam_vendor }} specifically as a "
+             "markdown TABLE with columns Item, Description, Quantity, Unit, "
+             "Basis. Leave price cells as 'To be confirmed' - Shilpi does "
+             "NOT invent commercial figures. Vendor-specific: only line "
+             "items {{ iam_vendor }} itself supplies, not other vendors in "
+             "this engagement."),
             ("Total Bill of Quantities",
              "the combined BOQ as a markdown TABLE with EXACTLY these columns: "
              "#, Item, Description, Unit Price, Total Price. Leave price cells "

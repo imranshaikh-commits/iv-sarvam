@@ -586,11 +586,18 @@ async def _retrieve_fanout(
     retrieve_fn: RetrieveFn,
     top_k: int,
     fanout: int,
-) -> list[dict]:
+    retrieve_product_fn=None,
+) -> tuple[list[dict], list[dict]]:
     """Run fanned-out retrieval, then merge + dedupe chunks by text.
 
     Deduped set is sorted by similarity (desc) and capped so wider fan-out gives
     richer evidence without an unbounded evidence block.
+
+    Returns (proposal_chunks, product_chunks). product_chunks is always []
+    unless retrieve_product_fn is given AND this section's query_template
+    names {{ iam_vendor }} -- the same signal _fanout_queries already uses to
+    decide whether a section is vendor-specific, reused here rather than a
+    second, separately-maintained list of "which sections want product depth".
     """
     seen: set[str] = set()
     merged: list[dict] = []
@@ -624,7 +631,43 @@ async def _retrieve_fanout(
     merged.sort(key=lambda c: float(c.get("similarity") or 0.0), reverse=True)
     # Cap evidence to keep prompts bounded: base top_k, plus headroom per extra query.
     cap = top_k * max(1, fanout)
-    return merged[:cap]
+    proposal_chunks = merged[:cap]
+
+    product_chunks: list[dict] = []
+    is_vendor_specific = "iam_vendor" in section_spec.query_template
+    if retrieve_product_fn and is_vendor_specific:
+        vendors = context.get("iam_vendors") or (
+            [context["iam_vendor"]] if context.get("iam_vendor") else [])
+        # ONE query per vendor, not the full fanout depth: the product corpus
+        # is small and curated (unlike the proposal vault, which benefits
+        # from many query angles to surface diverse past engagements), so one
+        # good base query per vendor is enough to pull its top relevant
+        # chunks. Keeps this cheap and keeps the two retrieval passes
+        # independent -- a slow or broken product query must never affect
+        # proposal-history retrieval, or vice versa.
+        seen_product: set[str] = set()
+        for v in vendors:
+            if not v:
+                continue
+            try:
+                pq = section_spec.render_query({**context, "iam_vendor": v})
+                p_embedding = await embed_fn(client, pq)
+                p_chunks = await retrieve_product_fn(client, p_embedding, vendor=v, k=top_k)
+            except Exception as e:  # fail soft: product corpus is a bonus, never a blocker
+                log.warning("product retrieval failed for %s / %s: %s",
+                           section_spec.id, v, e)
+                p_chunks = []
+            for c in p_chunks or []:
+                key = (c.get("chunk_text") or c.get("heading") or "")[:160]
+                if key and key in seen_product:
+                    continue
+                if key:
+                    seen_product.add(key)
+                product_chunks.append(c)
+        product_chunks.sort(key=lambda c: float(c.get("similarity") or 0.0), reverse=True)
+        product_chunks = product_chunks[:top_k]
+
+    return proposal_chunks, product_chunks
 
 
 # Reasoning models (GLM 5.2 among them) emit internal deliberation that must
@@ -842,6 +885,8 @@ async def draft_section(
     fanout: int = 1,
     subsections: int = 1,
     max_tokens: int = MAX_DRAFT_TOKENS,
+    retrieve_product_fn=None,
+    build_product_evidence_fn=None,
 ) -> dict:
     """Draft one proposal section, grounded in retrieved corpus evidence.
 
@@ -855,9 +900,10 @@ async def draft_section(
     Returns: {"id","title","content","subsections","citations","max_similarity",
               "needs_sme_review"}.
     """
-    chunks = await _retrieve_fanout(
+    chunks, product_chunks = await _retrieve_fanout(
         client, section_spec, context,
         embed_fn=embed_fn, retrieve_fn=retrieve_fn, top_k=top_k, fanout=fanout,
+        retrieve_product_fn=retrieve_product_fn,
     )
 
     max_similarity = max((float(c.get("similarity") or 0.0) for c in chunks), default=0.0)
@@ -870,6 +916,13 @@ async def draft_section(
     # the discovery answers said "DR sized identically to production" -- one of
     # the reasons run 10 still carried 39 markers after the discovery-routing
     # fix landed.
+    #
+    # Deliberately computed from PROPOSAL chunks only, not product_chunks:
+    # strong similarity against a vendor's marketing datasheet says the
+    # PRODUCT is well documented, not that THIS client's engagement facts
+    # (real sizing, real environment counts) are grounded. Blending the two
+    # into one signal risks a well-marketed product masking a genuine need
+    # for client-specific review.
     weak_corpus = (not chunks) or (max_similarity < WEAK_EVIDENCE_THRESHOLD)
     discovery_ctx = discovery_context_for(section_spec.id,
                                           context.get("discovery_answers"))
@@ -882,6 +935,8 @@ async def draft_section(
     # drafting instructions on top so the model drafts THIS section.
     section_title = section_spec.render_title(context)
     evidence_block = build_grounded_system_fn(chunks)
+    if product_chunks and build_product_evidence_fn:
+        evidence_block += build_product_evidence_fn(product_chunks)
     system_prompt = _SECTION_SYSTEM_TEMPLATE.format(
         title=section_title,
         proposal_type=context.get("proposal_type", "implementation"),
@@ -1043,6 +1098,7 @@ async def draft_section(
         "content": content,
         "subsections": subsection_results,
         "citations": chunks,
+        "product_citations": product_chunks,
         "max_similarity": max_similarity,
         "needs_sme_review": needs_sme_review,
     }
@@ -2198,6 +2254,8 @@ async def generate_proposal(
     client_logo_path: Optional[str] = None,
     asset_fns: Optional[dict] = None,
     scale_fn: Optional[Callable] = None,
+    retrieve_product_fn=None,
+    build_product_evidence_fn=None,
 ) -> dict:
     """Orchestrate: pick template, draft sections concurrently, assemble DOCX.
 
@@ -2289,6 +2347,8 @@ async def generate_proposal(
                 fanout=tier.retrieval_fanout,
                 subsections=tier.subsections_per_section,
                 max_tokens=tier.per_call_max_tokens,
+                retrieve_product_fn=retrieve_product_fn,
+                build_product_evidence_fn=build_product_evidence_fn,
             )
 
     drafted = await asyncio.gather(*[_draft(s) for s in draft_specs])

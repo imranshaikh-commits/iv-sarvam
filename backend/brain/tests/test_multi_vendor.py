@@ -1692,3 +1692,336 @@ def test_appendix_d_integration_inventory_still_has_no_body_counterpart():
     assert "D" not in de._APPENDIX_SUPERSEDED_BY
     assert "D" not in de._superseded_appendices(
         {"implementation_approach", "project_timeline", "proposed_solution", "commercial"})
+
+
+# ---------------------------------------------------------------------------
+# 21. Sprint 4 -- partner product corpus infrastructure.
+#
+# Schema (partner_products, partner_product_chunks, match_partner_product_
+# chunks RPC) is live in Supabase, mirroring proposals/proposal_chunks'
+# structure and RLS pattern exactly. Zero rows exist -- no real vendor
+# material has been gathered yet. Every test below verifies this code is a
+# genuine no-op against an empty/unavailable corpus, since that is the ONLY
+# state it can be tested against right now: real behaviour against real
+# content is unverifiable until Sprint 7 ingests something.
+# ---------------------------------------------------------------------------
+
+def test_retrieve_product_chunks_fails_soft_on_error():
+    """Never let a broken or unreachable product corpus break a drafting
+    call that would otherwise succeed on discovery answers and
+    proposal-history evidence alone."""
+    import asyncio
+
+    class _BrokenClient:
+        async def post(self, *a, **kw):
+            raise RuntimeError("network down")
+
+    out = asyncio.run(app.retrieve_product_chunks(_BrokenClient(), [0.0] * 1536, "Ping Identity"))
+    assert out == []
+
+
+def test_retrieve_product_chunks_builds_the_correct_rpc_call():
+    """The vendor and capability filters must actually reach the RPC
+    request, not be silently dropped."""
+    import asyncio
+
+    captured = {}
+
+    class _FakeResponse:
+        def raise_for_status(self): pass
+        def json(self): return [{"chunk_text": "x"}]
+
+    class _FakeClient:
+        async def post(self, url, headers, json, timeout):
+            captured["url"] = url
+            captured["json"] = json
+            return _FakeResponse()
+
+    out = asyncio.run(app.retrieve_product_chunks(
+        _FakeClient(), [0.1] * 1536, "Saviynt", k=5, capability="IGA"))
+    assert "match_partner_product_chunks" in captured["url"]
+    assert captured["json"]["filter_vendor"] == "Saviynt"
+    assert captured["json"]["filter_capability"] == "IGA"
+    assert captured["json"]["match_count"] == 5
+    assert out == [{"chunk_text": "x"}]
+
+
+def test_build_product_evidence_block_empty_when_no_chunks():
+    """No placeholder heading with nothing under it -- an empty corpus for
+    this vendor must read as "not applicable yet", not as a gap."""
+    assert app.build_product_evidence_block([]) == ""
+
+
+def test_build_product_evidence_block_never_reuses_the_proposal_label():
+    """The exact failure this separate function exists to prevent: vendor
+    marketing material must never be labelled as if it were IV's own
+    delivery history."""
+    chunks = [{"vendor": "Ping Identity", "product_name": "PingOne AIC",
+              "doc_type": "datasheet", "heading": "SSO", "chunk_text": "...",
+              "similarity": 0.8}]
+    block = app.build_product_evidence_block(chunks)
+    assert "IV's past proposals" not in block
+    assert "PRODUCT DOCUMENTATION" in block
+    assert "never cite this as IV's own track record" in block
+    assert "Ping Identity" in block and "PingOne AIC" in block
+
+
+def test_retrieve_fanout_returns_empty_product_chunks_when_fn_not_given():
+    """Backward compatibility: every EXISTING caller of _retrieve_fanout
+    (there is exactly one, inside draft_section) that does not pass
+    retrieve_product_fn must get an empty second list, not an error from an
+    unpacking mismatch."""
+    import asyncio
+
+    async def fake_embed(client, text):
+        return [0.0] * 1536
+
+    async def fake_retrieve(client, embedding, query, **kw):
+        return []
+
+    tpl = pt.get_template("implementation")
+    section = next(s for s in tpl if s.id == "solution_overview")
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+          "iam_vendors": ["SailPoint"], "proposal_type": "implementation"}
+
+    proposal_chunks, product_chunks = asyncio.run(de._retrieve_fanout(
+        None, section, ctx, embed_fn=fake_embed, retrieve_fn=fake_retrieve,
+        top_k=4, fanout=1))
+    assert product_chunks == []
+
+
+def test_retrieve_fanout_only_fires_product_retrieval_for_vendor_specific_sections():
+    """company_profile's query has no {{ iam_vendor }} token (confirmed
+    directly in an earlier test group) -- product retrieval must not fire
+    for it even when retrieve_product_fn is provided, since there is no
+    vendor to filter by."""
+    import asyncio
+
+    called = {"n": 0}
+
+    async def fake_embed(client, text):
+        return [0.0] * 1536
+
+    async def fake_retrieve(client, embedding, query, **kw):
+        return []
+
+    async def tracking_product_fn(client, embedding, vendor, k=8, capability=None):
+        called["n"] += 1
+        return []
+
+    tpl = pt.get_template("implementation")
+    section = next(s for s in tpl if s.id == "company_profile")
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+          "iam_vendors": ["SailPoint"], "proposal_type": "implementation"}
+
+    asyncio.run(de._retrieve_fanout(
+        None, section, ctx, embed_fn=fake_embed, retrieve_fn=fake_retrieve,
+        top_k=4, fanout=1, retrieve_product_fn=tracking_product_fn))
+    assert called["n"] == 0, "product retrieval fired for a vendor-agnostic section"
+
+
+def test_retrieve_fanout_fires_product_retrieval_once_per_vendor():
+    """A multi-vendor section must query the product corpus once per
+    vendor, correctly filtered -- not once for a combined/first vendor
+    only, which would silently starve every vendor after the first of
+    product depth."""
+    import asyncio
+
+    async def fake_embed(client, text):
+        return [0.0] * 1536
+
+    async def fake_retrieve(client, embedding, query, **kw):
+        return []
+
+    seen_vendors = []
+
+    async def tracking_product_fn(client, embedding, vendor, k=8, capability=None):
+        seen_vendors.append(vendor)
+        return []
+
+    tpl = pt.get_template("implementation")
+    section = next(s for s in tpl if s.id == "solution_overview")
+    ctx = {"client_name": "X", "iam_vendor": "x",
+          "iam_vendors": ["Ping Identity", "Saviynt"],
+          "proposal_type": "implementation"}
+
+    asyncio.run(de._retrieve_fanout(
+        None, section, ctx, embed_fn=fake_embed, retrieve_fn=fake_retrieve,
+        top_k=4, fanout=1, retrieve_product_fn=tracking_product_fn))
+    assert set(seen_vendors) == {"Ping Identity", "Saviynt"}
+
+
+def test_retrieve_fanout_product_retrieval_fails_soft_without_affecting_proposal_chunks():
+    """A broken product corpus must never sink proposal-history retrieval --
+    the two passes are independent by design."""
+    import asyncio
+
+    async def fake_embed(client, text):
+        return [0.0] * 1536
+
+    async def fake_retrieve(client, embedding, query, **kw):
+        return [{"chunk_text": "real proposal evidence", "similarity": 0.9}]
+
+    async def broken_product_fn(client, embedding, vendor, k=8, capability=None):
+        raise RuntimeError("corpus unavailable")
+
+    tpl = pt.get_template("implementation")
+    section = next(s for s in tpl if s.id == "solution_overview")
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+          "iam_vendors": ["SailPoint"], "proposal_type": "implementation"}
+
+    proposal_chunks, product_chunks = asyncio.run(de._retrieve_fanout(
+        None, section, ctx, embed_fn=fake_embed, retrieve_fn=fake_retrieve,
+        top_k=4, fanout=1, retrieve_product_fn=broken_product_fn))
+    assert proposal_chunks and proposal_chunks[0]["chunk_text"] == "real proposal evidence"
+    assert product_chunks == []
+
+
+def test_draft_section_is_unaffected_when_product_fns_are_not_given():
+    """The primary safety requirement for this whole sprint: every EXISTING
+    caller of draft_section, none of which know about the new parameters,
+    must behave identically to before this sprint."""
+    import asyncio
+
+    async def fake_embed(client, text):
+        return [0.0] * 1536
+
+    async def fake_retrieve(client, embedding, query, **kw):
+        return []
+
+    async def fake_structured(model, messages, **kw):
+        return "Some drafted content."
+
+    tpl = pt.get_template("implementation")
+    section = next(s for s in tpl if s.id == "company_profile")
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+          "iam_vendors": ["SailPoint"], "proposal_type": "implementation",
+          "discovery_answers": {}}
+
+    original = de.draft_with_openrouter
+    async def stub_draft(client, system_prompt, user_prompt, max_tokens=0):
+        return "Some drafted content."
+    de.draft_with_openrouter = stub_draft
+    try:
+        result = asyncio.run(de.draft_section(
+            None, section, ctx, embed_fn=fake_embed, retrieve_fn=fake_retrieve,
+            build_grounded_system_fn=lambda chunks: "SYSTEM PROMPT HERE",
+            top_k=4, fanout=1, subsections=1,
+        ))
+    finally:
+        de.draft_with_openrouter = original
+    assert "product_citations" in result
+    assert result["product_citations"] == []
+
+
+def test_generate_proposal_call_site_wires_the_product_functions_through():
+    """CALL-SITE check -- the exact bug shape this project has hit
+    repeatedly: a mechanism built and never actually connected. The single
+    real call to generate_proposal in app.py must pass both new functions,
+    or none of the code above ever runs against anything real."""
+    import inspect
+    src = inspect.getsource(app)
+    assert "retrieve_product_fn=retrieve_product_chunks" in src
+    assert "build_product_evidence_fn=build_product_evidence_block" in src
+
+
+def test_needs_sme_review_is_unaffected_by_strong_product_evidence():
+    """Explicit design decision, verified: a well-documented product must
+    not mask a genuine need for client-specific review. weak_corpus is
+    computed from proposal chunks only.
+
+    Proposal evidence here is WEAK but non-empty (similarity 0.1, below
+    WEAK_EVIDENCE_THRESHOLD of 0.55), not absent -- with chunks genuinely
+    empty, "not chunks" alone forces weak_corpus True regardless of
+    max_similarity, which would make this test pass even if product
+    evidence were wrongly blended into max_similarity. A non-empty but weak
+    chunk isolates the threshold comparison as the actual deciding factor,
+    which is the line this test exists to protect."""
+    import asyncio
+
+    async def fake_embed(client, text):
+        return [0.0] * 1536
+
+    async def fake_retrieve(client, embedding, query, **kw):
+        return [{"chunk_text": "tangentially related proposal text",
+                "similarity": 0.1}]  # non-empty, but below WEAK_EVIDENCE_THRESHOLD
+
+    async def strong_product_fn(client, embedding, vendor, k=8, capability=None):
+        # Deliberately high-similarity PRODUCT evidence, to prove it does
+        # NOT get treated as if it were client-engagement grounding.
+        return [{"chunk_text": "detailed product capability", "similarity": 0.99,
+                "vendor": vendor, "product_name": "X", "doc_type": "datasheet"}]
+
+    tpl = pt.get_template("implementation")
+    section = next(s for s in tpl if s.id == "solution_overview")
+    ctx = {"client_name": "X", "iam_vendor": "SailPoint",
+          "iam_vendors": ["SailPoint"], "proposal_type": "implementation",
+          "discovery_answers": {}}
+
+    original = de.draft_with_openrouter
+    async def stub_draft(client, system_prompt, user_prompt, max_tokens=0):
+        return "Some drafted content."
+    de.draft_with_openrouter = stub_draft
+    try:
+        result = asyncio.run(de.draft_section(
+            None, section, ctx, embed_fn=fake_embed, retrieve_fn=fake_retrieve,
+            build_grounded_system_fn=lambda chunks: "SYSTEM PROMPT",
+            build_product_evidence_fn=app.build_product_evidence_block,
+            retrieve_product_fn=strong_product_fn,
+            top_k=4, fanout=1, subsections=1,
+        ))
+    finally:
+        de.draft_with_openrouter = original
+    assert result["needs_sme_review"] is True, (
+        "strong product evidence incorrectly suppressed the SME review flag "
+        "despite zero proposal-history evidence and zero discovery facts")
+    assert len(result["product_citations"]) == 1
+
+
+def test_draft_section_appends_product_evidence_when_present():
+    """The other half of the design: when product evidence genuinely
+    exists, it must actually reach the drafting prompt, not just be
+    retrieved and then dropped."""
+    import asyncio
+
+    captured_prompts = []
+
+    async def fake_embed(client, text):
+        return [0.0] * 1536
+
+    async def fake_retrieve(client, embedding, query, **kw):
+        return []
+
+    async def product_fn(client, embedding, vendor, k=8, capability=None):
+        return [{"chunk_text": "PingOne AIC supports adaptive MFA.",
+                "similarity": 0.9, "vendor": vendor, "product_name": "PingOne AIC",
+                "doc_type": "datasheet", "heading": "Authentication"}]
+
+    def capturing_build_grounded(chunks):
+        return "BASE SYSTEM PROMPT"
+
+    tpl = pt.get_template("implementation")
+    section = next(s for s in tpl if s.id == "solution_overview")
+    ctx = {"client_name": "X", "iam_vendor": "Ping Identity",
+          "iam_vendors": ["Ping Identity"], "proposal_type": "implementation",
+          "discovery_answers": {}}
+
+    original = de.draft_with_openrouter
+    async def stub_draft(client, system_prompt, user_prompt, max_tokens=0):
+        captured_prompts.append(system_prompt)
+        return "Some drafted content."
+    de.draft_with_openrouter = stub_draft
+    try:
+        result = asyncio.run(de.draft_section(
+            None, section, ctx, embed_fn=fake_embed, retrieve_fn=fake_retrieve,
+            build_grounded_system_fn=capturing_build_grounded,
+            build_product_evidence_fn=app.build_product_evidence_block,
+            retrieve_product_fn=product_fn,
+            top_k=4, fanout=1, subsections=1,
+        ))
+    finally:
+        de.draft_with_openrouter = original
+    assert len(result["product_citations"]) == 1
+    assert result["product_citations"][0]["chunk_text"] == "PingOne AIC supports adaptive MFA."
+    assert any("PingOne AIC supports adaptive MFA" in p for p in captured_prompts), (
+        "product evidence was retrieved but never reached the actual drafting prompt")

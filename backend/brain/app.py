@@ -287,6 +287,48 @@ async def retrieve_chunks(client: httpx.AsyncClient, embedding: list[float], que
     return await rerank_chunks(query, deduped, k)
 
 
+async def retrieve_product_chunks(client: httpx.AsyncClient, embedding: list[float],
+                                  vendor: str, k: int = TOP_K,
+                                  capability: Optional[str] = None) -> list[dict]:
+    """Retrieve from the partner PRODUCT corpus (vendor datasheets, architecture
+    guides) -- structurally separate from retrieve_chunks, which queries client
+    engagement history. Never blended into the same call: a vendor's marketing
+    brochure and a client's past proposal must not compete in the same
+    retrieval pass or be citable as if they were the same kind of source.
+
+    filter_vendor is effectively required in practice -- drafting always knows
+    which vendor's section it is drafting. No dedup/rerank pass: the corpus is
+    curated (reviewed=true gate in the RPC itself) rather than scraped, so the
+    near-duplicate and boilerplate problems retrieve_chunks works around do not
+    apply here the same way, and there is nothing to tune a reranker against
+    with zero rows ingested. Add one later if real usage shows it is needed.
+
+    Fails soft to an empty list: this table can be empty (no material ingested
+    yet for this vendor) or briefly unavailable, and neither should ever break
+    a drafting call that would otherwise succeed on discovery answers and
+    proposal-history evidence alone.
+    """
+    try:
+        resp = await client.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/match_partner_product_chunks",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"query_embedding": json.dumps(embedding, separators=(",", ":")),
+                 "match_count": k,
+                 "filter_vendor": vendor or None,
+                 "filter_capability": capability or None},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json() or []
+    except Exception as e:  # noqa: BLE001 - fail soft, see docstring
+        log.warning("retrieve_product_chunks failed for vendor %r: %s", vendor, e)
+        return []
+
+
 # --- Reranking ---------------------------------------------------------------
 #
 # A 2026 controlled comparison of five retrieval strategies found cross-encoder
@@ -584,6 +626,34 @@ def build_grounded_system(chunks: list[dict]) -> str:
         )
     if not chunks:
         lines.append("(no relevant evidence found in the proposal corpus)")
+    return "\n".join(lines)
+
+
+def build_product_evidence_block(chunks: list[dict]) -> str:
+    """A SEPARATE, distinctly-labeled block for partner PRODUCT corpus
+    evidence -- never appended via build_grounded_system, which labels
+    everything "from IV's past proposals" and would misrepresent vendor
+    marketing material as IV's own delivery history. Returns "" (not a
+    placeholder line) when there is nothing to show: this corpus starts
+    empty for every vendor until Sprint 7 ingests material, and an empty
+    "PRODUCT DOCUMENTATION" heading with nothing under it would read as a
+    gap in the prompt rather than a section that simply does not apply yet.
+    """
+    if not chunks:
+        return ""
+    lines = ["\n=== PRODUCT DOCUMENTATION (vendor material -- describes what "
+            "the product does, not what IV has delivered for a client; "
+            "never cite this as IV's own track record) ===\n"]
+    for i, c in enumerate(chunks, 1):
+        head = c.get("heading") or "untitled section"
+        year = c.get("published_year")
+        year_note = f", published: {year}" if year else ""
+        lines.append(
+            f"[{i}] (vendor: {c.get('vendor')}, product: {c.get('product_name')}, "
+            f"doc type: {c.get('doc_type')}{year_note}, section: {head}, "
+            f"similarity: {c.get('similarity', 0):.2f})\n"
+            f"{c.get('chunk_text', '')}\n"
+        )
     return "\n".join(lines)
 
 
@@ -2488,6 +2558,14 @@ async def generate_proposal_endpoint(request: Request):
                            "download": download_asset},
                 # Engagement scale is a reading task, not a keyword match.
                 scale_fn=judge_engagement_scale,
+                # Partner PRODUCT corpus (Sprint 4 infrastructure): fires only
+                # for sections whose query_template names {{ iam_vendor }},
+                # and is a genuine no-op today -- the corpus has zero rows
+                # until real vendor material is curated and ingested. Wired
+                # here so that once ingestion happens, sections start using it
+                # with no further code change.
+                retrieve_product_fn=retrieve_product_chunks,
+                build_product_evidence_fn=build_product_evidence_block,
             )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)

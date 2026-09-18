@@ -271,3 +271,145 @@ def test_gates_are_unaffected_by_the_schema_fix():
     pe = R._PageExtraction(eligibility_gates=[
         "ISO/IEC 27001 certified delivery organization"])
     assert pe.eligibility_gates == ["ISO/IEC 27001 certified delivery organization"]
+
+
+# ---------------------------------------------------------------------------
+# The merge step: a later, FULLER page value must win over an earlier,
+# thinner one -- not the first mention, which is what shipped originally.
+#
+# Found during Sprint 1 correctness work: a module (rfp_vision.py) already
+# had this fix, fully written and tested, but was never wired into the live
+# extract_rfp -- the exact "built but never wired" pattern this project has
+# hit before. Ported the merge idea into extract_rfp directly rather than
+# swap in the whole orphaned module, which also changes the rasterisation
+# dependency (pypdfium2 vs the poppler-utils/pdftoppm path already in the
+# Dockerfile) -- a real infra decision that deserves its own review, not a
+# side effect of a correctness fix.
+# ---------------------------------------------------------------------------
+
+def test_a_later_fuller_page_wins_over_an_earlier_thinner_one(monkeypatch):
+    """THE ESNAD pattern, verbatim: "SaaS" on an early page, "SaaS hosted
+    within the Kingdom of Saudi Arabia, in full compliance with data
+    residency requirements" on a later one. Exercises the REAL extract_rfp,
+    not a hand-copied version of its logic."""
+    import asyncio
+    import tempfile
+
+    class _FV:
+        def __init__(self, field_id, value):
+            self.field_id, self.value = field_id, value
+
+    class _PageEx:
+        def __init__(self, fields):
+            self.field_values = fields
+            self.requirements = []
+            self.eligibility_gates = []
+            self.structure_headings = []
+
+    pages = {
+        5: [_FV("deployment_model", "SaaS")],
+        12: [_FV("deployment_model",
+                 "SaaS hosted within the Kingdom of Saudi Arabia, in full "
+                 "compliance with data residency requirements")],
+    }
+
+    call_count = {"n": 0}
+
+    async def fake_structured(model, messages):
+        call_count["n"] += 1
+        page_no = call_count["n"]
+        return _PageEx(pages.get(page_no, []))
+
+    text_pages = [f"page {i} filler text" for i in range(1, 16)]
+    monkeypatch.setattr(R, "read_text_layer", lambda path: text_pages)
+    monkeypatch.setattr(R, "needs_vision", lambda pages: False)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ex = asyncio.run(R.extract_rfp(
+            "fake.pdf", "SOW.pdf", ["deployment_model"], fake_structured, tmp))
+
+    field = next(f for f in ex.fields if f.field_id == "deployment_model")
+    assert "Kingdom of Saudi Arabia" in field.value
+    assert field.page == 12, "provenance must follow the value that was kept"
+
+
+def test_a_brief_later_mention_does_not_overwrite_a_fuller_earlier_one(monkeypatch):
+    """The comparison is symmetric: a full statement on page 1 must survive
+    a terser restatement later, not just the reverse."""
+    import asyncio
+    import tempfile
+
+    class _FV:
+        def __init__(self, field_id, value):
+            self.field_id, self.value = field_id, value
+
+    class _PageEx:
+        def __init__(self, fields):
+            self.field_values = fields
+            self.requirements = []
+            self.eligibility_gates = []
+            self.structure_headings = []
+
+    pages = {
+        1: [_FV("client_name", "ESNAD (Saudi Mining Services Company)")],
+        2: [_FV("client_name", "ESNAD")],
+    }
+
+    call_count = {"n": 0}
+
+    async def fake_structured(model, messages):
+        call_count["n"] += 1
+        return _PageEx(pages.get(call_count["n"], []))
+
+    text_pages = ["page 1 filler", "page 2 filler"]
+    monkeypatch.setattr(R, "read_text_layer", lambda path: text_pages)
+    monkeypatch.setattr(R, "needs_vision", lambda pages: False)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ex = asyncio.run(R.extract_rfp(
+            "fake.pdf", "SOW.pdf", ["client_name"], fake_structured, tmp))
+
+    field = next(f for f in ex.fields if f.field_id == "client_name")
+    assert field.value == "ESNAD (Saudi Mining Services Company)"
+    assert field.page == 1
+
+
+def test_skip_and_na_values_are_never_merged_in(monkeypatch):
+    """A model answering "skip" or "N/A" for a field on one page must never
+    win against a real value found elsewhere, however long the literal
+    string "skip" is relative to a short real answer."""
+    import asyncio
+    import tempfile
+
+    class _FV:
+        def __init__(self, field_id, value):
+            self.field_id, self.value = field_id, value
+
+    class _PageEx:
+        def __init__(self, fields):
+            self.field_values = fields
+            self.requirements = []
+            self.eligibility_gates = []
+            self.structure_headings = []
+
+    pages = {
+        1: [_FV("app_count", "N/A")],
+        2: [_FV("app_count", "9")],
+    }
+
+    call_count = {"n": 0}
+
+    async def fake_structured(model, messages):
+        call_count["n"] += 1
+        return _PageEx(pages.get(call_count["n"], []))
+
+    text_pages = ["page 1 filler", "page 2 filler"]
+    monkeypatch.setattr(R, "read_text_layer", lambda path: text_pages)
+    monkeypatch.setattr(R, "needs_vision", lambda pages: False)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ex = asyncio.run(R.extract_rfp(
+            "fake.pdf", "SOW.pdf", ["app_count"], fake_structured, tmp))
+
+    field = next(f for f in ex.fields if f.field_id == "app_count")
+    assert field.value == "9"

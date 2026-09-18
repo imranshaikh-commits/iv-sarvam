@@ -2954,6 +2954,7 @@ async def chat_completions(request: Request):
                                 mode=chat_state.MODE_ROUTER)),
                             stream,
                         )
+                    persisted = False
                     try:
                         async with httpx.AsyncClient() as sclient:
                             # ex.answers() only carries the 96 discovery
@@ -2980,10 +2981,56 @@ async def chat_completions(request: Request):
                                      "category": None, "page": r.page}
                                     for r in ex.requirements
                                 ])
-                            await supabase_client.patch_intake_answers(
+                            # The return value MUST be checked. patch_intake_
+                            # answers returns None on ANY failure (network,
+                            # timeout, DB constraint) -- it used to be called
+                            # and discarded here, so a failed save was
+                            # indistinguishable from a successful one. The
+                            # user would see the full "Extracted N of 94
+                            # fields" summary below with complete confidence
+                            # while NOTHING had actually been written, and
+                            # every one of those fields would then surface as
+                            # "missing" one at a time at whatever later gate
+                            # happened to check it -- exactly the pattern that
+                            # showed up live: industry missing at the RFP
+                            # review gate, then timeline_milestones missing
+                            # again at the pre-flight drafting gate, both
+                            # fields the extraction summary had already shown
+                            # as successfully captured.
+                            result = await supabase_client.patch_intake_answers(
                                 sclient, session_id, to_persist)
+                            persisted = result is not None
                     except Exception as e:  # noqa: BLE001
                         log.warning("could not persist RFP extraction: %s", e)
+
+                    if not persisted:
+                        # One retry: this is exactly the kind of transient
+                        # failure (a momentary network blip, a timeout under
+                        # load) a single retry fixes, and re-running the whole
+                        # 20-page vision extraction to recover from it would
+                        # be far more expensive than one more PATCH call.
+                        try:
+                            async with httpx.AsyncClient() as sclient:
+                                result = await supabase_client.patch_intake_answers(
+                                    sclient, session_id, to_persist)
+                                persisted = result is not None
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("RFP extraction persist retry failed: %s", e)
+
+                    if not persisted:
+                        return _emit_chat(
+                            f"I read {ex.source_name or 'the document'} and found "
+                            f"{len(ex.fields)} fields and {len(ex.requirements)} "
+                            "requirements, but **saving them failed** (a database "
+                            "issue, not a problem with the document). None of "
+                            "this is stored yet -- re-send **use this RFP** to "
+                            "retry, or say **interview** to answer questions "
+                            "directly instead.\n\n"
+                            + chat_state.encode_marker(chat_state.ChatState(
+                                mode=chat_state.MODE_ROUTER)),
+                            stream,
+                        )
+
                     reply = rfp_intake.describe_extraction(
                         ex, len(list(intake_template.iter_questions(None))))
                     gate_prompt = rfp_intake.describe_gates(ex.gates)
@@ -3053,11 +3100,35 @@ async def chat_completions(request: Request):
                 ptype = answers.get("proposal_type")
                 missing_now = missing_required(answers, ptype)
                 if missing_now:
-                    listed = ", ".join(f"`{m}`" for m in missing_now)
+                    # rfp_intake.IV_DECISION_FIELDS is the actual list of
+                    # fields an RFP is vendor-neutral BY DESIGN and can never
+                    # state (iam_vendor, pricing_model, differentiators...).
+                    # missing_required() instead checks the GENERIC required-
+                    # fields list, which also includes plain client facts like
+                    # industry and client_name that an RFP normally DOES state
+                    # and this extraction may simply have missed on this pass.
+                    # The message used to claim "these are IV's decisions, not
+                    # the client's" for EVERY missing field regardless of
+                    # which kind it was -- flatly wrong for industry, which
+                    # was correctly extracted as "Mining" from page 3 on a
+                    # previous run of the same SOW.
+                    iv_only = [m for m in missing_now if m in rfp_intake.IV_DECISION_FIELDS]
+                    from_source = [m for m in missing_now if m not in rfp_intake.IV_DECISION_FIELDS]
+                    parts = [f"Before the architecture proposal, I still need: "
+                            f"{', '.join(f'`{m}`' for m in missing_now)}."]
+                    if iv_only:
+                        parts.append(
+                            f"{', '.join(f'`{m}`' for m in iv_only)} "
+                            "-- these are IV's decisions, not the client's; an "
+                            "RFP is vendor-neutral by design and does not state them.")
+                    if from_source:
+                        parts.append(
+                            f"{', '.join(f'`{m}`' for m in from_source)} -- this "
+                            "would normally be stated in the RFP; either it isn't "
+                            "in this one, or extraction missed it. Worth a quick "
+                            "check against the source document before answering.")
                     return _emit_chat(
-                        f"Before the architecture proposal, I still need: {listed}. "
-                        "These are IV's decisions, not the client's -- an RFP does "
-                        "not state them.\n\n"
+                        " ".join(parts) + "\n\n"
                         + chat_state.encode_marker(state), stream)
                 plan = await load_plan(state.session, answers)
                 await save_plan(state.session, plan)
@@ -3072,18 +3143,42 @@ async def chat_completions(request: Request):
             # template (same as a mid-interview multi-area paste) and stay in
             # this mode so the user can keep correcting or say continue.
             recorded = await resolve_bucket_answers(_all_questions_bucket(None), q, None)
+            correction_saved = True
             if recorded and state.session:
                 try:
                     async with httpx.AsyncClient() as sclient:
-                        await supabase_client.patch_intake_answers(
+                        result = await supabase_client.patch_intake_answers(
                             sclient, state.session, recorded)
+                        correction_saved = result is not None
                 except Exception as e:  # noqa: BLE001
                     log.warning("RFP correction patch failed: %s", e)
+                    correction_saved = False
             if not recorded:
                 return _emit_chat(
                     "I didn't catch a value to update there. Send corrections as "
                     "`field_name: value`, or say **continue** to move on.\n\n"
                     + chat_state.encode_marker(state), stream)
+            if not correction_saved:
+                # SAME bug class as the extraction persist above, in a
+                # different branch: showing "Noted -- field: value" when the
+                # save actually failed teaches the user their correction
+                # landed when it did not, and it then resurfaces as a
+                # "missing field" at a LATER gate with no obvious cause. One
+                # retry (below) is cheap; a false "Noted" is not recoverable
+                # once the user has moved on trusting it.
+                try:
+                    async with httpx.AsyncClient() as sclient:
+                        result = await supabase_client.patch_intake_answers(
+                            sclient, state.session, recorded)
+                        correction_saved = result is not None
+                except Exception as e:  # noqa: BLE001
+                    log.warning("RFP correction patch retry failed: %s", e)
+                if not correction_saved:
+                    return _emit_chat(
+                        f"I read that as {chat_state.build_recap_line(recorded)}, "
+                        "but **saving it failed** (a database issue). Please "
+                        "send it again.\n\n"
+                        + chat_state.encode_marker(state), stream)
             return _emit_chat(
                 chat_state.build_recap_line(recorded)
                 + "\n\nSay **continue** when you're ready, or correct more fields.\n\n"
@@ -3135,13 +3230,46 @@ async def chat_completions(request: Request):
                     if recorded and gap["id"] == "vendor_scope":
                         recorded = _fold_vendor_scope_answers(answers, recorded)
 
+                    gap_saved = True
                     if recorded and state.session:
                         try:
                             async with httpx.AsyncClient() as sclient:
-                                await supabase_client.patch_intake_answers(
+                                result = await supabase_client.patch_intake_answers(
                                     sclient, state.session, recorded)
+                                gap_saved = result is not None
                         except Exception as e:  # noqa: BLE001
                             log.warning("gap-fill patch failed for %s: %s", state.session, e)
+                            gap_saved = False
+                        if not gap_saved:
+                            # SAME bug class, third location in this gate
+                            # alone: the "still missing" check below reads
+                            # from a LOCAL in-memory merge of `recorded`, not
+                            # from what is actually in the database. If the
+                            # save above silently failed, that check would
+                            # still say "not missing anymore" and let the
+                            # user proceed straight to the diagram plan --
+                            # while the value was never written. This is very
+                            # likely the actual mechanism behind industry
+                            # showing as missing again at a LATER gate after
+                            # being answered here: the "Still missing" list
+                            # cleared locally in this turn, but nothing
+                            # persisted, so the next gate that reads fresh
+                            # from the database found it empty again.
+                            try:
+                                async with httpx.AsyncClient() as sclient:
+                                    result = await supabase_client.patch_intake_answers(
+                                        sclient, state.session, recorded)
+                                    gap_saved = result is not None
+                            except Exception as e:  # noqa: BLE001
+                                log.warning("gap-fill patch retry failed for %s: %s",
+                                           state.session, e)
+                        if not gap_saved:
+                            return (
+                                f"I read that as {chat_state.build_recap_line(recorded)}, "
+                                "but **saving it failed** (a database issue, not "
+                                "something wrong with your answer). Please send "
+                                "it again.\n\n"
+                                + chat_state.encode_marker(state))
 
                     if gap["id"] == "vendor_scope":
                         # Re-derive "still missing" from the SAME function
@@ -3152,6 +3280,8 @@ async def chat_completions(request: Request):
                         # second time. One source of truth for "which vendors
                         # still need a scope answer", used both to ask the
                         # question and to check whether it was answered.
+                        # Safe to trust this local merge now that gap_saved
+                        # has confirmed the write actually landed.
                         merged = {**answers, **recorded}
                         still_gap = intake_template.vendor_scope_bucket(merged)
                         still = [q["id"] for q in still_gap["questions"]] if still_gap else []
@@ -3206,14 +3336,39 @@ async def chat_completions(request: Request):
 
                 if recorded or not chat_state.is_skip(q):
                     payload = dict(recorded) if recorded else {f"_raw_{bucket['id']}": q[:4000]}
+                    interview_saved = True
                     if state.session:
                         try:
                             async with httpx.AsyncClient() as sclient:
-                                await supabase_client.patch_intake_answers(
+                                result = await supabase_client.patch_intake_answers(
                                     sclient, state.session, payload)
+                                interview_saved = result is not None
                         except Exception as e:  # noqa: BLE001 — never wedge the chat
                             log.warning("patch_intake_answers failed for %s: %s",
                                         state.session, e)
+                            interview_saved = False
+                        if not interview_saved:
+                            # SAME bug class as the RFP-review gates: advancing
+                            # to the next question while silently dropping
+                            # THIS one's answer means it resurfaces, much
+                            # later and with no visible cause, as a "still
+                            # missing" field at drafting time. One retry
+                            # before telling the user, so a momentary blip
+                            # does not interrupt a 96-field interview.
+                            try:
+                                async with httpx.AsyncClient() as sclient:
+                                    result = await supabase_client.patch_intake_answers(
+                                        sclient, state.session, payload)
+                                    interview_saved = result is not None
+                            except Exception as e:  # noqa: BLE001
+                                log.warning("patch_intake_answers retry failed for %s: %s",
+                                           state.session, e)
+                        if not interview_saved:
+                            return (
+                                "That didn't save (a database issue, not a "
+                                "problem with your answer) -- please send it "
+                                "again.\n\n"
+                                + chat_state.encode_marker(state))
 
                 next_index = state.bucket + 1
 
@@ -3409,12 +3564,34 @@ async def chat_completions(request: Request):
                 _late = await resolve_bucket_answers(
                     _all_questions_bucket(None), q, None)
                 if _late:
-                    try:
-                        async with httpx.AsyncClient() as sclient:
-                            await supabase_client.patch_intake_answers(
-                                sclient, state.session, _late)
-                    except Exception as e:  # noqa: BLE001
-                        log.warning("late answer patch failed: %s", e)
+                    late_saved = False
+                    for _attempt in range(2):  # one retry, same as the other gates
+                        try:
+                            async with httpx.AsyncClient() as sclient:
+                                result = await supabase_client.patch_intake_answers(
+                                    sclient, state.session, _late)
+                                late_saved = result is not None
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("late answer patch failed (attempt %d): %s",
+                                       _attempt + 1, e)
+                        if late_saved:
+                            break
+                    if not late_saved:
+                        # THE gate this exact bug was found at: this is what
+                        # produces "9 field(s) that shape the draft are still
+                        # empty" and takes field:value corrections in reply.
+                        # Discarding the save result here and saying
+                        # "Captured: X" regardless meant a failed save was
+                        # indistinguishable from a successful one -- the
+                        # field would still carry a [SME REVIEW] marker in
+                        # the drafted document despite the user having been
+                        # told it was captured, with no visible reason why.
+                        return _emit_chat(
+                            f"I read that as {', '.join(sorted(_late))}, but "
+                            "**saving it failed** (a database issue, not a "
+                            "problem with your answer). Please send it "
+                            "again.\n\n"
+                            + chat_state.encode_marker(state), stream)
                     return _emit_chat(
                         f"Captured: {', '.join(sorted(_late))}.\n\n"
                         "Say **generate the proposal** when you're ready.\n\n"

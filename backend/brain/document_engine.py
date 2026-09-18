@@ -171,6 +171,27 @@ def _vendor_clause(iam_vendor: Optional[str]) -> str:
     return f" using {iam_vendor}" if iam_vendor else ""
 
 
+# Drives which language the four sizing-table subsections use. Deliberately a
+# substring match rather than an exact-value check against a fixed enum --
+# `deployment_model` is a free-text discovery answer ("SaaS (Software-as-a-
+# Service) hosted within the Kingdom of Saudi Arabia", not a dropdown value --
+# and matching loosely here is the same tradeoff already made for the
+# "needs_vision" text-layer check and the multi-vendor connector-word parser:
+# a missed SaaS mention costs one table's worth of coherence, a wrongly-
+# matched one would too, and neither is catastrophic, so the simpler check
+# wins. Explicitly checked BEFORE the substring match: a hybrid or on-prem
+# answer that happens to mention "SaaS" in passing (e.g. comparing it to an
+# on-prem alternative) must not be misread as a SaaS deployment.
+def _looks_like_saas(deployment_model: Optional[str]) -> bool:
+    text = (deployment_model or "").lower()
+    if not text:
+        return False
+    if re.search(r"\bon[- ]?prem", text) or "hybrid" in text:
+        return False
+    return "saas" in text or "software as a service" in text or "software-as-a-service" in text
+
+
+
 # Hard ceiling on any single draft call's token budget. Pass 3 depth tiers vary
 # the budget DOWN for leaner tiers but must never raise a call above this — depth
 # comes from more (fanned-out) calls, not from one runaway call.
@@ -2215,6 +2236,7 @@ async def generate_proposal(
     # Single-vendor proposals get a one-element list — everything downstream
     # that reads iam_vendors falls back to iterating once, unchanged.
     _vendors = split_vendors(iam_vendor)
+    _is_saas = _looks_like_saas((discovery_answers or {}).get("deployment_model"))
     context = {
         "client_name": client_name,
         "iam_vendor": iam_vendor or "",
@@ -2222,6 +2244,15 @@ async def generate_proposal(
         "proposal_type": proposal_type,
         "rfp_text": rfp_text or "",
         "discovery_answers": discovery_answers or {},
+        # Drives the sizing-table instructions in proposal_templates.py.
+        # Previously each of Production/DR/UAT/Development guessed its OWN
+        # relationship to the others with no shared signal: ESNAD's proposal
+        # shipped with Production correctly saying N/A (vendor-managed SaaS),
+        # DR garbling "mirrors production" against cells that had nothing to
+        # mirror, and Development inventing on-prem-style 4 vCPU / 16 GB
+        # specs for a product that is never deployed on IV/client hardware.
+        # One shared flag, one shared decision, across all four.
+        "is_saas": _is_saas,
     }
     if len(_vendors) > 1:
         log.info("multi-vendor proposal: %s", _vendors)

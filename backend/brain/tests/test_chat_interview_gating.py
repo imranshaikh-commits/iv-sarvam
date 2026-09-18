@@ -2019,7 +2019,7 @@ def test_rfp_wording_is_recognised_at_the_router(monkeypatch):
 
     monkeypatch.setattr(app.supabase_client, "create_intake_session", fake_create)
     monkeypatch.setattr(app.supabase_client, "patch_intake_answers",
-                        lambda *a, **kw: _AwaitableNone())
+                        lambda *a, **kw: _AwaitableDict())
     monkeypatch.setattr(app, "run_rfp_extraction", fake_extract)
 
     resp = client.post("/v1/chat/completions", json={
@@ -2039,6 +2039,22 @@ class _AwaitableNone:
     def __await__(self):
         async def _x():
             return None
+        return _x().__await__()
+
+
+class _AwaitableDict:
+    """Simulates a SUCCESSFUL patch_intake_answers call.
+
+    Added alongside _AwaitableNone once app.py started checking the actual
+    return value of patch_intake_answers (previously discarded outright --
+    see the persist-failure tests below). Tests that are not specifically
+    about save-failure behaviour need a mock that represents success, or
+    they now hit the new "saving failed" path by accident, which is exactly
+    what happened here before this helper existed.
+    """
+    def __await__(self):
+        async def _x():
+            return {"id": "sess", "answers": {}}
         return _x().__await__()
 
 
@@ -2071,7 +2087,7 @@ def test_a_correction_in_rfp_review_is_captured_and_stays_in_review(monkeypatch)
 
     monkeypatch.setattr(app, "resolve_bucket_answers", fake_resolve)
     monkeypatch.setattr(app.supabase_client, "patch_intake_answers",
-                        lambda *a, **kw: _AwaitableNone())
+                        lambda *a, **kw: _AwaitableDict())
 
     resp = client.post("/v1/chat/completions", json={
         "messages": [

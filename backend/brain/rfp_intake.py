@@ -516,10 +516,13 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
     """The whole pipeline: text-layer check -> rasterise if needed -> per-page
     extraction -> merge.
 
-    First value wins per field (earlier pages are more likely to state facts
-    like client name and scope; later repeats are usually restatement). Every
-    requirement and gate across all pages is kept -- under-collecting those
-    costs a mark in evaluation, unlike a duplicated field value.
+    The FULLER value wins per field, not the first: a tender states a fact
+    briefly then qualifies it two pages later ("SaaS" becomes "SaaS hosted
+    within the Kingdom of Saudi Arabia, in full compliance with the data
+    residency requirements"), and the qualification is what a proposal should
+    be written from. Every requirement and gate across all pages is kept --
+    under-collecting those costs a mark in evaluation, unlike a superseded
+    field value.
     """
     text_pages = read_text_layer(pdf_path)
     use_vision = needs_vision(text_pages)
@@ -541,7 +544,25 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
             return ex
         ex.pages_read = len(images)
 
-    seen_fields: set = set()
+    # Field id -> best ExtractedField seen so far, so a later, FULLER page can
+    # replace an earlier, thinner one for the same field. Found sitting
+    # unused in an orphaned module (rfp_vision.py, written but never wired
+    # in) during Sprint 1 correctness work: the version that shipped kept
+    # whichever page mentioned a field FIRST and discarded every later
+    # mention, including the refinements that actually matter -- ESNAD's own
+    # SOW states "SaaS" on page 5 and "SaaS hosted within the Kingdom of
+    # Saudi Arabia, in full compliance with the data residency requirements"
+    # on page 12; the live extraction kept "SaaS" and threw the qualification
+    # away on every field this happened to, not just that one.
+    #
+    # Longest-value-wins is a proxy for "fuller/more specific", not a
+    # guarantee -- a page that pads a value with boilerplate would still win
+    # over a terser but more precise later page. Good enough for prose
+    # extracted from a tender, where later mentions are almost always
+    # elaborations rather than unrelated restatements.
+    best_fields: dict[str, ExtractedField] = {}
+    _SKIP_VALUES = {"", "skip", "n/a", "na", "none", "unknown"}
+
     for i in range(ex.pages_read):
         if use_vision:
             page_ex = await extract_page_vision(images[i], field_ids, structured_fn)
@@ -559,9 +580,11 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
             canon = fid.strip().lower().replace(" ", "_").replace("-", "_")
             matched = fid if fid in field_ids else next(
                 (f for f in field_ids if f.lower() == canon), None)
-            if matched and val and matched not in seen_fields:
-                seen_fields.add(matched)
-                ex.fields.append(ExtractedField(matched, val[:2000], page_no))
+            if not matched or val.lower() in _SKIP_VALUES:
+                continue
+            current = best_fields.get(matched)
+            if current is None or len(val) > len(current.value):
+                best_fields[matched] = ExtractedField(matched, val[:2000], page_no)
         for r in (page_ex.requirements or []):
             ref, text = (r.ref or "").strip(), (r.text or "").strip()
             if ref and text:
@@ -571,6 +594,8 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
                 ex.gates.append(EligibilityGate(text=str(g)[:400], page=page_no))
         if page_ex.structure_headings and not ex.mandated_structure:
             ex.mandated_structure = [str(h)[:80] for h in page_ex.structure_headings]
+
+    ex.fields = sorted(best_fields.values(), key=lambda f: (f.page or 0, f.field_id))
 
     log.info("RFP extraction: %s, %d pages, %d fields, %d requirements, %d gates",
              source_name, ex.pages_read, len(ex.fields), len(ex.requirements),

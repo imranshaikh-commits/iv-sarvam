@@ -384,6 +384,7 @@ async def _fake_structured(model, messages, models=None, **kw):
 
 import chat_state as cs  # noqa: E402
 import rfp_intake  # noqa: E402
+import supabase_client  # noqa: E402
 
 _ESNAD_PLAN = [
     ("Solution Architecture", "architecture"),
@@ -969,7 +970,371 @@ def test_llm_add_fallback_type_is_valid():
     assert set(cs._LLM_ADD_ENGINE_TYPES) == set(diagram_engine.DIAGRAM_TYPES)
 
 
+# ---------------------------------------------------------------------------
+# 12. The "still need" message must not blame the client for a field that
+#     IS a client fact just because it happened not to get captured.
+#
+# THE live-run failure: the gate message said "industry -- these are IV's
+# decisions, not the client's -- an RFP does not state them" when industry
+# was ALREADY extracted as "Mining" from page 3 on a previous run of the
+# same SOW. industry is not in rfp_intake.IV_DECISION_FIELDS at all -- it is
+# a plain client fact -- but missing_required() checks the GENERIC required-
+# fields list (which mixes client facts with real IV decisions), and the old
+# message applied the "IV decision" framing to whatever came back regardless
+# of which kind it actually was.
+# ---------------------------------------------------------------------------
+
+def test_industry_is_not_an_iv_decision_field():
+    """The categorisation bug's root cause, confirmed directly: industry is
+    correctly ABSENT from IV_DECISION_FIELDS. The bug was never in this
+    list -- it was in code elsewhere applying the wrong framing regardless
+    of what this list actually says."""
+    assert "industry" not in rfp_intake.IV_DECISION_FIELDS
+    assert "client_name" not in rfp_intake.IV_DECISION_FIELDS
+    assert "iam_vendor" in rfp_intake.IV_DECISION_FIELDS
+
+
+def test_the_still_need_handler_distinguishes_iv_decisions_from_client_facts():
+    """CALL-SITE check — the gate message in app.py must actually branch on
+    rfp_intake.IV_DECISION_FIELDS rather than applying one hardcoded framing
+    to every missing field."""
+    import inspect
+    src = inspect.getsource(app)
+    assert "rfp_intake.IV_DECISION_FIELDS" in src, (
+        "the still-need message never checks which fields are actually IV's "
+        "to decide, so it can misapply that framing to a plain client fact "
+        "like industry")
+    assert "extraction missed it" in src, (
+        "a client fact that is genuinely missing should prompt a source check, "
+        "not a blanket 'the RFP does not state this'")
+
+
+# ---------------------------------------------------------------------------
+# 13. A failed save must be told to the user, never silently reported as a
+#     success.
+#
+# THE live-run pattern: industry was extracted correctly (shown in the
+# "Extracted 39 of 94 fields" summary), then showed as missing again at a
+# later gate; the same happened to timeline_milestones. THE root cause: four
+# separate call sites called patch_intake_answers and threw away its return
+# value, then proceeded to show the user a success message (an extraction
+# summary, a "Noted", a "Captured", or a cleared "still missing" list) built
+# entirely from LOCAL in-memory data, regardless of whether the database
+# write actually succeeded. patch_intake_answers returns None on ANY
+# failure -- a network blip, a timeout, a DB constraint -- so a failed save
+# was completely indistinguishable from a successful one until whatever
+# field it should have written showed up empty again, much later, at a gate
+# that reads fresh from the database, with no visible connection to the
+# original failure.
+# ---------------------------------------------------------------------------
+
+def test_patch_intake_answers_failure_contract():
+    """The bug's actual precondition, confirmed directly against the
+    function every fix in this section depends on: it returns None on ANY
+    failure, so 'result is not None' is the correct, and only, way to know
+    whether a save actually landed."""
+    import inspect
+    src = inspect.getsource(supabase_client.patch_intake_answers)
+    assert "return None" in src
+
+
+def test_rfp_extraction_persist_checks_the_save_result():
+    """CALL-SITE check for the FIRST of four fixed locations: the initial
+    RFP-upload persist. Before this fix, the return value was discarded and
+    the "Extracted N of 94 fields" summary was shown regardless of whether
+    the save succeeded."""
+    import inspect
+    src = inspect.getsource(app)
+    assert "persisted = result is not None" in src, (
+        "the RFP extraction persist step never checks whether the save actually succeeded")
+
+
+def test_rfp_correction_persist_checks_the_save_result():
+    """CALL-SITE check for the SECOND location: the MODE_RFP_REVIEW
+    correction handler (industry: Mining, iam_vendor: ..., etc)."""
+    import inspect
+    src = inspect.getsource(app)
+    assert "correction_saved = result is not None" in src
+
+
+def test_gap_fill_persist_checks_the_save_result():
+    """CALL-SITE check for the THIRD location: the "Before the architecture
+    proposal, I still need: X" gate -- the exact gate that showed the
+    industry bug. Before this fix, "still missing" was computed from a LOCAL
+    in-memory merge of the just-recorded answer, never checked against
+    whether the write actually landed, so the user could be told "not
+    missing anymore" and sent straight to the diagram plan while the
+    database never received the value."""
+    import inspect
+    src = inspect.getsource(app)
+    assert "gap_saved = result is not None" in src
+
+
+def test_drafting_gap_persist_checks_the_save_result():
+    """CALL-SITE check for the FOURTH location: the pre-flight drafting gate
+    -- the exact prompt live in this session right now ("9 field(s) that
+    shape the draft are still empty ... Send any of them as field_name:
+    value"). Before this fix, replying here always got "Captured: X"
+    regardless of whether the save actually worked."""
+    import inspect
+    src = inspect.getsource(app)
+    assert "late_saved = result is not None" in src
+
+
+def test_all_four_fixed_sites_retry_once_before_reporting_failure():
+    """A retry, not an immediate failure report -- a momentary network blip
+    should not interrupt a 96-field interview or force re-running a 20-page
+    vision extraction. Only after a SECOND failure should the user be told."""
+    import inspect
+    src = inspect.getsource(app)
+    assert src.count("is not None") >= 8, (
+        "expected an initial check plus a retry check at each of the four "
+        "fixed call sites (8 total); found fewer, meaning at least one site "
+        "is missing its retry")
+
+
+def test_a_failed_save_message_never_claims_success():
+    """The specific wording matters: the old bug's failure mode was
+    confidently claiming success. The fix must say plainly that saving
+    failed, not soften it into something that could still read as success."""
+    import inspect
+    src = inspect.getsource(app)
+    assert "saving it failed" in src or "saving them failed" in src
+    assert "please send it again" in src.lower() or "re-send" in src.lower()
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
 
+
+
+# ---------------------------------------------------------------------------
+# 14. split_vendors on "Vendor for Capability A and Capability B" phrasing --
+#     the ACTUAL live ESNAD input, no parentheses at all.
+#
+# THE real production failure: "Ping Identity for Access Management and
+# CIAM, Saviynt for IGA and PAM" split on every "and"/"," flat, producing
+# FOUR "vendors" (Ping Identity for Access Management, CIAM, Saviynt for
+# IGA, PAM). Headings in the shipped ESNAD proposal read "Why CIAM" and "PAM
+# Extension Modules and Add-ons" as a direct result -- CIAM and PAM are
+# capabilities, not vendors.
+# ---------------------------------------------------------------------------
+
+def test_split_vendors_the_actual_live_esnad_input():
+    got = pt.split_vendors(
+        "Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM")
+    assert got == ["Ping Identity", "Saviynt"], got
+
+
+def test_split_vendors_for_phrasing_three_vendors():
+    got = pt.split_vendors(
+        "Ping for WIAM and CIAM, Saviynt for IGA, CyberArk for PAM")
+    assert got == ["Ping", "Saviynt", "CyberArk"]
+
+
+def test_split_vendors_single_vendor_for_phrased():
+    """A single vendor with inline capabilities must still return ONE
+    vendor, not accidentally split its own capability list into fake
+    additional vendors."""
+    got = pt.split_vendors("SailPoint for IGA and PAM")
+    assert got == ["SailPoint"]
+
+
+def test_split_vendors_alternate_connector_words():
+    """EXTENSIBILITY: the connector is not a fixed vendor/capability lookup
+    -- it is a linguistic signal that works for a partner that does not
+    exist yet. "covering", "delivering", "providing" all must work the same
+    as "for"."""
+    for connector in ("covering", "delivering", "providing"):
+        got = pt.split_vendors(
+            f"Ping Identity {connector} Access Management and CIAM, "
+            f"Saviynt {connector} IGA and PAM")
+        assert got == ["Ping Identity", "Saviynt"], (connector, got)
+
+
+def test_split_vendors_parenthesized_form_still_unaffected():
+    """The pre-existing, separately-tested parenthesized path must be
+    completely untouched: no "for" in this input, so the new capability-
+    clause stripper must never fire."""
+    got = pt.split_vendors(
+        "Ping Identity (Access Management, CIAM) and Saviynt (IGA, PAM)")
+    assert got == ["Ping Identity (Access Management, CIAM)", "Saviynt (IGA, PAM)"]
+
+
+def test_split_vendors_bare_list_form_still_unaffected():
+    """No connector word present -- must fall through to the existing
+    and/comma splitter exactly as before."""
+    assert pt.split_vendors("Ping Identity and Saviynt") == ["Ping Identity", "Saviynt"]
+    assert pt.split_vendors("Ping, Saviynt, and CyberArk") == ["Ping", "Saviynt", "CyberArk"]
+
+
+def test_strip_capability_clauses_is_a_noop_without_a_connector():
+    """Direct test of the helper: text with no connector word must come
+    back completely unchanged, byte for byte."""
+    text = "Ping Identity (Access Management, CIAM) and Saviynt (IGA, PAM)"
+    assert pt._strip_capability_clauses(text) == text
+
+
+def test_vendor_scope_bucket_asks_correctly_for_the_previously_broken_input():
+    """END-TO-END regression check through the ACTUAL consumer that broke
+    live: vendor_scope_bucket must ask about "Ping Identity" and "Saviynt",
+    never about "CIAM" or "PAM" as if they were vendors."""
+    b = it.vendor_scope_bucket({
+        "iam_vendor": "Ping Identity for Access Management and CIAM, "
+                      "Saviynt for IGA and PAM"})
+    assert b is not None
+    labels = [q["label"] for q in b["questions"]]
+    assert any("Ping Identity" in l for l in labels)
+    assert any("Saviynt" in l for l in labels)
+    assert not any(l.strip().startswith("Which capability area(s) does CIAM")
+                  for l in labels), labels
+    assert not any(l.strip().startswith("Which capability area(s) does PAM")
+                  for l in labels), labels
+
+
+# ---------------------------------------------------------------------------
+# 15. Sizing table coherence: Production/DR/UAT/Development must all agree
+#     on whether this is a SaaS deployment, not each independently guess.
+#
+# THE live ESNAD failure: Production correctly wrote N/A (its own instruction
+# anticipated "no figures available"). DR's instruction only said "mirrors
+# production" with no knowledge that Production had ended up N/A, and tried
+# to force real column values anyway, producing "Vendor SaaS-managed" mixed
+# with stray commas. Development's instruction had NO N/A fallback at all and
+# invented a plausible-looking on-prem spec (4 vCPU, 16 GB, 100 GB) for a
+# product that is never deployed on IV or client hardware.
+# ---------------------------------------------------------------------------
+
+def _sizing_instruction(proposal_type, section_id, heading, is_saas):
+    tpl = pt.get_template(proposal_type)
+    section = next(s for s in tpl if s.id == section_id)
+    ctx = {"client_name": "X", "iam_vendor": "V", "iam_vendors": ["V"],
+          "proposal_type": proposal_type, "is_saas": is_saas}
+    return dict(section.render_subsections(ctx))[heading]
+
+
+def test_saas_looks_like_detection():
+    assert de._looks_like_saas(
+        "SaaS (Software-as-a-Service) hosted within the Kingdom of Saudi Arabia")
+    assert de._looks_like_saas("SaaS")
+    assert de._looks_like_saas("Software as a Service")
+    assert not de._looks_like_saas("On-premise")
+    assert not de._looks_like_saas("On premise, single data centre")
+    assert not de._looks_like_saas("")
+    assert not de._looks_like_saas(None)
+
+
+def test_hybrid_deployment_does_not_get_the_saas_treatment():
+    """A hybrid answer mentioning SaaS in passing must not be misread as a
+    pure SaaS deployment -- the on-prem numeric-table path is the more
+    correct default when some environments genuinely have provisioned
+    hardware."""
+    assert not de._looks_like_saas("Hybrid: SaaS for CIAM, on-prem for PAM")
+
+
+def test_saas_production_never_invents_a_number():
+    """THE exact live pattern: Production must say vendor-managed / N/A, not
+    silently fall back to numeric columns."""
+    instr = _sizing_instruction("implementation", "proposed_solution",
+                                "Proposed Production Hardware Sizing", is_saas=True)
+    assert "N/A" in instr
+    assert "vendor-managed" in instr.lower() or "no IV" in instr
+
+
+def test_saas_dr_explicitly_references_production_instead_of_reinventing():
+    """THE bug's exact mechanism: DR's instruction used to say "mirrors
+    production" with no idea what Production actually contained. It must now
+    explicitly reference that Production has no sized hardware, so DR cannot
+    independently decide to invent one."""
+    instr = _sizing_instruction("implementation", "proposed_solution",
+                                "Proposed DR Hardware Sizing", is_saas=True)
+    assert "Production" in instr
+    assert "N/A" in instr
+
+
+def test_saas_development_explicitly_forbids_the_exact_hallucinated_pattern():
+    """THE actual invented text from the live document ("4 vCPU, 16 GB") is
+    named explicitly as forbidden, not left to an implicit N/A instruction
+    the model can route around."""
+    instr = _sizing_instruction("implementation", "proposed_solution",
+                                "Proposed Development Hardware Sizing", is_saas=True)
+    assert "4 vCPU" in instr or "vCPU, 16" in instr, (
+        "the exact hallucinated example must be named so the model cannot "
+        "route around a generic N/A instruction")
+    assert "NEVER invent" in instr or "N/A" in instr
+
+
+def test_all_four_saas_sizing_instructions_are_internally_consistent():
+    """No table may contradict another: if is_saas is True, every one of the
+    four says N/A / vendor-managed, not three doing so and one improvising."""
+    for heading in ("Proposed Production Hardware Sizing", "Proposed DR Hardware Sizing",
+                    "Proposed UAT Hardware Sizing", "Proposed Development Hardware Sizing"):
+        instr = _sizing_instruction("implementation", "proposed_solution", heading, is_saas=True)
+        assert "N/A" in instr, f"{heading} does not consistently say N/A under is_saas"
+        assert "{%" not in instr and "%}" not in instr, f"{heading} leaked raw Jinja syntax"
+
+
+def test_on_prem_production_and_dr_are_byte_identical_to_before_the_fix():
+    """The highest-value guarantee for the non-SaaS path: this is the path
+    every prior on-prem run (Amlak, BTPN) was scored against, and it must not
+    move at all."""
+    prod = _sizing_instruction("implementation", "proposed_solution",
+                               "Proposed Production Hardware Sizing", is_saas=False)
+    assert prod == (
+        "production sizing as a markdown TABLE with EXACTLY these columns: "
+        "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
+        "Storage per node (GB), DB Storage (GB), Operating System, "
+        "Application Server, Database, Remarks. "
+        "One row per server category. Use the discovery sizing figures "
+        "exactly; write N/A where a column does not apply, never leave a "
+        "cell blank. Remarks names the node split (e.g. '2 x UI, 2 x Task') "
+        "and any RAID or clustering requirement."
+    )
+    dr = _sizing_instruction("implementation", "proposed_solution",
+                             "Proposed DR Hardware Sizing", is_saas=False)
+    assert dr == (
+        "disaster recovery sizing as a markdown TABLE with EXACTLY these "
+        "columns: #, Server Category, Quantity, CPU per node, "
+        "Memory per node (GB), Storage per node (GB), DB Storage (GB), "
+        "Operating System, Application Server, Database, Remarks. "
+        "DR mirrors production unless discovery says otherwise. Follow the "
+        "table with one short paragraph on the replication approach."
+    )
+
+
+def test_on_prem_uat_and_development_gain_an_na_fallback_not_present_before():
+    """These two DID change, deliberately: they had NO N/A-fallback guidance
+    at all even in the on-prem case, which is its own latent hallucination
+    risk independent of the SaaS bug. Confirms the addition landed and the
+    original guidance is still present alongside it."""
+    uat = _sizing_instruction("implementation", "proposed_solution",
+                              "Proposed UAT Hardware Sizing", is_saas=False)
+    assert "UAT is normally reduced from production" in uat
+    assert "write N/A rather than estimating" in uat
+
+    dev = _sizing_instruction("implementation", "proposed_solution",
+                              "Proposed Development Hardware Sizing", is_saas=False)
+    assert "Development is the smallest" in dev
+    assert "write N/A rather than estimating" in dev
+
+
+def test_migration_type_sizing_gets_the_same_coherent_treatment():
+    """The second, smaller sizing table (migration proposals' target_state
+    section) shares the identical root cause and gets the identical fix
+    pattern, not left behind as an inconsistency."""
+    prod = _sizing_instruction("migration", "target_state",
+                               "Proposed Production Hardware Sizing", is_saas=True)
+    assert "N/A" in prod and "vendor-managed" in prod.lower()
+    dr = _sizing_instruction("migration", "target_state",
+                             "Proposed DR and Non-Production Sizing", is_saas=True)
+    assert "Production" in dr and "N/A" in dr
+
+
+def test_is_saas_is_wired_into_the_real_context_builder():
+    """CALL-SITE check — the Jinja branches are useless if generate_proposal
+    never actually computes and passes is_saas into context."""
+    import inspect
+    src = inspect.getsource(de)
+    assert '"is_saas": _is_saas' in src
+    assert "_is_saas = _looks_like_saas(" in src

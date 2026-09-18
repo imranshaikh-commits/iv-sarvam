@@ -53,6 +53,53 @@ _KNOWN_AND_NAMES = (
 _VENDOR_AND_IS_PART_OF_NAME = re.compile(
     r"^(?:" + "|".join(_KNOWN_AND_NAMES) + r")$", re.I)
 
+# "Ping Identity FOR Access Management and CIAM, Saviynt FOR IGA and PAM" --
+# the actual live ESNAD answer, and the one split_vendors got wrong. No
+# parentheses, so the old code had nothing to protect the capability list
+# from being treated as more vendors: "and"/"," split the whole string flat,
+# producing FOUR "vendors" (Ping Identity for Access Management, CIAM,
+# Saviynt for IGA, PAM) -- headings like "Why CIAM" and "PAM Extension
+# Modules and Add-ons" in the shipped proposal are a direct result.
+#
+# EXTENSIBILITY: this is not a lookup against a known vendor or capability
+# list (there is no such list -- a future partner brings whatever name and
+# whatever capabilities). The connector word is the only reliable signal
+# regardless of what is on either side of it, which is what makes this work
+# for a partner that does not exist yet without any code change.
+_CAPABILITY_CONNECTOR_RE = re.compile(
+    r"\b(?:for|covering|delivering|providing|handling)\b", re.I)
+
+
+def _strip_capability_clauses(text: str) -> str:
+    """"Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM"
+    -> "Ping Identity, Saviynt" -- vendor names only, capability language
+    removed, ready for the EXISTING and/comma vendor splitter below.
+
+    Returns `text` unchanged when no connector word is present, so the
+    parenthesized form ("Ping Identity (Access Management, CIAM)") and the
+    bare list form ("Ping Identity, Saviynt") are completely untouched by
+    this function and keep their existing, separately-tested behaviour.
+
+    ALGORITHM: split on the connector word. The first chunk is the first
+    vendor's name. Each middle chunk holds [capability list for the
+    PREVIOUS vendor] followed by [the NEXT vendor's name] -- the last
+    and/comma-separated item in that chunk is taken as the next vendor name,
+    everything before it discarded as capability text. The final chunk (after
+    the last connector) is pure trailing capability text for the last
+    vendor -- its name was already captured as the last piece of the
+    chunk before it, so the final chunk contributes nothing further.
+    """
+    chunks = _CAPABILITY_CONNECTOR_RE.split(text)
+    if len(chunks) < 2:
+        return text  # no connector word: nothing to strip
+
+    vendor_names = [chunks[0].strip()]
+    for middle in chunks[1:-1]:
+        pieces = [p.strip() for p in _VENDOR_SPLIT_RE.split(middle) if p.strip()]
+        if pieces:
+            vendor_names.append(pieces[-1])
+    return ", ".join(v for v in vendor_names if v)
+
 
 def split_vendors(iam_vendor: Optional[str]) -> list[str]:
     """A single iam_vendor answer -> a list of one or more vendor names.
@@ -70,6 +117,16 @@ def split_vendors(iam_vendor: Optional[str]) -> list[str]:
     text = (iam_vendor or "").strip()
     if not text:
         return []
+    if _VENDOR_AND_IS_PART_OF_NAME.search(text):
+        return [text]
+
+    # "Vendor for Capability A and Capability B" has no parentheses, so
+    # without this step "Access Management" and "CIAM" would be split out as
+    # if they were separate vendor names -- exactly what happened live.
+    # Strips to bare vendor names ONLY when a connector word is present;
+    # otherwise `text` is returned unchanged and every line below behaves
+    # exactly as it did before this existed.
+    text = _strip_capability_clauses(text)
     if _VENDOR_AND_IS_PART_OF_NAME.search(text):
         return [text]
 
@@ -418,6 +475,19 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
             # original even where the numbers were right. These are IV's actual
             # headers, taken from the Amlak proposal.
             ("Proposed Production Hardware Sizing",
+             "{% if is_saas %}"
+             "production sizing as a markdown TABLE with EXACTLY these columns: "
+             "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
+             "Storage per node (GB), DB Storage (GB), Operating System, "
+             "Application Server, Database, Remarks. "
+             "This is a SaaS platform: there is no IV- or client-provisioned "
+             "hardware to size. Write exactly ONE row: Server Category = the "
+             "platform's production tenant name, Quantity = N/A, every CPU/"
+             "Memory/Storage/DB Storage/OS/App Server/Database column = N/A, "
+             "and Remarks states the vendor-managed SLA commitment (uptime %, "
+             "scaling model) from discovery. Do not invent CPU, memory or "
+             "storage figures for a vendor-managed tenant."
+             "{% else %}"
              "production sizing as a markdown TABLE with EXACTLY these columns: "
              "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
              "Storage per node (GB), DB Storage (GB), Operating System, "
@@ -425,26 +495,76 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "One row per server category. Use the discovery sizing figures "
              "exactly; write N/A where a column does not apply, never leave a "
              "cell blank. Remarks names the node split (e.g. '2 x UI, 2 x Task') "
-             "and any RAID or clustering requirement."),
+             "and any RAID or clustering requirement."
+             "{% endif %}"),
             ("Proposed DR Hardware Sizing",
+             "{% if is_saas %}"
+             "disaster recovery sizing as a markdown TABLE with EXACTLY these "
+             "columns: #, Server Category, Quantity, CPU per node, "
+             "Memory per node (GB), Storage per node (GB), DB Storage (GB), "
+             "Operating System, Application Server, Database, Remarks. "
+             "The Production table above is vendor-managed SaaS with no sized "
+             "hardware; DR MUST say the same thing, not invent a mirrored "
+             "on-prem DR site that does not exist. Write exactly ONE row: "
+             "Server Category = the platform's DR/failover arrangement, every "
+             "sizing column = N/A, and Remarks states the vendor's own "
+             "replication or failover model and any RTO/RPO commitment from "
+             "discovery. Follow the table with one short paragraph on that "
+             "replication approach -- prose only, no invented figures."
+             "{% else %}"
              "disaster recovery sizing as a markdown TABLE with EXACTLY these "
              "columns: #, Server Category, Quantity, CPU per node, "
              "Memory per node (GB), Storage per node (GB), DB Storage (GB), "
              "Operating System, Application Server, Database, Remarks. "
              "DR mirrors production unless discovery says otherwise. Follow the "
-             "table with one short paragraph on the replication approach."),
+             "table with one short paragraph on the replication approach."
+             "{% endif %}"),
             ("Proposed UAT Hardware Sizing",
+             "{% if is_saas %}"
+             "UAT sizing as a markdown TABLE with EXACTLY these columns: "
+             "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
+             "Storage per node (GB), DB Storage (GB), Operating System, "
+             "Application Server, Database, Remarks. "
+             "Same platform as Production: no IV- or client-provisioned "
+             "hardware. Write exactly ONE row: Server Category = the "
+             "platform's UAT/non-production tenant, every sizing column = "
+             "N/A, Remarks notes whether UAT is logically separated on the "
+             "same multi-tenant platform or a distinct vendor-managed tenant, "
+             "per discovery. Do not invent reduced-from-production figures "
+             "for hardware that is never provisioned."
+             "{% else %}"
              "UAT sizing as a markdown TABLE with EXACTLY these columns: "
              "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
              "Storage per node (GB), DB Storage (GB), Operating System, "
              "Application Server, Database, Remarks. UAT is normally reduced "
-             "from production; use the discovery figures."),
+             "from production; use the discovery figures. If no discovery "
+             "figures are available for this environment, write N/A rather "
+             "than estimating -- an invented specification is worse than an "
+             "acknowledged gap."
+             "{% endif %}"),
             ("Proposed Development Hardware Sizing",
+             "{% if is_saas %}"
+             "development sizing as a markdown TABLE with EXACTLY these "
+             "columns: #, Server Category, Quantity, CPU per node, "
+             "Memory per node (GB), Storage per node (GB), DB Storage (GB), "
+             "Operating System, Application Server, Database, Remarks. "
+             "Same platform as Production: no IV- or client-provisioned "
+             "hardware, including for Development. Write exactly ONE row: "
+             "Server Category = the platform's development/sandbox tenant, "
+             "every sizing column = N/A, Remarks notes how it is provisioned "
+             "per discovery. NEVER invent a specific CPU, memory or storage "
+             "figure (e.g. '4 vCPU, 16 GB') for a SaaS product -- IV and the "
+             "client do not provision or size this platform's infrastructure "
+             "at any tier, development included."
+             "{% else %}"
              "development sizing as a markdown TABLE with EXACTLY these columns: "
              "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
              "Storage per node (GB), DB Storage (GB), Operating System, "
              "Application Server, Database, Remarks. Development is the smallest "
-             "environment, typically a single node."),
+             "environment, typically a single node. If no discovery figures are "
+             "available for this environment, write N/A rather than estimating "
+             "-- an invented specification is worse than an acknowledged gap."
+             "{% endif %}"),
             ("Proposed HRMS Integration and Joiner Workflow",
              "the authoritative source feed and the joiner workflow it triggers, "
              "step by step through to account creation in the target systems."),
@@ -760,10 +880,33 @@ MIGRATION_SECTIONS: list[SectionSpec] = [
             ("Proposed Target Architecture",
              "the target platform architecture, zones and components."),
             ("Proposed Production Hardware Sizing",
+             "{% if is_saas %}"
              "production sizing as a markdown TABLE with columns Component, Role, "
-             "vCPU, Memory, Storage, Operating System. Use the discovery figures exactly."),
+             "vCPU, Memory, Storage, Operating System. This is a SaaS platform: "
+             "there is no IV- or client-provisioned hardware. Write ONE row "
+             "stating the platform is vendor-managed, N/A in every sizing "
+             "column, and the SLA commitment in a closing note. Do not invent "
+             "vCPU, memory or storage figures for a vendor-managed tenant."
+             "{% else %}"
+             "production sizing as a markdown TABLE with columns Component, Role, "
+             "vCPU, Memory, Storage, Operating System. Use the discovery figures "
+             "exactly; write N/A where a column does not apply rather than "
+             "estimating -- an invented specification is worse than an "
+             "acknowledged gap."
+             "{% endif %}"),
             ("Proposed DR and Non-Production Sizing",
-             "DR, UAT and development sizing as a markdown TABLE, same columns."),
+             "{% if is_saas %}"
+             "DR, UAT and development sizing as a markdown TABLE, same columns "
+             "as Production above. Production is vendor-managed SaaS with no "
+             "sized hardware; these environments must say the same thing, not "
+             "invent client-provisioned specifications that do not exist. One "
+             "row per environment, N/A in every sizing column, notes on the "
+             "vendor's own DR/failover model where discovery states one."
+             "{% else %}"
+             "DR, UAT and development sizing as a markdown TABLE, same columns. "
+             "Where no discovery figures exist for an environment, write N/A "
+             "rather than estimating."
+             "{% endif %}"),
             ("Capability Mapping - Current to Target",
              "a markdown TABLE with columns Current Capability, Target Capability, "
              "Gap, Notes. This is the section a client reads most closely: it proves "

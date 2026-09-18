@@ -198,7 +198,8 @@ def test_full_mode_adds_subsections_and_appendices():
     # removed -- the executive summary was still getting it in run 9 because a
     # section with no subsections falls back to SUBSECTION_FACETS.
     for expected in ("Proposed Production Hardware Sizing", "RACI Legend",
-                     "Tranche 1 - Foundation"):
+                     "Tranche 1 - Foundation", "Initial Project RAID Log",
+                     "Project Resources", "Scope Exclusions"):
         assert expected in text, f"missing content-specific subsection: {expected}"
     assert "Considerations & Dependencies" not in text, \
         "the generic facet triple is back"
@@ -210,9 +211,12 @@ def test_full_mode_adds_subsections_and_appendices():
     # Appendix A. The tier flag still reports True; what changed is that the
     # assembler skips a pack the body supersedes.
     # A/B/C/F are suppressed (body carries RACI, timeline, sizing, commercial).
-    # D and E have no body counterpart and must survive.
+    # E joined them in Sprint 3: "Initial Project RAID Log" now covers the
+    # same ground as the appendix's generic Risk Register placeholder, with
+    # real discovery grounding instead of boilerplate. D has no body
+    # counterpart and must survive.
     for h in APPENDIX_HEADINGS:
-        superseded = any(k in h for k in ("RACI", "Timeline", "Sizing", "Commercial"))
+        superseded = any(k in h for k in ("RACI", "Timeline", "Sizing", "Commercial", "Risk Register"))
         if superseded:
             assert h not in text, f"appendix {h!r} duplicates a body section"
         else:
@@ -220,10 +224,11 @@ def test_full_mode_adds_subsections_and_appendices():
     # The RACI legend lived in the (now suppressed) appendix pack; the body's
     # RACI table is drafted from discovery answers and carries its own header.
     assert "RACI" in text, "no RACI content anywhere in the document"
-    # Was the appendix RACI's column header. The body RACI is drafted, so
-    # assert the section exists rather than a hardcoded appendix cell.
-    assert "RACI" in text, "no RACI content anywhere in the document"
-    assert "Risk" in text
+    # The RAID log lived in the appendix's Risk Register table (now
+    # suppressed); the body's "Initial Project RAID Log" is checked above by
+    # exact heading, since this test's stub drafter returns generic canned
+    # text per subsection rather than content that would contain "Risk"
+    # incidentally.
     assert "[ASSUMPTION]" in text  # conservative placeholders, not fabricated specifics
 
 
@@ -248,7 +253,7 @@ def test_deep_mode_adds_all_facets_and_appendices():
         assert facet_title in text, f"missing subsection: {facet_title}"
 
     for h in APPENDIX_HEADINGS:
-        superseded = any(k in h for k in ("RACI", "Timeline", "Sizing", "Commercial"))
+        superseded = any(k in h for k in ("RACI", "Timeline", "Sizing", "Commercial", "Risk Register"))  # Sprint 3: "Initial Project RAID Log" now covers this in the body too
         if superseded:
             assert h not in text, f"appendix {h!r} duplicates a body section"
         else:

@@ -644,6 +644,41 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "provisioning, design, build, integration, testing, UAT, cutover and "
              "handover. Use the responsibilities supplied at discovery. At least "
              "12 rows."),
+            # Three sections IV writes and Shilpi had none of, all sitting
+            # right after RACI in IV's own document: the team that delivers,
+            # the risk register that tracks what could go wrong, and the
+            # explicit boundary of what is NOT included -- three things a
+            # reviewer checks for before signing, not decoration.
+            ("Project Resources",
+             "the delivery team as a markdown TABLE with columns Role, "
+             "Allocation (Full Time / Part Time), Responsibilities. One row "
+             "per role actually needed for THIS engagement's scale and "
+             "duration -- typically Project Manager, IAM Solution "
+             "Architect, Technical Lead, Developer(s), QA Engineer, scaled "
+             "to what discovery states about duration and application "
+             "count. Do not pad the team with roles this engagement's size "
+             "does not warrant."),
+            ("Initial Project RAID Log",
+             "a starting Risks, Assumptions, Issues and Dependencies "
+             "register as a markdown TABLE with columns Type (Risk / "
+             "Assumption / Issue / Dependency), Description, Owner, "
+             "Mitigation / Action. Draw genuine risks from what discovery "
+             "actually states -- an unconfirmed dependency, a tight "
+             "timeline, an integration with no discovered detail -- not "
+             "generic project-risk boilerplate. At least 8 rows across all "
+             "four types; this is a living document refined during "
+             "Discovery, not a final risk assessment."),
+            ("Scope Exclusions",
+             "what this engagement explicitly does NOT include, as a "
+             "bulleted list. Protects both parties from scope creep the "
+             "same way the out-of-scope answer at discovery protects the "
+             "estimate -- state it again here, in delivery terms, alongside "
+             "standard implementation exclusions discovery does not "
+             "usually think to mention: no application-side code changes, "
+             "no data cleansing beyond what is explicitly scoped, no "
+             "penetration testing, no load testing unless separately "
+             "agreed. Do not invent an exclusion the discovery answers "
+             "contradict."),
         ),
     ),
     SectionSpec(
@@ -718,9 +753,46 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "what the KT process is designed to achieve."),
             ("Knowledge Transfer Plan",
              "the KT plan as a markdown TABLE with columns Audience, Topic, Format, Timing."),
-            ("Training and Post-Production Support",
-             "administrator training, the hypercare period and the support model named "
-             "at discovery."),
+            ("Training Strategy",
+             "who is trained, on what, and why that split matches how the "
+             "client's teams will actually operate the platform day to day."),
+        ),
+    ),
+    SectionSpec(
+        id="post_production_support",
+        title="Post-Production Support",
+        purpose="What happens after go-live: onsite hypercare, then remote AMC, with real SLA commitments.",
+        query_template=f"post implementation support, annual maintenance contract, hypercare period, service level agreement, support tiers {_CTX}",
+        subsections=(
+            ("Post-Implementation Support (Onsite) and AMC (Remote)",
+             "the two-phase support model: an initial onsite hypercare period "
+             "immediately following go-live, transitioning to a remote Annual "
+             "Maintenance Contract. Use the hypercare duration and support "
+             "model named at discovery; where discovery does not state one, "
+             "propose IV's standard hypercare length and say so explicitly "
+             "rather than presenting an assumption as a stated fact."),
+            ("Scope of Operation Support",
+             "what IS and is NOT covered under AMC, as a markdown TABLE with "
+             "columns Service, In Scope, Out of Scope. Cover application-level "
+             "patching and configuration support, incident and problem "
+             "management, minor enhancements. Explicitly exclude what remains "
+             "the client's own responsibility: underlying OS/network/platform "
+             "patching, infrastructure monitoring, anything client-managed per "
+             "the discovery responsibility split."),
+            ("Coverage",
+             "support coverage tiers as a markdown TABLE with columns Tier, "
+             "Coverage Window, Channels. Name the tiers by what they actually "
+             "offer (e.g. a 24x7 tier for Severity 1, business-hours for lower "
+             "severities) rather than generic tier labels with no content "
+             "behind them; use the severity/response targets from discovery "
+             "where supplied."),
+            ("Service Level Agreement",
+             "response and resolution targets as a markdown TABLE with "
+             "columns Severity, Definition, Response Time, Resolution "
+             "Target. Use the severity definitions and targets from "
+             "discovery exactly where supplied; where discovery gives none, "
+             "propose IV's standard SLA targets and say explicitly that "
+             "these are proposed defaults, not client-confirmed figures."),
         ),
     ),
     SectionSpec(
@@ -1034,7 +1106,36 @@ MIGRATION_SECTIONS: list[SectionSpec] = [
              "client needs evidence that no identity or entitlement was lost."),
             ("RACI Matrix",
              "responsibilities as a markdown TABLE with columns Activity, "
-             "Inspirit Vision, {{ client_name }}, Vendor, using R/A/C/I values."),
+             "{{ client_name }}, Inspirit Vision"
+             "{% for v in iam_vendors %}, {{ v }}{% endfor %}, "
+             "using R/A/C/I values. "
+             "{% if iam_vendors|length > 1 %}"
+             "This is a MULTI-VENDOR engagement: mark R/A/C/I for a vendor "
+             "ONLY on activities that vendor's own platform performs; "
+             "leave other vendors' cells blank on that row rather than "
+             "marking every vendor uniformly."
+             "{% endif %}"),
+            ("Project Resources",
+             "the delivery team as a markdown TABLE with columns Role, "
+             "Allocation (Full Time / Part Time), Responsibilities. One row "
+             "per role actually needed for THIS engagement's scale and "
+             "duration. Do not pad the team with roles this engagement's "
+             "size does not warrant."),
+            ("Initial Project RAID Log",
+             "a starting Risks, Assumptions, Issues and Dependencies "
+             "register as a markdown TABLE with columns Type (Risk / "
+             "Assumption / Issue / Dependency), Description, Owner, "
+             "Mitigation / Action. Draw genuine risks from what discovery "
+             "actually states, not generic project-risk boilerplate. At "
+             "least 8 rows across all four types."),
+            ("Scope Exclusions",
+             "what this engagement explicitly does NOT include, as a "
+             "bulleted list: standard implementation exclusions discovery "
+             "does not usually think to mention (no application-side code "
+             "changes, no data cleansing beyond what is explicitly scoped, "
+             "no penetration testing) alongside anything the discovery "
+             "out-of-scope answer already named. Do not invent an "
+             "exclusion the discovery answers contradict."),
         ),
     ),
     SectionSpec(
@@ -1080,6 +1181,33 @@ MIGRATION_SECTIONS: list[SectionSpec] = [
              "the differences from what they use today."),
             ("Hypercare and Post-Cutover Support",
              "the hypercare period and support model named at discovery."),
+        ),
+    ),
+    SectionSpec(
+        id="post_production_support",
+        title="Post-Production Support",
+        purpose="What happens after cutover: onsite hypercare, then remote AMC, with real SLA commitments.",
+        query_template=f"post implementation support, annual maintenance contract, hypercare period, service level agreement, support tiers {_CTX}",
+        subsections=(
+            ("Post-Implementation Support (Onsite) and AMC (Remote)",
+             "the two-phase support model: an initial onsite hypercare period "
+             "immediately following cutover, transitioning to a remote Annual "
+             "Maintenance Contract. Use the hypercare duration and support "
+             "model named at discovery; where discovery does not state one, "
+             "propose IV's standard hypercare length and say so explicitly "
+             "rather than presenting an assumption as a stated fact."),
+            ("Scope of Operation Support",
+             "what IS and is NOT covered under AMC, as a markdown TABLE with "
+             "columns Service, In Scope, Out of Scope."),
+            ("Coverage",
+             "support coverage tiers as a markdown TABLE with columns Tier, "
+             "Coverage Window, Channels."),
+            ("Service Level Agreement",
+             "response and resolution targets as a markdown TABLE with "
+             "columns Severity, Definition, Response Time, Resolution "
+             "Target. Use discovery's severity definitions where supplied; "
+             "otherwise propose IV's standard targets and say explicitly "
+             "these are proposed defaults, not client-confirmed figures."),
         ),
     ),
     SectionSpec(

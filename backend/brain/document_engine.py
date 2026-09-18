@@ -281,9 +281,9 @@ _SECTION_DISCOVERY_FIELDS: dict[str, tuple[str, ...]] = {
         "assumptions", "dependencies", "client_responsibilities", "out_of_scope",
         "rto_rpo", "versions",
     ),
-    "knowledge_transfer": (
-        "training", "kt", "hypercare", "support_model", "post_sla",
-        "postgolive_reporting_cadence",
+    "knowledge_transfer": ("training", "kt"),
+    "post_production_support": (
+        "hypercare", "support_model", "post_sla", "postgolive_reporting_cadence",
     ),
     "commercial": (
         "license_included", "pricing_model", "payment_milestones", "taxes",
@@ -1990,6 +1990,10 @@ _APPENDIX_SUPERSEDED_BY = {
     "A": "implementation_approach",   # RACI matrix
     "B": "project_timeline",          # indicative timeline
     "C": "proposed_solution",         # sizing & volumetrics
+    "E": "implementation_approach",   # risk register -- "Initial Project RAID
+                                       # Log" (Sprint 3) covers Risk/Assumption/
+                                       # Issue/Dependency, discovery-grounded,
+                                       # not the generic boilerplate below
     "F": "commercial",                # commercial structure
 }
 
@@ -1997,8 +2001,7 @@ _APPENDIX_SUPERSEDED_BY = {
 def _superseded_appendices(body_section_ids: set) -> frozenset:
     """Appendices the body template already covers, so they must not print twice.
 
-    D (integration inventory) and E (risk register) have no body counterpart and
-    are always kept.
+    D (integration inventory) has no body counterpart and is always kept.
     """
     return frozenset(letter for letter, sec_id in _APPENDIX_SUPERSEDED_BY.items()
                      if sec_id in body_section_ids)

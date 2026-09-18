@@ -1607,3 +1607,88 @@ def test_licence_boq_single_vendor_unaffected_in_shape():
     headings = [h for h, _ in comm.render_subsections(ctx)]
     assert "SailPoint Licence Bill of Quantities" in headings
     assert headings.count("Total Bill of Quantities") == 1
+
+
+# ---------------------------------------------------------------------------
+# 20. Sprint 3 -- house sections IV writes that Shilpi had none of at all:
+#     Project Resources, RAID log, Scope Exclusions, and a genuine
+#     Post-Production Support section with AMC/SLA tiers (previously folded
+#     into one undifferentiated prose subsection of Knowledge Transfer).
+# ---------------------------------------------------------------------------
+
+def test_project_resources_raid_and_scope_exclusions_exist_both_proposal_types():
+    for ptype in ("implementation", "migration"):
+        tpl = pt.get_template(ptype)
+        impl = next(s for s in tpl if s.id == "implementation_approach")
+        headings = [h for h, _ in impl.subsections]
+        assert "Project Resources" in headings, ptype
+        assert "Initial Project RAID Log" in headings, ptype
+        assert "Scope Exclusions" in headings, ptype
+
+
+def test_migration_raci_matrix_also_gained_vendor_columns():
+    """The exact Sprint 2 RACI fix, found to have a second, previously
+    unchecked instance in the migration-type template's own RACI Matrix
+    subsection -- fixed for consistency, not left as a gap."""
+    tpl = pt.get_template("migration")
+    impl = next(s for s in tpl if s.id == "implementation_approach")
+    ctx = {"client_name": "ESNAD", "iam_vendor": "x",
+          "iam_vendors": ["Ping Identity", "Saviynt"],
+          "proposal_type": "migration", "is_saas": True}
+    raci = dict(impl.render_subsections(ctx))["RACI Matrix"]
+    assert "Ping Identity, Saviynt" in raci
+    assert "MULTI-VENDOR" in raci
+
+
+def test_post_production_support_exists_as_its_own_section_both_types():
+    """IV treats this as a full separate H1, not folded into Knowledge
+    Transfer -- matched here, not left as a KT subsection."""
+    for ptype in ("implementation", "migration"):
+        tpl = pt.get_template(ptype)
+        ids = [s.id for s in tpl]
+        assert "post_production_support" in ids, ptype
+        pps = next(s for s in tpl if s.id == "post_production_support")
+        headings = [h for h, _ in pps.subsections]
+        assert "Service Level Agreement" in headings
+        assert "Coverage" in headings
+
+
+def test_post_production_support_is_wired_to_discovery_answers():
+    """CALL-SITE check for the EXACT bug class this project keeps hitting:
+    a new section with no entry in _SECTION_DISCOVERY_FIELDS drafts with
+    zero grounding regardless of what the consultant actually supplied.
+    Caught by test_document_engine.py's own pre-existing regression guard
+    the moment this section was added -- confirmed fixed here too."""
+    assert "post_production_support" in de._SECTION_DISCOVERY_FIELDS
+    fields = de._SECTION_DISCOVERY_FIELDS["post_production_support"]
+    assert "hypercare" in fields
+    assert "support_model" in fields
+
+
+def test_knowledge_transfer_no_longer_claims_support_fields_it_no_longer_covers():
+    """The fields moved OUT of knowledge_transfer must not still be listed
+    there too -- a field claimed by two sections is a sign the split did
+    not actually happen, just got duplicated."""
+    kt_fields = de._SECTION_DISCOVERY_FIELDS["knowledge_transfer"]
+    assert "hypercare" not in kt_fields
+    assert "support_model" not in kt_fields
+
+
+def test_appendix_e_risk_register_is_now_superseded_by_the_raid_log():
+    """Direct unit test of the supersession map itself: Appendix E's generic
+    5-row boilerplate Risk Register must be skipped once the body's
+    discovery-grounded "Initial Project RAID Log" (covering Risk AND
+    Assumption AND Issue AND Dependency, not just Risk) is present --
+    shipping both duplicated content and made the richer one look
+    undercut by a boilerplate placeholder sitting right after it."""
+    assert de._APPENDIX_SUPERSEDED_BY.get("E") == "implementation_approach"
+    assert "E" in de._superseded_appendices({"implementation_approach"})
+    assert "E" not in de._superseded_appendices({"proposed_solution"})
+
+
+def test_appendix_d_integration_inventory_still_has_no_body_counterpart():
+    """D was correctly never superseded before this change and must not
+    become superseded by accident as a side effect of fixing E."""
+    assert "D" not in de._APPENDIX_SUPERSEDED_BY
+    assert "D" not in de._superseded_appendices(
+        {"implementation_approach", "project_timeline", "proposed_solution", "commercial"})

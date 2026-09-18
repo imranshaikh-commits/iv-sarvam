@@ -1052,15 +1052,20 @@ def test_every_mapped_field_exists_in_the_intake_schema():
 
 
 def test_supplied_answers_reach_the_section_that_needs_them():
-    """Spot-check the fields that were flagged [SME REVIEW] in run 9."""
+    """Spot-check the fields that were flagged [SME REVIEW] in run 9.
+
+    support_model/hypercare moved from knowledge_transfer to the new
+    post_production_support section in Sprint 3 (IV's own document treats
+    post-go-live support as its own H1, not folded into KT/training) --
+    updated here to match, not reverted."""
     answers = {"hardware_sizing_inputs": "UAT 4 app servers, 8 CPU, 32 GB, 250 GB",
                "support_model": "L1, L2 and L3 support",
                "hypercare": "post-production support period",
                "ad_exchange": "AD and Exchange integration in scope"}
     sizing = document_engine.discovery_context_for("proposed_solution", answers)
     assert "32 GB" in sizing and "Exchange" in sizing
-    kt = document_engine.discovery_context_for("knowledge_transfer", answers)
-    assert "L1, L2 and L3" in kt and "post-production" in kt
+    support = document_engine.discovery_context_for("post_production_support", answers)
+    assert "L1, L2 and L3" in support and "post-production" in support
 
 
 def test_skip_answers_are_not_presented_as_facts():

@@ -2,7 +2,7 @@
 
 **Shilpi** (शिल्पी, Sanskrit for *"artisan, craftsperson"*) is Inspirit Vision's in-house Proposal Architect — a conversational, retrieval-grounded AI that turns a new RFP into a structured, client-ready proposal in hours instead of days, by drafting from IV's curated bank of 112 past proposals rather than from a blank page.
 
-![Status](https://img.shields.io/badge/status-pilot%20ready%20%7C%20run%2018%20scored-brightgreen)
+![Status](https://img.shields.io/badge/status-pilot%20ready%20%7C%20ESNAD%20live%20run%20scored-brightgreen)
 ![Brain](https://img.shields.io/badge/brain-FastAPI%20(Python)-231154)
 ![LLM](https://img.shields.io/badge/LLM-Claude%20Sonnet%205%20%2B%20GLM%205.2%20fallback-E85A24)
 ![Retrieval](https://img.shields.io/badge/retrieval-Supabase%20pgvector-3ECF8E)
@@ -15,15 +15,29 @@
 
 ## Progress Dashboard
 
-> Quick-glance project status. Last updated: 2026-09-09 (IST).
+> Quick-glance project status. Last updated: 2026-09-21 (IST).
 
-**Overall completion: 85%**
+**Overall completion: 85%** *(pending recompute — see the 2026-09-21 entry below;
+left unchanged rather than hand-adjusted, per the rule two lines down)*
 `█████████████████░░░`
 
 Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 95,
 15). Recompute it when a row changes rather than adjusting it by feel — the
 previous figure was hand-typed, drifted to 88% while the table said 81%, and was
 removed for that reason.
+
+**2026-09-21 — first live pilot run against a real inbound RFP (ESNAD, a Saudi
+mining-services company), first direct comparison against a real IV-authored
+proposal for the same deal.** Both surfaced more than the prior scored runs had:
+a scanned, vision-extracted RFP found nine separate defects in the intake and
+diagram-plan flow (detailed in the 2026-09-21 "Recently shipped" entry below),
+and the side-by-side comparison against IV's own 169-page submission showed the
+real structural gap is per-product depth (IV writes ~90 sub-points per vendor
+product; Shilpi wrote a few lines) and imagery (66 images vs 11), not the
+things prior scored runs were optimising for. Phase 6's row below has not been
+renumbered — the work this surfaced is real progress, but assigning it a
+percentage now would be exactly the "adjusting it by feel" this section warns
+against. Needs a deliberate re-score.
 
 **Phase 6 went 60% → 95% on 2026-09-09**, after the day that took it down to 60%
 in the first place. The second client (Bank BTPN) exposed two things at once: ten
@@ -36,8 +50,8 @@ questions that gate use are below, and neither is a percentage.
 
 | | Status |
 |---|---|
-| **Can IV use this on a live deal?** | **Yes, as a first-draft tool.** Run 18 captured 96 of 96 discovery fields, produced a document with zero degenerate paragraphs, zero drafting failures and no leaked client names, and correctly judged a scoped upgrade as a small engagement. Make the repository private before a second person clones it. |
-| **Would a senior IAM architect sign the output?** | **Not as-is, and it does not claim to.** Run 18 runs 1.54x longer than what IV wrote for the same deal and carries ~20 `[SME REVIEW]` markers on figures the consultant did not supply. It is a strong first draft to edit down, not a document to send. Eighteen scored runs, still one reader. |
+| **Can IV use this on a live deal?** | **Yes, as a first-draft tool** — with the same caveat as before. Run 18 captured 96 of 96 discovery fields, produced a document with zero degenerate paragraphs, zero drafting failures and no leaked client names, and correctly judged a scoped upgrade as a small engagement. **Make the repository private before a second person clones it** — still outstanding as of this update. |
+| **Would a senior IAM architect sign the output?** | **Not as-is, and now measured against a real answer, not just a reader's opinion.** ESNAD (2026-09-21) is the first run compared directly, section by section, against the actual IV-authored proposal sent for the same deal: 169 pages / 21,703 prose words / 66 images / product detail nested to H5, against Shilpi's 9,843 words / 11 images / two heading levels. Sprints 1–4 closed the structural half of that gap (heading depth to H5, RACI/BOQ fan-out per vendor, missing house sections). The content half — per-product depth and imagery — is open and explicitly blocked on gathering real vendor material (Sprint 7, not started). Eighteen-plus scored runs; still no verdict from a reviewer other than the builder. |
 
 ### Phase completion
 
@@ -88,8 +102,11 @@ client-confidential proposal content and this repository is public. See
 ### Known gaps before pilot
 
 - **Corpus** — 112 proposals, 11,060 chunks, 50 clients, 15 vendors. Composition is now 61 implementation / 39 migration / 14 MSS, against 10/0/1 before. The Sales-SoWs bank was curated by reading document CONTENT, not filenames: 68 of 197 candidates were rejected, including a client-authored STC RFP whose doc properties name Saudi Telecom, a competitor's proposal authored by Smpl ID, 22 consultant CVs and 2 NDAs.
+- **A second corpus exists for partner product depth, currently empty.** `partner_products`/`partner_product_chunks` (added 2026-09-21) hold vendor datasheets and architecture guides, kept structurally separate from the proposal-history vault above so a vendor's marketing copy can never be cited as IV's own delivery history. Schema, retrieval and drafting-prompt wiring are live and tested; **zero rows ingested** across all nine OEM partners. Gathering real material is Sprint 7, not started.
 - **Supabase Auth / Worker / multi-tenancy** (Phase 4) — not wired (RLS + disabled sign-ups is the interim gate). `approved_by` on diagrams stays NULL until user identity exists.
-- **Port 8080 is still plain HTTP** with the whole proposal bank behind it. Open since the first session; the only outstanding item with a live security consequence.
+- **Port 8080 is still plain HTTP** with the whole proposal bank behind it. Open since the first session. Was the only outstanding item with a live security consequence — no longer the only one, see the next bullet.
+- **`visual_assets` has Row Level Security disabled outright** (found 2026-09-21, building Sprint 4) — not under-populated policies like the rest of the schema, genuinely off. The Supabase anon key can read or write any of its 939 rows. Not yet fixed: needs real access policies decided first, or enabling RLS with none just blocks all access instead of securing it.
+- **Supabase migration files are behind the live schema** (found 2026-09-21) — Sprint 4's `partner_products`/`partner_product_chunks` tables were applied directly against the live database and have no corresponding file under `supabase/migrations/`. A fresh Supabase project built from the migration files alone would not get them.
 - **Diagram detail** — swimlanes and page-fit are built and working (run 6 produced a six-lane joiner flow with real branch logic). Two gaps remain: the model ignores the `shape` field so decision points render as rectangles rather than diamonds, and hardware-spec callouts beside the boxes are not built.
 - **Durable diagram spec-template store** (per vendor + diagram type) — deferred from Pass 4.
 - **Reranking** — a 2026 controlled comparison found cross-encoder reranking the only technique that reliably beat plain dense retrieval at this corpus scale, while hybrid BM25+dense and multi-query expansion both finished BELOW it. Reranking is therefore the next retrieval change worth measuring; hybrid search is not.
@@ -107,6 +124,96 @@ client-confidential proposal content and this repository is public. See
 - **Company Profile is thin** — 493 words but generic, because the `company_profile` chunks behind it are mostly headings and fragments rather than IV's actual profile prose. A corpus problem, not a template one.
 - **Sizing evidence is lopsided** — the retrieval scorecard measures tabular evidence per probe: `sizing_prod` scores 1.00, `sizing_dr` scores 0.12. The corpus is rich in production sizing tables and nearly bare of DR-specific ones, which is why run 7 lost its DR, UAT and Development sizing tables. No amount of retrieval tuning fixes a gap in the source material.
 - **The benchmark must stay out of the corpus** — both Amlak proposals were ingested during bulk ingestion and have been deleted. Run 7 was drafted with its own answer available, so its Similar Experience quality is genuine but its overall score is inflated. Always run the leakage check before a scored run.
+
+### Recently shipped — first live inbound RFP, first direct IV comparison (2026-09-21)
+
+ESNAD (Saudi Mining Services Company) was the first run driven end to end by a
+real inbound tender rather than a recreation exercise, and the first with a
+real IV-authored proposal for the same deal to score against directly instead
+of a reader's judgement.
+
+**Nine separate bugs, found only because a real RFP was run through the whole
+pipeline, not a component in isolation.** A 20-page scanned SOW with no text
+layer forced every extraction path to run for real: (1) four call sites
+discarded the result of a Supabase write and told the consultant "saved"
+regardless — a field answered correctly at intake could silently vanish and
+resurface as "missing" at a later gate with no visible connection to the
+original failure; (2) the vendor-split parser only understood a parenthesised
+capability list — `"Ping Identity for Access Management and CIAM, Saviynt for
+IGA and PAM"` (no parentheses, exactly how a consultant actually typed it)
+split on every comma and "and", producing four fake vendors and headings like
+"Why CIAM"; (3) the diagram-plan editor's "add X diagram" vocabulary was a
+fixed keyword dictionary — measured directly, 23 of 30 reasonable domain
+phrasings failed identically, not isolated gaps, which is why it was replaced
+with an LLM fallback rather than patched entry by entry; (4) the eligibility
+gate's own prompt told the user to say "all met" and the handler receiving the
+reply never listened for that exact phrase; (5) the compliance matrix never
+saw the 56 requirements already extracted from the RFP, so it re-derived them
+from `rfp_text` — which is empty for a scanned document with no text layer —
+and shipped a proposal with zero requirement citations; (6) a free-text
+correction reply with no field label got positionally mapped onto
+`client_name`/`industry`/`country` because those are declared first in the
+schema, corrupting the output filename to the vendor's name instead of the
+client's. Every one of these was found by running the real thing, not by a
+unit test — the tests were added afterward, each with a negative control
+proving it actually catches the bug it targets.
+
+**Direct comparison against the real IV-authored ESNAD submission — the first
+time Shilpi's output has been checked against an actual answer for the same
+deal, not a benchmark or a reader's opinion.** IV: 169 pages, 21,703 prose
+words, 66 images, heading depth to H5 with ~90 sub-points per vendor product.
+Shilpi (pre-fix): 9,843 words, 11 images, two heading levels, one generic IAM
+skeleton with vendor names substituted in rather than four workstreams
+IV's document is organised by product. Shilpi's one real advantage: 20 of
+IV's own numbered requirements cited against zero in IV's submission — IV
+does not do line-by-line requirement mapping either.
+
+**Sprints 1–4, built directly off that comparison:**
+- **Sprint 1 — correctness.** The vendor-split parser now reads a connector
+  word ("for"/"covering"/"delivering") to separate a vendor name from its
+  capability list, extensible to any future partner with no hardcoded
+  vocabulary. Sizing tables (Production/DR/UAT/Development) now share one
+  `is_saas` decision instead of four independent guesses — the prior version
+  had Production correctly say N/A while Development invented "4 vCPU, 16 GB"
+  for a product that is never deployed on IV or client hardware. A second,
+  unrelated extraction bug was found sitting fully built and tested but never
+  wired in (`rfp_vision.py`) — a later, fuller statement now correctly
+  overrides an earlier, thinner one for the same field.
+- **Sprint 2 — workstream depth.** A rendering cap silently flattened a
+  model's own markdown headers to H3 regardless of depth; raised to H5 and
+  paired with an instruction that actually asks the per-vendor Solution
+  Overview subsection to structure itself by capability area, since checking
+  first found *zero* subsections asked for internal structure at all — the
+  cap alone would have changed nothing. RACI and the licence BOQ now generate
+  one column/table per vendor instead of a hardcoded pair.
+- **Sprint 3 — missing house sections.** Project Resources, an Initial
+  Project RAID Log, and explicit Scope Exclusions, added where IV's own
+  document places them (immediately after RACI). Post-Production Support
+  split out of a folded paragraph inside Knowledge Transfer into its own
+  section with real AMC/SLA tiers, matching IV's structure.
+- **Sprint 4 — partner product corpus infrastructure.** A second corpus,
+  structurally separate from the proposal-history vault, for vendor product
+  documentation (datasheets, architecture guides) across all nine of IV's
+  OEM partners — Ping Identity, Okta, Oracle, IBM Verify, SailPoint,
+  CyberArk, Semperis, Saviynt, Microsoft Entra ID. Schema, retrieval, and
+  drafting-prompt wiring are live; **zero rows are ingested** — gathering
+  real material is Sprint 7, not started. Every part of this is a verified
+  no-op today: a vendor-specific section drafts exactly as it did before
+  this sprint until real content exists to retrieve.
+
+**A related gap found while building Sprint 4, not yet fixed:**
+`public.visual_assets` (939 rows of proposal imagery) has Row Level Security
+disabled outright — not under-populated policies like the rest of the schema,
+genuinely off, meaning the Supabase anon key can read or write every row.
+Flagged, not fixed — fixing it requires deciding real access policies first,
+or `ENABLE ROW LEVEL SECURITY` alone just blocks all access instead of
+securing it.
+
+**Also found: the Supabase migration files are behind the live schema.**
+Sprint 4's table changes were applied directly against the live database and
+were never written back as a `.sql` file under `supabase/migrations/` — a
+fresh Supabase project built from the migration files alone would not get
+those two tables. `sarvam_015_partner_product_corpus.sql` needs writing.
 
 ### Recently shipped — the day the second client changed the design (2026-09-09)
 
@@ -401,7 +508,7 @@ breakage:
 Honest about what is not done, so no one mistakes the current state for production-ready:
 
 - **Auth and multi-tenancy:** Supabase Auth and the Worker JWT gate are not wired. The brain is protected by network isolation (internal-only) and Open WebUI's disabled sign-ups, not by per-user identity. User identity is not yet propagated end-to-end, so generated drafts are not yet attributed to individual users (`approved_by` on diagrams is NULL). Production auth hardening is a pending milestone, not abandoned.
-- **Nobody but the builder has read a Shilpi draft.** Seven scored runs, one reader, one opinion. Every quality judgement in this document rests on that. Getting a senior IAM architect to read one and mark what they would rewrite is now the highest-leverage open item — it is also the ground truth any future LLM reviewer would need to be scored against.
+- **Nobody but the builder has read a Shilpi draft.** Eighteen-plus scored runs, one reader, one opinion — the "seven" this line used to say was stale against the eighteen-plus reported elsewhere in this document; corrected here. 2026-09-21's direct comparison against IV's actual ESNAD submission is the first time output has been checked against a real answer rather than a reader's judgement, and it is more damning than any prior scored run: IV's proposal runs 169 pages and 66 images to Shilpi's pre-fix 40 pages and 11. Getting a senior IAM architect to read a draft against "would you sign this" is still the highest-leverage open item — it is also the ground truth any future LLM reviewer would need to be scored against.
 - **Proposal length:** `full` depth measures 42pp after the NoneType fix + 3500-token cap (both deployed); the opt-in `deep` tier (6 subsection facets) is merged but not yet re-measured. 100+pp remains a target, pending a decision on whether length is the right proxy for "boss-ready".
 - **Durable diagram spec-template store:** reusable DiagramSpec templates keyed by vendor and diagram type are deferred from Pass 4 (the engine regenerates from scratch for now).
 - **External research and fact-checking:** Exa/Firecrawl external research and the secondary-LLM fact-checker are deferred to post-pilot.
@@ -789,19 +896,27 @@ The blueprint's intent (conversation-first, retrieval-grounded, human-in-loop, s
 iv-sarvam/
 ├── README.md                         # this file
 ├── backend/brain/                    # the Shilpi brain (FastAPI)
-│   ├── app.py                        # endpoints, model routing, fallback
-│   ├── document_engine.py            # section drafting + DOCX assembly
+│   ├── app.py                        # endpoints, model routing, fallback,
+│   │                                 #   RFP extraction orchestration, product-corpus retrieval
+│   ├── document_engine.py            # section drafting + DOCX assembly + appendix supersession
 │   ├── proposal_templates.py         # section templates (implementation / migration / mss)
-│   │                                 #   + SECTION_TOPICS: section -> corpus topic for retrieval
+│   │                                 #   + SECTION_TOPICS, split_vendors (vendor/capability parsing)
 │   ├── document_qa.py                # deterministic QA gate (degeneration, citations, em-dashes)
 │   ├── diagram_engine.py             # DiagramSpec -> D2 (swimlanes, shapes) -> PNG
-│   ├── chat_state.py                 # conversation state machine (router/interview/architecture/drafting modes)
+│   ├── chat_state.py                 # conversation state machine (router/interview/RFP review/
+│   │                                 #   diagram plan/drafting modes); diagram-plan edit parser
 │   ├── intake_template.py            # 22-area discovery interview schema
+│   ├── rfp_intake.py                 # client RFP/SOW upload: text-layer check, vision extraction,
+│   │                                 #   requirement + eligibility-gate extraction
+│   ├── scope_filter.py               # drops sections discovery answers rule out; pre-flight gap report
+│   ├── asset_selection.py            # picks reusable images per section, vendor-aware
+│   ├── export_engine.py              # DOCX -> PDF via headless LibreOffice
 │   ├── supabase_client.py            # thin PostgREST helpers (fail-soft)
 │   ├── branding.py                   # DOCX branding (logo, theme, header/footer)
 │   ├── assets/                       # optimized IV logo PNGs
-│   ├── tests/                        # keyless smoke tests (intake + document engine)
-│   ├── Dockerfile
+│   ├── tests/                        # ~580 tests across 13 files; run manually, not in CI
+│   ├── Dockerfile                    # explicit COPY allowlist — a new module MUST be
+│   │                                 #   added here or the container crash-loops on import
 │   └── requirements.txt
 ├── deploy/                           # EC2 deployment
 │   ├── docker-compose.yml            # open-webui + sarvam-brain
@@ -818,12 +933,18 @@ iv-sarvam/
 │   ├── sarvam_010_topic_aware_retrieval.sql
 │   ├── sarvam_011_topic_scoped_fallback.sql   # reaches topics too small to surface
 │   ├── sarvam_012_lower_topic_reserve.sql
-│   └── sarvam_013_visual_assets.sql           # image library + approval gate
+│   ├── sarvam_013_visual_assets.sql           # image library + approval gate
+│   ├── sarvam_014_generated_proposals_migration_type.sql
+│   └── (sarvam_015_partner_product_corpus.sql — NOT YET WRITTEN; the
+│        partner_products/partner_product_chunks tables and the
+│        match_partner_product_chunks RPC are live in Supabase but have no
+│        corresponding file here as of 2026-09-21. See Known gaps)
 ├── scripts/                          # ingestion, curation and measurement
 │   ├── corpus_manifest.py            # curate the Drive bank into tiers (CSV for human review)
 │   ├── ingest_v2.py                  # manifest-driven ingestion, content-hash dedup
 │   ├── classify_sections.py          # backfill section_topic (rules, no model)
 │   ├── extract_visual_assets.py      # recover image bytes into visual_assets
+│   ├── review_assets.py              # human approval flow for reusable images
 │   └── eval_retrieval.py             # 20-probe retrieval scorecard
 ├── docs/                             # project, persona, sprint docs
 ├── data/                             # raw (gitignored) + tagging templates

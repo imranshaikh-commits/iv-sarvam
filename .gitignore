@@ -69,6 +69,8 @@ sarvam.env
 
 # ingestion run artefacts
 scripts/out/
+scripts/out_partner/
+scripts/out_partner_images/
 
 # retrieval scorecards (contain client names)
 retrieval_*.json

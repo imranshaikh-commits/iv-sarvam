@@ -25,6 +25,16 @@ Full detail and reasoning: `SESSION_LOG_ESNAD_PILOT_AND_MIGRATION.md`.
 | 3 | Project Resources, an Initial Project RAID Log, and explicit Scope Exclusions added where IV's own document places them; Post-Production Support split into its own section with real AMC/SLA tiers; two "built but never wired" gaps caught by pre-existing tests |
 | 4 | Partner product corpus infrastructure — schema, retrieval, and drafting-prompt wiring live in Supabase for all nine OEM partners. **Zero content ingested.** This sprint was infrastructure only; the original "product depth catalogue" plan's content half is Sprint 7 below |
 
+## Completed, 2026-09-22
+
+| Item | What it closed |
+|---|---|
+| `sarvam_015_partner_product_corpus.sql` | Written and committed — the live Sprint 4 schema is now in the repo's migration history, not just the database |
+| `docs/PHASES.md` accuracy check | Rewritten against the actual repo/DB state — the July version predated the ESNAD pilot and Sprints 1–4 entirely |
+| **Sprint 7 — partner product content** | 18 documents across all 9 OEM partners, public material only (2 dropped for sitting behind a lead-gen form, confirmed by fetching each for real; 1 swapped after a live 403). Ingested: **18 products, 276 chunks, 9 vendors, 0 null embeddings, 18/18 reviewed=true** — verified against the live database, not just the ingest log. Retrieval spot-checked working (`match_partner_product_chunks` returns a sane similarity gradient on real content). |
+
+`public.visual_assets` RLS is still open — unchanged, still needs a decision from Imran before any fix.
+
 ---
 
 ## Pending — recommended order
@@ -50,41 +60,26 @@ Full detail and reasoning: `SESSION_LOG_ESNAD_PILOT_AND_MIGRATION.md`.
    policies just blocks all access instead of securing it. Ask before
    implementing, don't guess a policy.
 
-### Sprint 7 — partner product content gathering (not blocked on anything, can start any time)
-
-The actual prerequisite for Sprints 5 and 6 below, and the single
-highest-leverage remaining piece of the gap the ESNAD comparison
-measured. The infrastructure is done; this is pure content work.
-
-- All nine OEM partners: Ping Identity, Okta, Oracle, IBM Verify,
-  SailPoint, CyberArk, Semperis, Saviynt, Microsoft Entra ID.
-- **Public material only** — datasheets, architecture whitepapers,
-  solution briefs from open marketing pages. Never a partner portal or
-  anything gated; that's IV's own controlled access under different
-  terms, not public material.
-- Tag each document into a manifest (vendor, product, capability, doc
-  type, year, source URL) and have a human review it before anything is
-  ingested — the exact discipline already used for the proposal vault
-  (`scripts/corpus_manifest.py`), not a lighter-touch process just
-  because this corpus is new.
-- Version/date matters as much as it does for the proposal vault: a 2023
-  architecture guide should not silently outrank a 2026 one.
-
-### Sprint 5 — product depth completion (blocked on Sprint 7)
+### Sprint 5 — product depth completion (unblocked — Sprint 7 landed 2026-09-22)
 
 The drafting half of the original "product depth catalogue" plan,
-deferred at the time because there was nothing to draft from. Once
-Sprint 7 has real content for at least one or two partners:
+deferred at the time because there was nothing to draft from. Real
+content now exists for all 9 partners (276 chunks). Not yet done:
 
 - Confirm the per-vendor Solution Overview instruction (already asking
   for structured capability-area headers since Sprint 2) actually
-  retrieves and cites the new partner-product corpus — the wiring is
-  live but has never run against real content.
+  retrieves and cites the new partner-product corpus in a real drafted
+  proposal — the wiring is live and retrieval is spot-checked working,
+  but no proposal has been drafted against it yet.
 - Re-measure heading depth and sub-point count against IV's own
   benchmark from the ESNAD comparison (~90 sub-points per vendor
   product, nested to H5).
+- 4 of the 18 chunks skew large (PingOne Advanced Services alone is 155
+  chunks of a 47,830-word technical reference) — worth checking this
+  doesn't crowd out the other 8 vendors in retrieval the way the
+  proposal corpus needed a per-source cap for the same reason.
 
-### Sprint 6 — visual density (blocked on Sprint 7)
+### Sprint 6 — visual density (unblocked — Sprint 7 landed 2026-09-22)
 
 - Ingest vendor architecture diagrams and product screenshots once
   Sprint 7 has gathered them.

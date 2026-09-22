@@ -74,10 +74,11 @@ content now exists for all 9 partners (276 chunks). Not yet done:
 - Re-measure heading depth and sub-point count against IV's own
   benchmark from the ESNAD comparison (~90 sub-points per vendor
   product, nested to H5).
-- 4 of the 18 chunks skew large (PingOne Advanced Services alone is 155
-  chunks of a 47,830-word technical reference) — worth checking this
-  doesn't crowd out the other 8 vendors in retrieval the way the
-  proposal corpus needed a per-source cap for the same reason.
+- ~~PingOne Advanced Services skewing retrieval (155 of 276 chunks, 56%)~~
+  — fixed 2026-09-22, `sarvam_016`: per-product cap (max 3) mirroring
+  `sarvam_007`'s proposal-corpus fix. Verified live: an unfiltered query
+  seeded from that document's own content now returns max 3 chunks per
+  product. No backend/brain change, no host rebuild.
 
 ### Sprint 6 — visual density (unblocked — Sprint 7 landed 2026-09-22)
 

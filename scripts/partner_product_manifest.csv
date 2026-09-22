@@ -1,0 +1,19 @@
+vendor,product_name,capability,doc_type,source_url,published_year,notes
+Ping Identity,PingOne for Customers,CIAM,solution_brief,https://www.pingidentity.com/en/platform/pingone-for-customers.html,,Open marketing page
+Ping Identity,PingOne for Customers,CIAM,solution_brief,https://www.pingidentity.com/en-us/docs/assets/4169-ciam-solution-guide-financial-service,,CIAM Solution Guide for Financial Services
+Ping Identity,PingFederate,Access Management,architecture_guide,https://docs.pingidentity.com/pingfederate/13.0/introduction_to_pingfederate/pf_intro_to_pf.html,2023,Page revision 2023-07-05 under v13.1 canonical; re-check before reuse
+Ping Identity,PingOne Advanced Services,Access Management,datasheet,https://cdn-docs.pingidentity.com/archive/pdf/pingoneadvancedservices/pingone_advanced_services.pdf,2026,"Dated August 2026; confirmed via fetch, 47830 words, real admin/technical reference content"
+Okta,Workforce Identity Cloud,WIAM,architecture_guide,https://www.okta.com/sites/default/files/2020-10/Okta's-Architecture-eBook.pdf,,No year in filename; check inside PDF
+Okta,Workforce Identity Cloud,WIAM,other,https://www.okta.com/sites/default/files/2023-04/Workforce-Identity-Cloud-Security-Privacy.pdf,2023,Security/privacy and multitenant architecture detail
+Oracle,Oracle Access Governance,IGA,architecture_guide,https://docs.oracle.com/en-us/iaas/Content/cloud-adoption-framework/security-access-gov.htm,,Original marketing-CDN datasheet 403 blocked (bot protection); substituted this docs.oracle.com page for the same current OCI-native Access Governance product
+IBM,IBM Security Verify,CIAM,datasheet,https://www.ibm.com/downloads/cas/POBY5B69,,Consumer IAM (CIAM) datasheet highlights
+SailPoint,Identity Security Cloud,IGA,datasheet,https://www.sailpoint.com/identity-library/identity-security-cloud-compliance-management,,Compliance Management datasheet
+SailPoint,Identity Security Cloud,IGA,solution_brief,https://www.sailpoint.com/identity-library/identity-security-cloud-modern-enterprise,,Beyond IGA positioning piece
+CyberArk,Privileged Access Manager,PAM,architecture_guide,https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/privileged-account-security-solution-architecture.htm,,"URL uses latest, no fixed version; re-check before reuse in a future proposal"
+CyberArk,Privilege Cloud,PAM,datasheet,https://www.cyberark.com/resources/product-datasheets/cyberark-privilege-cloud-security-datasheet,,SaaS PAM offering
+Semperis,Directory Services Protector,Identity Threat Protection,datasheet,https://www.semperis.com/resources/data-sheets/uncover-active-directory-vulnerabilities/,,"Purple Knight - AD/Entra ID/Okta vulnerability assessment, directly relevant capability"
+Semperis,Directory Services Protector,Identity Threat Protection,analyst_report,https://d27a6xpc502mz5.cloudfront.net/wp-content/uploads/resources-pdfs/reports/resources-ds-protector-kuppingercole-report.pdf,,"Third-party KuppingerCole analyst report, not vendor-authored"
+Saviynt,Enterprise Identity Cloud (EIC),IGA,architecture_guide,https://saviynt.com/hubfs/Solution%20Briefs/Saviynt%20EIC%20Architecture.pdf?hsLang=en,,"Direct PDF, cluster-based multi-tenant architecture"
+Saviynt,Enterprise Identity Cloud (EIC),PAM,solution_brief,https://saviynt.com/solution-guides/saviynt-iga-and-pam/,,"IGA+PAM convergence, matches ESNAD's own Saviynt scope split"
+Microsoft,Entra External ID,CIAM,architecture_guide,https://learn.microsoft.com/en-us/entra/architecture/deployment-external-intro,,"Official Learn deployment guide, continuously updated, no fixed year"
+Microsoft,Entra External ID,CIAM,architecture_guide,https://learn.microsoft.com/en-us/entra/external-id/customers/concept-planning-your-solution,,"CIAM planning guide, same drift caveat"

@@ -71,6 +71,16 @@ _BUCKETS: list[dict] = [
             _q("identity_types", "Identity types", "multiselect",
                options=["workforce", "customer", "CIAM", "mixed"]),
             _q("target_integrations", "Target integrations / connectors", "textarea"),
+            _q("population_by_domain", "Population broken down by domain", "textarea",
+               note=("A single blended user count hides the real shape of the "
+                     "engagement. ESNAD's own SOW gave one number (\"20,000 "
+                     "identities\"); IV's real proposal for the same deal broke "
+                     "it down as WIAM 5,000 / CIAM 10,000 / privileged accounts "
+                     "50 / applications 6, from direct client conversations. "
+                     "Enter one domain per line, e.g. \"WIAM: 5000\", \"CIAM: "
+                     "10000\", \"PAM privileged accounts: 50\", \"Applications "
+                     "in scope: 6\". Domain names are free text — not limited "
+                     "to WIAM/CIAM/IGA/PAM.")),
         ],
     },
     {
@@ -180,6 +190,11 @@ _BUCKETS: list[dict] = [
         "questions": [
             _q("case_studies_to_highlight", "Case studies to highlight", "textarea"),
             _q("partner_positioning", "Partner / vendor positioning", "textarea"),
+            _q("partner_tier_certifications", "Partner tier and certifications", "textarea",
+               note=("What feeds a genuinely detailed Company Profile rather "
+                     "than generic IAM prose. One line per vendor, e.g. \"Ping "
+                     "Identity: Platinum Partner, 8 certified consultants\", "
+                     "\"Saviynt: Gold Partner, 5 certified consultants\".")),
         ],
     },
     {

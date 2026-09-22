@@ -1068,6 +1068,37 @@ def test_supplied_answers_reach_the_section_that_needs_them():
     assert "L1, L2 and L3" in support and "post-production" in support
 
 
+def test_per_domain_population_reaches_sizing_and_scope_sections():
+    """Sprint 8. ESNAD's SOW gave one blended '20,000 identities' figure; IV's
+    real proposal for the same deal broke it down per domain (5,000 WIAM /
+    10,000 CIAM / 50 PAM / 6 apps) from direct client conversations the
+    system had no field to capture. A new discovery field alone changes
+    nothing -- it has to actually reach the sections that draft sizing and
+    scope, or it is exactly the built-but-never-wired class this project
+    keeps re-discovering."""
+    answers = {"population_by_domain":
+               "WIAM: 5000\nCIAM: 10000\nPAM privileged accounts: 50\n"
+               "Applications: 6"}
+    for section_id in ("executive_summary", "scope_understanding",
+                       "solution_overview", "proposed_solution",
+                       "current_state", "migration_strategy"):
+        ctx = document_engine.discovery_context_for(section_id, answers)
+        assert "10000" in ctx and "WIAM" in ctx, (
+            f"{section_id} did not receive population_by_domain")
+
+
+def test_partner_tier_reaches_company_profile_and_similar_experience():
+    """Sprint 8. Company Profile was thin and generic -- flagged as a corpus
+    problem in earlier runs, but partly an intake-schema gap: there was no
+    field for partner tier or certified consultant counts at all."""
+    answers = {"partner_tier_certifications":
+               "Ping Identity: Platinum Partner, 8 certified consultants"}
+    for section_id in ("company_profile", "similar_experience"):
+        ctx = document_engine.discovery_context_for(section_id, answers)
+        assert "Platinum" in ctx, (
+            f"{section_id} did not receive partner_tier_certifications")
+
+
 def test_skip_answers_are_not_presented_as_facts():
     answers = {"user_count": "skip", "app_count": "25 applications"}
     out = document_engine.discovery_context_for("executive_summary", answers)

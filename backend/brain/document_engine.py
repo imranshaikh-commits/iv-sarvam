@@ -245,21 +245,25 @@ _SECTION_DISCOVERY_FIELDS: dict[str, tuple[str, ...]] = {
     # --- implementation template ---
     "executive_summary": (
         "business_objectives", "pain_points", "differentiators", "decision_criteria",
-        "duration", "app_count", "user_count", "audience",
+        "duration", "app_count", "user_count", "audience", "population_by_domain",
     ),
-    "company_profile": ("partner_positioning", "vendor_partner_positioning"),
+    "company_profile": (
+        "partner_positioning", "vendor_partner_positioning",
+        "partner_tier_certifications",
+    ),
     "similar_experience": (
         "case_studies_to_highlight", "case_studies_include", "case_studies_exclude",
-        "similar_projects", "partner_positioning",
+        "similar_projects", "partner_positioning", "partner_tier_certifications",
     ),
     "scope_understanding": (
         "business_objectives", "in_scope", "out_of_scope", "current_state",
         "existing_iam_platform", "pain_points", "app_count", "user_count",
-        "identity_types", "apps_to_onboard",
+        "identity_types", "apps_to_onboard", "population_by_domain",
     ),
     "solution_overview": (
         "sod", "access_review_cadence", "target_integrations", "audit",
         "monitoring", "identity_types", "differentiators", "regulations",
+        "population_by_domain",
     ),
     "proposed_solution": (
         "deployment_model", "hardware_sizing_inputs", "cluster_topology",
@@ -267,7 +271,7 @@ _SECTION_DISCOVERY_FIELDS: dict[str, tuple[str, ...]] = {
         "regions", "network_zones", "envs", "availability", "scalability",
         "performance", "target_integrations", "integration_hrms", "ad_exchange",
         "idp_sso", "apps_to_onboard", "app_count", "user_count", "directories",
-        "current_hrms", "current_idp", "source_of_truth",
+        "current_hrms", "current_idp", "source_of_truth", "population_by_domain",
     ),
     "implementation_approach": (
         "delivery_phases", "delivery_milestones", "governance", "raci",
@@ -296,6 +300,7 @@ _SECTION_DISCOVERY_FIELDS: dict[str, tuple[str, ...]] = {
         "current_state", "existing_iam_platform", "versions", "directories",
         "current_hrms", "current_idp", "source_of_truth", "pain_points",
         "is_migration", "tenants", "apps_to_onboard", "app_count",
+        "population_by_domain",
     ),
     "target_state": (
         "deployment_model", "hardware_sizing_inputs", "cluster_topology",
@@ -305,6 +310,7 @@ _SECTION_DISCOVERY_FIELDS: dict[str, tuple[str, ...]] = {
     "migration_strategy": (
         "is_migration", "existing_iam_platform", "apps_to_onboard", "app_count",
         "identity_types", "out_of_scope", "delivery_phases", "data_residency",
+        "population_by_domain",
     ),
     "rollback_risk": (
         "ha_dr_requirements", "rto_rpo", "availability", "dependencies",

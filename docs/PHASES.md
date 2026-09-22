@@ -1,190 +1,157 @@
 # Shilpi — Forward Phase Plan
 
-> Written 2026-07-29, after the first end-to-end validated run (discovery →
-> diagram plan → per-diagram approval → drafting → DOCX/PDF with embedded
-> diagrams). Supersedes the ad-hoc backlog for sequencing purposes;
-> `docs/BACKLOG.md` remains the list of small deferred chores.
+> **Rewritten 2026-09-22.** The version this file carried since 2026-07-29
+> predated the entire ESNAD live pilot, the RFP-intake build, multi-vendor
+> support, the corpus expansion (11 → 112 proposals), and Sprints 1-4. Most
+> of it described future work that is now done. This rewrite reflects what
+> `git log` and the live Supabase project actually show, not what was
+> planned in July.
+>
+> This file stays the long-horizon layer above `docs/09_NEAR_TERM_SPRINTS.md`.
+> For what to actually do next, read `09` — it is more current and more
+> detailed. This file is for phases 7 onward, which `09` doesn't cover.
 
 ## Principle behind this ordering
 
-The project is feature-rich and evidence-poor. Every remaining quality decision —
-model choice, proposal length, whether diagram polish matters, how much corpus is
-enough — is currently argued from intuition because **no Shilpi output has ever
-been scored against a known-good human proposal**. So validation comes before
-hardening, and hardening before scale.
-
-The one thing not deferred is anything that would make validation itself
-untrustworthy (see Phase 6.0 leakage check).
+The project was feature-rich and evidence-poor in July. It is no longer
+evidence-poor: a live pilot against a real inbound RFP (ESNAD) surfaced nine
+real bugs, and a direct comparison against a real IV-authored proposal for
+the same deal replaced opinion with measurement. Four sprints of work came
+directly out of that comparison. See
+`docs/SESSION_LOG_ESNAD_PILOT_AND_MIGRATION.md` for the full narrative.
 
 ---
 
-## Phase 6 — Validation (immediate)
+## Phase 6 — Validation — substantially done
 
-Goal: replace opinion with measurement. Nothing here needs new architecture.
+The original plan here was a single-proposal recreation test plus a 5-10 RFP
+scored pilot. What actually happened was broader and more direct: a live
+pilot against one real inbound RFP (ESNAD), carried all the way through
+intake → diagram plan → drafting → a finished document, with nine real bugs
+found and fixed along the way, each with a negative control proving the fix
+does something. That run then produced a direct comparison against a real
+IV-authored proposal for the same deal — the first time in this project's
+history that Shilpi's output was checked against a real answer rather than a
+benchmark score.
 
-### 6.0 — Recreation test (single proposal, ground truth)
-
-Pick ONE historical proposal, extract its inputs, feed them through the 22-area
-discovery interview, and compare Shilpi's output against the human original.
-
-**Leakage check first — this decides whether the test means anything.**
-11 proposals are already ingested. If the chosen proposal is one of them, Shilpi
-will retrieve its own source text and reproduce it, and the result will look
-excellent while proving nothing. Confirm the candidate is NOT in the corpus:
-
-```sql
-select client_name, iam_vendor, proposal_type, year
-from proposals order by client_name;
-```
-
-Pick a proposal that does **not** appear in that list. If the preferred candidate
-is in it, either choose another or re-run the test with that proposal's chunks
-excluded from retrieval.
-
-**Protocol**
-1. Choose a non-ingested proposal with a clear vendor + client + scope.
-2. Extract the 22 areas of discovery input from it (client, vendor, scale, scope,
-   architecture, integrations, compliance, timeline, commercials …). Record these
-   verbatim as the test fixture so the run is repeatable.
-3. Run a fresh Shilpi chat end to end using only those inputs.
-4. Score the output against the human original using the sheet below.
-5. Keep the fixture, the generated DOCX and the score in `docs/evals/`.
-
-**Scoring sheet** (1–5 each, with a one-line justification — the justification
-matters more than the number):
-
-| Dimension | Question |
+| Sub-item | Status |
 |---|---|
-| Structural completeness | Does it contain the sections the human proposal has? What is missing entirely? |
-| Technical accuracy | Are the vendor product names, roles and integration patterns correct? Any invented capability? |
-| Specificity | Does it name the actual systems and counts, or does it retreat into generic IAM prose? |
-| Grounding | Are citations present and do they support the claim? Are `[SME REVIEW]` markers where evidence genuinely ran out? |
-| Diagram fidelity | Do the diagrams reflect the stated architecture (zones, regions, clusters, protocols)? |
-| Rework estimate | What fraction would Ashish have to rewrite to send this? (This is the headline number.) |
-| Length | Pages vs the human original — recorded, NOT optimised for. |
+| 6.0 Recreation test | Done, in a stronger form — a live RFP pilot with a real IV comparison, not a synthetic recreation |
+| 6.1 Corpus expansion | Done — 112 proposals ingested via `scripts/corpus_manifest.py`, curated by content not filename |
+| 6.2 Scored pilot (5-10 RFPs) | Partial — one real RFP scored in depth (ESNAD); Ashish/Rajnish review has not happened — still the single highest-leverage open item |
+| 6.3 Evaluation harness | Done — `scripts/eval_retrieval.py`, 20 probes, measures diversity/type-match/topic-match/fragment-share/tabular-share |
+| 6.4 Cost + usage telemetry | Not done — cost per proposal has not been measured since the model swap to Sonnet 5 and the subsection count changes since |
 
-**Exit criterion:** a written verdict on whether the gap to "sendable" is length,
-grounding, structure, or tone. Every later phase depends on that answer.
-
-### 6.1 — Corpus expansion
-
-Bulk-ingest the IV proposal bank. Bounds every quality metric downstream.
-
-- Download the vendor + client folders from the `Sales-SoWs` Drive bank.
-- Run `scripts/corpus_manifest.py` over a local mirror; review the CSV by hand.
-- Ingest only `tier == ingest` rows, **in vendor batches**, re-running a known
-  query after each batch to confirm retrieval improved rather than got noisier.
-- Do NOT ingest `RFP/` (client-authored), decks, questionnaires, product
-  comparisons or effort estimates — see the manifest script's rationale.
-- Add `year` / `outcome` filtering or recency weighting before the corpus grows:
-  the bank goes back to 2023 and stale architectures will otherwise be cited as
-  current.
-
-### 6.2 — Scored pilot (5–10 RFPs)
-
-- Use the `RFP/` folder as the test set — these are real client RFPs and are the
-  reason not to ingest them as IV content.
-- Run each end to end; score with the 6.0 sheet.
-- Involve Ashish for technical review and Rajnish for the "would you send this"
-  judgement. **Nobody but Imran has used Shilpi to date; that is the real gap.**
-
-### 6.3 — Evaluation harness
-
-Turn 6.0/6.2 from an exercise into a repeatable suite.
-
-- Store fixtures (discovery answers) + expected-content notes per case.
-- A script that runs a fixture, generates, and reports the measurable parts
-  (page count, citation density, `[SME REVIEW]` count, section coverage,
-  diagram node/edge counts).
-- Makes model and prompt changes measurable instead of guesswork — the absence of
-  this is why several fixes this session broke their neighbours.
-
-### 6.4 — Cost + usage telemetry
-
-Log tokens and cost per proposal, per model, per call type. Estimated cost is
-~$0.45/proposal on GLM-5.2 (144K in / 56K out), but this has never been measured.
-Makes the model question self-answering.
+**What's still open from this phase:** get Ashish's verdict on a real draft
+("would you sign this" — see `docs/06_PRODUCT_DECISIONS.md`), and measure
+actual cost per proposal.
 
 ---
 
-## Phase 7 — Hardening & access (post-pilot)
+## Phase 7 — Hardening & access (post-pilot) — not started
 
-Goal: make it safe for people other than Imran to use.
+Goal: make it safe for people other than the builder to use.
 
 ### 7.1 — Network exposure and TLS
 
-`deploy/docker-compose.yml` binds Open WebUI as `8080:8080` — all interfaces,
-plain HTTP, public EC2 IP. Client proposals and IV's proposal bank are therefore
-served unencrypted over the internet.
+`deploy/docker-compose.yml` still binds Open WebUI as `8080:8080` — all
+interfaces, plain HTTP, public EC2 IP. IV's proposal bank and any client
+document viewed through the UI are served unencrypted over the internet.
+Unchanged since July.
 
-- Restrict the security group to known IPs. *(This is a console change measured in
-  minutes and does not need to wait for this phase — do it whenever convenient.)*
+- Restrict the security group to known IPs — minutes of console work, does
+  not need to wait for this phase.
 - Terminate TLS with Caddy or nginx in front of OWUI; obtain a certificate.
 - Keep the brain localhost-only (already correct).
 
-### 7.2 — Phase 4 auth / multi-tenancy
+### 7.2 — Auth / multi-tenancy
 
 - Supabase Auth wired through OWUI so there is a real user identity.
-- Populate `approved_by` on diagrams — today the approval gate records *that*
-  something was approved but not *who* approved it.
-- Multi-tenancy under existing RLS.
+- Populate `approved_by` on diagrams — today the approval gate records
+  *that* something was approved but not *who*.
+- `org_members` has zero rows today. RLS is schema-present but not actually
+  load-bearing — every policy is gated on `is_org_member(org_id)`, which is
+  vacuously false for everyone, so the system only works because the brain
+  connects with the service-role key and bypasses RLS entirely. This is
+  architecturally single-tenant right now, not multi-tenant. Worth knowing
+  before treating the RLS policies as protecting anything yet.
 
 ### 7.3 — Backup and recovery
 
 - Scheduled `pg_dump` of Supabase to S3.
-- Chunks are re-derivable from the bank; intake sessions, approved diagrams and
-  generated proposals are not.
+- Chunks are re-derivable from the bank; intake sessions, approved diagrams
+  and generated proposals are not.
 - The free-tier project has already idle-paused once.
 
 ### 7.4 — CI
 
 - Run the test suite on push (GitHub Actions).
-- ~175 tests currently execute only when run by hand.
+- Several hundred tests currently execute only when run by hand.
 
 ---
 
 ## Phase 8 — Quality and scale (evidence-led)
 
-Everything here should be justified by pilot findings, not assumed.
+Everything here should be justified by pilot findings, not assumed. Several
+items below moved from "future" to "done" since July; a few new ones were
+added by the ESNAD pilot that the July version had no way to anticipate.
 
-- **Hybrid search** — BM25 + reciprocal rank fusion alongside vector similarity.
-  Do this if the pilot shows retrieval missing obvious matches.
-- **Model selection A/B** — with 6.3 in place, compare drafting chains on real
-  fixtures. Cost is not the binding constraint (~$0.04–$2.13 per proposal across
-  the entire candidate range); quality decides.
-- **Proposal length** — the 100+ page target is currently an unvalidated proxy
-  for "impressive". Full depth measures 42pp; the `deep` tier (6 subsection
-  facets) is merged but never re-measured. Resolve with pilot evidence: if
-  reviewers do not ask for more length, close the item.
-- **Diagram visual parity** — auto-layout cannot reproduce IV's hand-composed
-  decks. If the pilot says diagram polish blocks client use, choose between
-  editable export (D2 supports PPTX) or a designer-built SVG template library for
-  the ~4 recurring diagram types. Otherwise leave it.
-- **Durable diagram spec-template store** (per vendor + diagram type) — deferred
-  from Pass 4.
-- **Visual asset reuse (screenshots, not architecture diagrams)** — human proposals
-  are roughly half visual (40 images in the Amlak proposal alone); Shilpi currently
-  produces generated diagrams only. Three kinds, different treatment:
-  - IV corporate assets (client-logo walls, delivery methodology, maturity journey
-    graphics) — best candidate: stable, IV-owned, does not date. Start here.
-  - Vendor product UI (IdentityIQ dashboards, PingID app, etc.) — reusable but
-    needs a `captured_date`/freshness check; a stale console screenshot in a new
-    proposal looks careless.
-  - Client-specific architecture — NOT reusable across clients; already correctly
-    handled by the diagram engine.
-  Storage: no separate database — one new `visual_assets` table + one storage
-  bucket in the existing Supabase project, same pattern already used for
-  diagrams (`architecture_diagrams` table + `upload_diagram_render`). Placement
-  can be derived from the corpus itself: extracting
-  `(section_heading, image, caption)` triples during ingestion gives a
-  placement model for free, without designing one from scratch.
-  **Hard requirement: a human approval gate before any stock image is embedded
-  in a client document — the same discipline as the diagram approval flow.**
-  An unreviewed image landing in a proposal is a worse failure than no image.
+- **Hybrid search** — rejected, not deferred. Measured against the research
+  rather than assumed: at this corpus scale, hybrid BM25+dense and
+  multi-query expansion both underperformed plain dense retrieval in the
+  literature this decision was checked against. Not revisiting without new
+  evidence.
+- **Cross-encoder / listwise reranking** — built, **not yet measured**. A
+  listwise LLM reranker exists and is off by default
+  (`SHILPI_RERANK_ENABLED`) until the eval harness scorecard justifies
+  turning it on. Run `scripts/eval_retrieval.py --compare` with it enabled
+  before flipping the flag.
+- **Model selection** — done. Sonnet 5 primary, GLM 5.2 fallback, chosen on
+  measured evidence (GLM produced degenerate/repetitive paragraphs under
+  length pressure; Sonnet did not). Cost was never the binding constraint
+  across the full candidate range.
+- **Proposal length** — closed as a target, confirmed correct by later
+  evidence. The ESNAD comparison showed IV's own proposals vary hugely by
+  engagement size (2,642 words for a scoped upgrade vs 21,700+ for a
+  greenfield multi-vendor build) — a fixed length target was always the
+  wrong instrument. Scope-aware section/subsection filtering now sizes the
+  document to the engagement instead.
+- **Diagram visual parity** — partially done. Swimlanes, decision-node
+  shapes, and measured aspect-ratio re-layout have shipped. Auto-layout
+  still cannot reproduce a fully hand-composed deck; unresolved whether
+  that gap matters without a wider pilot.
+- **Visual asset reuse** — done, with an open security gap. `visual_assets`
+  table (939 rows), a private Storage bucket, three-way image
+  classification, and a mandatory human-approval gate are all live.
+  **`visual_assets` currently has Row Level Security disabled** — the anon
+  key can read or write any row. Needs a real access-policy decision before
+  fixing (`ALTER TABLE ... ENABLE ROW LEVEL SECURITY` alone would just
+  block all access). See `docs/09_NEAR_TERM_SPRINTS.md`.
+- **Partner product corpus** — new since July, not anticipated by the
+  original phase plan. Schema is live
+  (`partner_products` / `partner_product_chunks` /
+  `match_partner_product_chunks`), structurally separate from the
+  proposal-history vault so a vendor datasheet can never be mistaken for
+  IV's own delivery history. **Zero rows ingested.** Gathering real content
+  across all nine OEM partners is the next real piece of work — see Sprint
+  7 in `docs/09_NEAR_TERM_SPRINTS.md`.
+- **Multi-vendor engagements** — done. An engagement can name multiple
+  products for different scope areas (e.g. Ping Identity for Access
+  Management/CIAM, Saviynt for IGA/PAM); headings, retrieval, drafting
+  attribution, diagram labelling and asset selection all fan out correctly
+  per vendor.
+- **RFP/SOW intake** — done. A user can upload a scanned RFP instead of
+  running the 22-area interview; the system extracts fields, a requirement
+  register, and eligibility gates from it (including from a raster PDF with
+  no text layer, via a page-by-page vision pass), then asks only for what
+  it couldn't read plus the decisions that are IV's to make, not the
+  client's.
+- **Durable diagram spec-template store** (per vendor + diagram type) —
+  still deferred, unchanged from July.
 
 ---
 
-## Phase 9 — Production
+## Phase 9 — Production — not started
 
 - Rollout beyond the pilot group.
 - Monitoring and alerting on the brain and the database.
@@ -196,9 +163,14 @@ Everything here should be justified by pilot findings, not assumed.
 
 ## Open items not yet placed
 
-Tracked so they are not lost, but not yet worth a phase:
-
-- Prompt/guidance versioning — changing diagram guidance silently changes all
-  future output with no record of what produced a given proposal.
-- Deploy friction — deploys are manual file copies by one person; CI (7.4) helps,
-  but the bus factor remains.
+- Prompt/guidance versioning — changing diagram or drafting guidance
+  silently changes all future output with no record of what produced a
+  given proposal. This will matter the first time a past proposal needs
+  explaining.
+- Deploy friction — deploys are manual file copies by one person; CI (7.4)
+  helps, but the bus factor remains.
+- `03_CURRENT_STATE.md` and this file both describe "current state" with no
+  stated precedence between them and the README's own Progress Dashboard.
+  Same question for `06_PRODUCT_DECISIONS.md`'s Economics section vs the
+  README's `## Costs` section. Worth resolving which is canonical before it
+  causes drift again.

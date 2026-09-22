@@ -2558,12 +2558,15 @@ async def generate_proposal_endpoint(request: Request):
                            "download": download_asset},
                 # Engagement scale is a reading task, not a keyword match.
                 scale_fn=judge_engagement_scale,
-                # Partner PRODUCT corpus (Sprint 4 infrastructure): fires only
-                # for sections whose query_template names {{ iam_vendor }},
-                # and is a genuine no-op today -- the corpus has zero rows
-                # until real vendor material is curated and ingested. Wired
-                # here so that once ingestion happens, sections start using it
-                # with no further code change.
+                # Partner PRODUCT corpus (Sprint 4 infrastructure, Sprint 7
+                # content): fires only for sections whose query_template names
+                # {{ iam_vendor }}. Sprint 7 (2026-09-22) ingested 276 chunks
+                # across 9 OEM partners with a per-product diversity cap
+                # (sarvam_016). No proposal has been drafted against it yet --
+                # this call site is confirmed wired (see
+                # test_generate_proposal_call_site_wires_the_product_functions_through)
+                # but citing real product content in a real document is still
+                # unverified until the next full generation run.
                 retrieve_product_fn=retrieve_product_chunks,
                 build_product_evidence_fn=build_product_evidence_block,
             )

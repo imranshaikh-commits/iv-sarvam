@@ -9,8 +9,8 @@
 # Shilpi — Near-Term Sprints
 
 `docs/PHASES.md` (in the repo) is the operational plan this file sits
-above — **its own accuracy has not been checked as part of this
-rewrite**; verify it before trusting it as current either.
+above — rewritten and verified against the actual repo/DB state on
+2026-09-22, safe to trust as current.
 
 ---
 
@@ -80,15 +80,48 @@ content now exists for all 9 partners (276 chunks). Not yet done:
   seeded from that document's own content now returns max 3 chunks per
   product. No backend/brain change, no host rebuild.
 
-### Sprint 6 — visual density (unblocked — Sprint 7 landed 2026-09-22)
+### Sprint 6 — visual density
 
-- Ingest vendor architecture diagrams and product screenshots once
-  Sprint 7 has gathered them.
-- Per-workstream diagram sets rather than one global set per proposal.
-- Placement rules so product imagery lands in the section it actually
-  illustrates.
-- Target: close some real fraction of the 66-vs-11 image gap the ESNAD
-  comparison measured directly.
+**Cheap pass done, 2026-09-22.** New `partner_product_assets` table
+(`sarvam_017`), mirroring `visual_assets` but FK'd to `partner_products`
+— never blended with IV's own proposal imagery, same separation as
+`partner_product_chunks` vs `proposal_chunks`. `scripts/extract_partner_product_images.py`
+pulled embedded images from the 6 PDF sources in the Sprint 7 manifest,
+classified by heuristics only (size, aspect, Tesseract OCR — no
+vision-model calls, no new API cost). Verified live, three ways: **83
+DB rows = 83 storage objects = 83 in the run log.** 32 corporate, 31
+unknown, 20 product (host has Tesseract; my own dry-run sandbox didn't,
+which is why an earlier check here showed 0 product-classified — worth
+remembering that heuristic classification quality depends on OCR being
+present). All `approved = false` — nothing usable in a document yet.
+
+Real finding from building this: naive pypdf extraction returned 8,772
+raw embedded image objects across the 6 PDFs. One document alone
+(PingOne Advanced Services) was 8,280 of them — a logo repeated 2,760
+times, page-header/footer graphics repeated 184 times (once per page).
+In-run content-hash dedup, added before decode/OCR, is what got this to
+83 real images. Also fixed en route: PDF detection was a URL-suffix
+check that silently missed 2 of 6 real PDFs (an extensionless IBM
+download URL, a Saviynt URL with a trailing query string) — now decided
+by content-type after fetching.
+
+Not yet done:
+
+- **Vision-description enrichment.** The 31 `unknown` images have no
+  `vision_description` — a deliberate cost decision (see the migration
+  comment), not an oversight. Worth a paid pass if the reviewer decides
+  it's worth it once the 20 `product` and 32 `corporate` images have
+  been looked at.
+- **Placement in drafted proposals.** No section-to-image selection
+  logic exists yet for this corpus (the equivalent of `asset_selection.py`
+  for `visual_assets`). Images are stored and approvable, not yet usable
+  in a generated document.
+- **HTML-sourced images.** 12 of 18 manifest rows are HTML pages;
+  their images were never extracted (lower-value pass, deliberately
+  deferred — see the script's own docstring).
+- Target, unchanged: close some real fraction of the 66-vs-11 image gap
+  the ESNAD comparison measured directly. Still not measurable until
+  placement exists and a proposal is actually drafted with images on.
 
 ### Sprint 8 — intake enrichment (not blocked on anything, can start any time)
 

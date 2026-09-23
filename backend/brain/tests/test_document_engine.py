@@ -739,6 +739,7 @@ def test_prose_subsections_get_a_tighter_token_budget_than_tables():
             subsections=(
                 ("Sizing", "production sizing as a markdown TABLE with columns X, Y"),
                 ("Narrative", "a description of the approach in prose"),
+                ("Overview", "the platform. STRUCTURE THIS AS NESTED MARKDOWN"),
             ),
         )
 
@@ -754,18 +755,35 @@ def test_prose_subsections_get_a_tighter_token_budget_than_tables():
              "proposal_type": "implementation", "rfp_text": ""},
             embed_fn=stub_embed, retrieve_fn=stub_retrieve,
             build_grounded_system_fn=lambda chunks: "EVIDENCE",
-            top_k=1, subsections=2, max_tokens=2500,
+            top_k=1, subsections=3, max_tokens=2500,
         ))
     finally:
         document_engine.draft_with_openrouter = original
 
-    assert len(seen) >= 2, f"expected two drafting calls, saw {seen}"
-    table_budget, prose_budget = seen[0], seen[1]
+    assert len(seen) >= 3, f"expected three drafting calls, saw {seen}"
+    table_budget, prose_budget, structured_budget = seen[0], seen[1], seen[2]
     assert table_budget == 2500, f"table subsection lost its budget: {table_budget}"
     assert prose_budget <= document_engine.PROSE_SUBSECTION_TOKENS, (
         f"prose subsection got {prose_budget}, expected "
         f"<= {document_engine.PROSE_SUBSECTION_TOKENS}")
     assert prose_budget < table_budget
+    # ESNAD rerun: 7 Ping capability headings shared ~180 words under the
+    # prose cap. A nested-markdown subsection must get the full budget.
+    assert structured_budget == 2500, (
+        f"nested-markdown subsection capped at {structured_budget}")
+
+
+def test_vendor_solution_overview_carries_the_structure_marker():
+    """The budget exemption keys on 'NESTED MARKDOWN' in the instruction text.
+    If the template wording drifts, the overview silently falls back to 220
+    words -- this pins the two together."""
+    import proposal_templates
+    spec = next(s for s in proposal_templates.get_template("implementation")
+                if s.id == "solution_overview")
+    facets = [f for h, f in spec.render_subsections(
+        {"iam_vendor": "Ping Identity", "iam_vendors": ["Ping Identity"],
+         "client_name": "X"}) if "Solution Overview" in h]
+    assert facets and document_engine._WANTS_STRUCTURE_RE.search(facets[0])
 
 
 def test_proposal_type_is_passed_to_retrieval():

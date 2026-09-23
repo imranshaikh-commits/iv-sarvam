@@ -90,7 +90,10 @@ IV_ORG_ID = os.environ.get("IV_ORG_ID", "5ec29afe-13ff-4657-a4cd-9a078226cdc2")
 
 # Compliance-matrix (Sprint 4 Phase 2)
 COMPLIANCE_CONCURRENCY = int(os.getenv("COMPLIANCE_CONCURRENCY", "3"))
-MAX_REQUIREMENTS = int(os.getenv("MAX_REQUIREMENTS", "20"))
+# 20 silently capped ESNAD's 56-item register at 36%. A tender is scored
+# line by line, so the default must cover a normal RFP; cost is one
+# semaphore-bounded classify call per requirement.
+MAX_REQUIREMENTS = int(os.getenv("MAX_REQUIREMENTS", "60"))
 COMPLIANCE_TRIGGER = "compliance matrix"
 # Structured extraction/classification uses the same hardcoded primary model.
 STRUCTURED_MODEL = PRIMARY_LLM_MODEL

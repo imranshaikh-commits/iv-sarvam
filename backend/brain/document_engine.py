@@ -877,6 +877,11 @@ PROSE_SUBSECTION_WORDS = int(os.environ.get("SHILPI_PROSE_SUBSECTION_WORDS", "22
 # paragraphs, so the model wrote one 180-word block instead of four short ones.
 PROSE_PARAGRAPH_WORDS = int(os.environ.get("SHILPI_PROSE_PARAGRAPH_WORDS", "60"))
 _WANTS_TABLE_RE = re.compile(r"\bmarkdown\s+TABLE\b|\bas a (?:markdown )?TABLE\b", re.I)
+# A subsection that asks for nested capability headers can't be written in 220
+# words: the ESNAD rerun spread 7 Ping capability headings across ~180 words
+# while IV's own Ping section ran ~5,000. Gets the table budget, keeps the
+# paragraph discipline.
+_WANTS_STRUCTURE_RE = re.compile(r"\bNESTED MARKDOWN\b")
 
 
 async def draft_section(
@@ -1023,10 +1028,16 @@ async def draft_section(
         parts: list[str] = []
         for sub_title, facet in facets:
             wants_table = _WANTS_TABLE_RE.search(facet) is not None
-            budget = max_tokens if wants_table else min(max_tokens, PROSE_SUBSECTION_TOKENS)
+            wants_structure = _WANTS_STRUCTURE_RE.search(facet) is not None
+            budget = (max_tokens if wants_table or wants_structure
+                      else min(max_tokens, PROSE_SUBSECTION_TOKENS))
             length_rule = (
                 "Output the table and one short lead-in line, nothing else."
                 if wants_table else
+                f"Give each capability area enough grounded detail to stand on "
+                f"its own. Keep every paragraph under {PROSE_PARAGRAPH_WORDS} "
+                f"words. If you run out of grounded material, stop - do not pad."
+                if wants_structure else
                 f"Write NO MORE than {PROSE_SUBSECTION_WORDS} words in total, and "
                 f"keep every paragraph under {PROSE_PARAGRAPH_WORDS} words - break "
                 f"longer thoughts into separate short paragraphs. IV's proposals have "

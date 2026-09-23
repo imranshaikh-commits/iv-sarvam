@@ -16,6 +16,7 @@ import asyncio
 import io
 import os
 import sys
+import re
 import tempfile
 
 # Make the brain package importable when run as a bare script from any cwd.
@@ -418,7 +419,7 @@ def test_appendices_use_captured_values_not_tbc():
     from docx import Document as _Doc
     md = {"client_name": "C", "proposal_type": "implementation", "generated_at": "now",
           "discovery_answers": {"app_count": "25 applications",
-                                "environments": "production, DR, UAT, development",
+                                "envs": "production, DR, UAT, development",
                                 "user_count": "skip"}}
     b = document_engine.assemble_docx(
         md, [{"title": "S", "content": "x", "id": "executive_summary"}],
@@ -1761,3 +1762,76 @@ def test_every_embedded_image_is_centred():
     aligns = [p.alignment for p in doc.paragraphs if "graphicData" in p._p.xml]
     assert aligns, "no images embedded"
     assert all(a == WD_ALIGN_PARAGRAPH.CENTER for a in aligns), aligns
+
+
+class _SeqClient:
+    """Fake httpx client returning queued (content, finish_reason) replies."""
+    def __init__(self, replies):
+        self.replies, self.budgets = list(replies), []
+
+    async def post(self, url, headers=None, json=None, timeout=None):
+        self.budgets.append(json["max_tokens"])
+        content, reason = self.replies.pop(0)
+        body = {"choices": [{"message": {"content": content}, "finish_reason": reason}]}
+        return httpx.Response(200, json=body, request=httpx.Request("POST", url))
+
+
+def test_a_draft_cut_off_at_max_tokens_is_retried_with_double_budget():
+    """ESNAD 09-23: six subsections ended mid-word because finish_reason was
+    never read. A 'length' stop must trigger one bigger retry."""
+    c = _SeqClient([("is available but N", "length"), ("Complete answer.", "stop")])
+    out = asyncio.run(document_engine._post_draft(c, {"model": "m", "max_tokens": 900}))
+    assert out == "Complete answer." and c.budgets == [900, 1800]
+
+
+def test_a_draft_still_cut_off_after_retry_is_trimmed_cleanly():
+    table = "Lead in.\n| A | B |\n|---|---|\n| 1 | done |\n| 2 | have not"
+    c = _SeqClient([(table, "length"), (table, "length")])
+    out = asyncio.run(document_engine._post_draft(c, {"model": "m", "max_tokens": 900}))
+    assert out.endswith("| 1 | done |"), out
+    assert document_engine._trim_incomplete_tail(
+        "Full sentence. Another one is avail") == "Full sentence."
+
+
+def test_an_echoed_subsection_title_is_dropped():
+    strip = document_engine._strip_echoed_title
+    assert strip("Who Had Access\nSaviynt keeps history.", "Who Had Access") \
+        == "Saviynt keeps history."
+    assert strip("ESNAD Resource Commitments\n- ESNAD provides VPN.",
+                 "Saudi Mining Services Company (ESNAD) Resource Commitments") \
+        == "- ESNAD provides VPN."
+    # A real opening sentence, or a table, is content, not an echo.
+    keep = "Access is reviewed quarterly.\nMore."
+    assert strip(keep, "Access Certification") == keep
+    assert strip("| Access | Certification |\n|---|---|", "Access Certification").startswith("|")
+
+
+def test_echo_stripping_is_wired_into_the_subsection_loop():
+    import inspect
+    src = inspect.getsource(document_engine.draft_section)
+    assert "_strip_echoed_title(sub_content, sub_title)" in src
+
+
+def test_environments_and_saas_reach_every_section_prompt():
+    """ESNAD: four different environment lists across sections, and PingAM/
+    PingDS 'installed' for a SaaS tenant. One shared clause, every section."""
+    ctx = {"is_saas": True, "discovery_answers": {"envs": "Dev, Test, and Prod"}}
+    clause = document_engine._engagement_facts_clause(ctx)
+    assert "exactly Dev, Test, and Prod" in clause and "vendor-hosted SaaS" in clause
+    assert document_engine._engagement_facts_clause({}) == ""
+    import inspect
+    assert "_engagement_facts_clause(context)" in inspect.getsource(
+        document_engine.draft_section)
+
+
+def test_appendix_reads_real_intake_ids():
+    import inspect, intake_template
+    ids = {q["id"] for q in intake_template.iter_questions(None)}
+    src = inspect.getsource(document_engine)
+    for k in re.findall(r'_row\("[^"]+",\s*((?:"[a-z_]+",?\s*)+)\)', src):
+        for key in re.findall(r'"([a-z_]+)"', k):
+            assert key in ids, f"appendix reads unknown intake field {key!r}"
+    rows = document_engine._integration_rows(
+        "Nafath (Citizen authentication, SSO); GIS (Esri Geoportal, Maps) (SSO, RBAC)")
+    assert rows[0][:2] == ["Nafath", "Citizen authentication, SSO"]
+    assert rows[1][:2] == ["GIS (Esri Geoportal, Maps)", "SSO, RBAC"]

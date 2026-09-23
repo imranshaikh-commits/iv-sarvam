@@ -1233,46 +1233,36 @@ def test_hybrid_deployment_does_not_get_the_saas_treatment():
     assert not de._looks_like_saas("Hybrid: SaaS for CIAM, on-prem for PAM")
 
 
-def test_saas_production_never_invents_a_number():
-    """THE exact live pattern: Production must say vendor-managed / N/A, not
-    silently fall back to numeric columns."""
-    instr = _sizing_instruction("implementation", "proposed_solution",
-                                "Proposed Production Hardware Sizing", is_saas=True)
-    assert "N/A" in instr
-    assert "vendor-managed" in instr.lower() or "no IV" in instr
+def _impl_subsections(is_saas, vendors=("Ping Identity", "Saviynt")):
+    section = next(s for s in pt.get_template("implementation")
+                   if s.id == "proposed_solution")
+    ctx = {"client_name": "X", "iam_vendor": " and ".join(vendors),
+           "iam_vendors": list(vendors), "proposal_type": "implementation",
+           "is_saas": is_saas}
+    return dict(section.render_subsections(ctx))
 
 
-def test_saas_dr_explicitly_references_production_instead_of_reinventing():
-    """THE bug's exact mechanism: DR's instruction used to say "mirrors
-    production" with no idea what Production actually contained. It must now
-    explicitly reference that Production has no sized hardware, so DR cannot
-    independently decide to invent one."""
-    instr = _sizing_instruction("implementation", "proposed_solution",
-                                "Proposed DR Hardware Sizing", is_saas=True)
-    assert "Production" in instr
-    assert "N/A" in instr
+def test_saas_drops_the_four_hardware_tables_for_iv_style_environments():
+    """ESNAD 09-23 shipped four one-row N/A hardware tables. IV's own ESNAD
+    proposal sizes no hardware: a per-vendor environment table plus one
+    consolidated model. SaaS must get that shape, not four empty tables."""
+    subs = _impl_subsections(is_saas=True)
+    assert not [h for h in subs if "Hardware Sizing" in h], list(subs)
+    for vendor in ("Ping Identity", "Saviynt"):
+        instr = subs[f"{vendor} Deployment and Environments"]
+        assert "markdown TABLE" in instr and "Never invent CPU" in instr
+        assert vendor in instr
+    assert "markdown TABLE" in subs["Consolidated Environment and Infrastructure Model"]
+    for instr in subs.values():
+        assert "{%" not in instr and "%}" not in instr, "raw Jinja leaked"
 
 
-def test_saas_development_explicitly_forbids_the_exact_hallucinated_pattern():
-    """THE actual invented text from the live document ("4 vCPU, 16 GB") is
-    named explicitly as forbidden, not left to an implicit N/A instruction
-    the model can route around."""
-    instr = _sizing_instruction("implementation", "proposed_solution",
-                                "Proposed Development Hardware Sizing", is_saas=True)
-    assert "4 vCPU" in instr or "vCPU, 16" in instr, (
-        "the exact hallucinated example must be named so the model cannot "
-        "route around a generic N/A instruction")
-    assert "NEVER invent" in instr or "N/A" in instr
-
-
-def test_all_four_saas_sizing_instructions_are_internally_consistent():
-    """No table may contradict another: if is_saas is True, every one of the
-    four says N/A / vendor-managed, not three doing so and one improvising."""
-    for heading in ("Proposed Production Hardware Sizing", "Proposed DR Hardware Sizing",
-                    "Proposed UAT Hardware Sizing", "Proposed Development Hardware Sizing"):
-        instr = _sizing_instruction("implementation", "proposed_solution", heading, is_saas=True)
-        assert "N/A" in instr, f"{heading} does not consistently say N/A under is_saas"
-        assert "{%" not in instr and "%}" not in instr, f"{heading} leaked raw Jinja syntax"
+def test_on_prem_keeps_the_hardware_tables_and_gets_no_saas_subsections():
+    subs = _impl_subsections(is_saas=False)
+    for env in ("Production", "DR", "UAT", "Development"):
+        assert f"Proposed {env} Hardware Sizing" in subs
+    assert not [h for h in subs if "Deployment and Environments" in h
+                or h.startswith("Consolidated Environment")]
 
 
 def test_on_prem_production_and_dr_are_byte_identical_to_before_the_fix():
@@ -2025,3 +2015,15 @@ def test_draft_section_appends_product_evidence_when_present():
     assert result["product_citations"][0]["chunk_text"] == "PingOne AIC supports adaptive MFA."
     assert any("PingOne AIC supports adaptive MFA" in p for p in captured_prompts), (
         "product evidence was retrieved but never reached the actual drafting prompt")
+
+
+def test_client_facing_matrix_keeps_the_full_requirement_text():
+    """ESNAD shipped 'SSO for all enterprise applications with single login
+    achieves access to a' -- the client's own requirement, cut at 100 chars."""
+    import app as A
+    text = ("SAML 2.0, OAuth 2.0, OIDC SSO for all enterprise applications with "
+            "single login achieves access to all integrated applications")
+    m = A.ComplianceMatrix(entries=[A.CoverageEntry(
+        requirement_id="AM-01", requirement_text=text, status="covered",
+        summary="s", recommendation="r")], overall_notes="")
+    assert text in A.render_matrix_markdown(m, client_facing=True)

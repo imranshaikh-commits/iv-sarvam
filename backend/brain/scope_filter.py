@@ -55,6 +55,11 @@ ALWAYS_KEEP = frozenset({
     "target_state", "migration_strategy",
     "implementation_approach", "delivery_approach",
     "assumptions_responsibilities",
+    # IV's house structure always carries Similar Experience & Customer
+    # References (its sector and client lists come from the corpus, not from
+    # discovery). Dropping it for want of discovery answers cost ESNAD a
+    # section IV wrote.
+    "similar_experience",
 })
 
 # Section id -> the discovery fields it is built from. When EVERY one is empty
@@ -77,7 +82,7 @@ SECTION_EVIDENCE: dict[str, tuple[str, ...]] = {
 # a section. Matched against the answer text, not inferred.
 SECTION_EXCLUSIONS: dict[str, tuple[str, ...]] = {
     "knowledge_transfer": (r"training", r"knowledge transfer", r"\bkt\b",
-                           r"enablement", r"end[- ]user"),
+                           r"enablement", r"end[- ]user training"),
     "decommissioning": (r"decommission", r"retire", r"legacy .*(retire|removal)"),
     "commercial": (r"commercial", r"pricing", r"licen[cs]e (cost|fee)"),
 }
@@ -108,9 +113,13 @@ def _explicitly_excluded(section_id: str, answers: dict) -> Optional[str]:
     patterns = SECTION_EXCLUSIONS.get(section_id)
     if not patterns:
         return None
-    haystack = " ".join(
-        str(answers.get(k) or "") for k in ("out_of_scope", "training", "kt")
-    ).lower()
+    # A section's OWN fields exclude it only when they say no. ESNAD's
+    # `training` answer was a full in-scope training programme; searching it
+    # for the word "training" dropped the Knowledge Transfer section IV wrote.
+    for k in _OWN_FIELDS.get(section_id, ()):
+        if _NEGATIVE_ANSWER_RE.match(str(answers.get(k) or "")):
+            return f"{k}: {answers[k]}".strip()[:80]
+    haystack = str(answers.get("out_of_scope") or "").lower()
     if not haystack.strip():
         return None
     for pat in patterns:
@@ -118,6 +127,12 @@ def _explicitly_excluded(section_id: str, answers: dict) -> Optional[str]:
         if m:
             return m.group(0)
     return None
+
+
+_OWN_FIELDS = {"knowledge_transfer": ("training", "kt")}
+_NEGATIVE_ANSWER_RE = re.compile(
+    r"\s*(?:no\b|none\b|not\s+(?:required|needed|in\s+scope|applicable)|"
+    r"out\s+of\s+scope|excluded)", re.I)
 
 
 def _upgrade_in_place(answers: dict) -> bool:

@@ -2231,7 +2231,11 @@ def render_matrix_markdown(matrix: ComplianceMatrix, *, client_facing: bool = Fa
              "needs-human": "To be confirmed" if client_facing else "Needs human"}
     for e in matrix.entries:
         clean = lambda s: (s or "").replace("|", "/").replace("\n", " ").strip()
-        req = clean(e.requirement_text)[:100]
+        # The client wrote these requirements; cutting them at 100 chars
+        # shipped "...with single login achieves access to a" to ESNAD.
+        req = clean(e.requirement_text)
+        if not client_facing:
+            req = req[:100]
         summary = clean(e.summary)
         recommendation = clean(e.recommendation)
         if client_facing:

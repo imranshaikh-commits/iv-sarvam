@@ -296,7 +296,11 @@ class SectionSpec:
             [context["iam_vendor"]] if context.get("iam_vendor") else [None])
 
         out: list[tuple[str, str]] = []
+        # A subsection whose instruction renders empty does not apply to this
+        # engagement (the hardware sizing tables under SaaS) and is skipped.
         for heading, instruction in self.subsections:
+            if not Template(instruction).render(**context).strip():
+                continue
             if "iam_vendor" in heading and len(vendors) > 1:
                 for vendor in vendors:
                     vctx = {**context, "iam_vendor": vendor}
@@ -486,19 +490,7 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
             # original even where the numbers were right. These are IV's actual
             # headers, taken from the Amlak proposal.
             ("Proposed Production Hardware Sizing",
-             "{% if is_saas %}"
-             "production sizing as a markdown TABLE with EXACTLY these columns: "
-             "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
-             "Storage per node (GB), DB Storage (GB), Operating System, "
-             "Application Server, Database, Remarks. "
-             "This is a SaaS platform: there is no IV- or client-provisioned "
-             "hardware to size. Write exactly ONE row: Server Category = the "
-             "platform's production tenant name, Quantity = N/A, every CPU/"
-             "Memory/Storage/DB Storage/OS/App Server/Database column = N/A, "
-             "and Remarks states the vendor-managed SLA commitment (uptime %, "
-             "scaling model) from discovery. Do not invent CPU, memory or "
-             "storage figures for a vendor-managed tenant."
-             "{% else %}"
+             "{% if not is_saas %}"
              "production sizing as a markdown TABLE with EXACTLY these columns: "
              "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
              "Storage per node (GB), DB Storage (GB), Operating System, "
@@ -509,20 +501,7 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "and any RAID or clustering requirement."
              "{% endif %}"),
             ("Proposed DR Hardware Sizing",
-             "{% if is_saas %}"
-             "disaster recovery sizing as a markdown TABLE with EXACTLY these "
-             "columns: #, Server Category, Quantity, CPU per node, "
-             "Memory per node (GB), Storage per node (GB), DB Storage (GB), "
-             "Operating System, Application Server, Database, Remarks. "
-             "The Production table above is vendor-managed SaaS with no sized "
-             "hardware; DR MUST say the same thing, not invent a mirrored "
-             "on-prem DR site that does not exist. Write exactly ONE row: "
-             "Server Category = the platform's DR/failover arrangement, every "
-             "sizing column = N/A, and Remarks states the vendor's own "
-             "replication or failover model and any RTO/RPO commitment from "
-             "discovery. Follow the table with one short paragraph on that "
-             "replication approach -- prose only, no invented figures."
-             "{% else %}"
+             "{% if not is_saas %}"
              "disaster recovery sizing as a markdown TABLE with EXACTLY these "
              "columns: #, Server Category, Quantity, CPU per node, "
              "Memory per node (GB), Storage per node (GB), DB Storage (GB), "
@@ -531,19 +510,7 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "table with one short paragraph on the replication approach."
              "{% endif %}"),
             ("Proposed UAT Hardware Sizing",
-             "{% if is_saas %}"
-             "UAT sizing as a markdown TABLE with EXACTLY these columns: "
-             "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
-             "Storage per node (GB), DB Storage (GB), Operating System, "
-             "Application Server, Database, Remarks. "
-             "Same platform as Production: no IV- or client-provisioned "
-             "hardware. Write exactly ONE row: Server Category = the "
-             "platform's UAT/non-production tenant, every sizing column = "
-             "N/A, Remarks notes whether UAT is logically separated on the "
-             "same multi-tenant platform or a distinct vendor-managed tenant, "
-             "per discovery. Do not invent reduced-from-production figures "
-             "for hardware that is never provisioned."
-             "{% else %}"
+             "{% if not is_saas %}"
              "UAT sizing as a markdown TABLE with EXACTLY these columns: "
              "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
              "Storage per node (GB), DB Storage (GB), Operating System, "
@@ -554,20 +521,7 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "acknowledged gap."
              "{% endif %}"),
             ("Proposed Development Hardware Sizing",
-             "{% if is_saas %}"
-             "development sizing as a markdown TABLE with EXACTLY these "
-             "columns: #, Server Category, Quantity, CPU per node, "
-             "Memory per node (GB), Storage per node (GB), DB Storage (GB), "
-             "Operating System, Application Server, Database, Remarks. "
-             "Same platform as Production: no IV- or client-provisioned "
-             "hardware, including for Development. Write exactly ONE row: "
-             "Server Category = the platform's development/sandbox tenant, "
-             "every sizing column = N/A, Remarks notes how it is provisioned "
-             "per discovery. NEVER invent a specific CPU, memory or storage "
-             "figure (e.g. '4 vCPU, 16 GB') for a SaaS product -- IV and the "
-             "client do not provision or size this platform's infrastructure "
-             "at any tier, development included."
-             "{% else %}"
+             "{% if not is_saas %}"
              "development sizing as a markdown TABLE with EXACTLY these columns: "
              "#, Server Category, Quantity, CPU per node, Memory per node (GB), "
              "Storage per node (GB), DB Storage (GB), Operating System, "
@@ -575,6 +529,31 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "environment, typically a single node. If no discovery figures are "
              "available for this environment, write N/A rather than estimating "
              "-- an invented specification is worse than an acknowledged gap."
+             "{% endif %}"),
+            # SaaS: IV's ESNAD proposal sizes no hardware. It gives each vendor an
+            # environment table plus what the client must still provide, then
+            # one consolidated table. The four hardware tables above render
+            # empty (and are skipped) when is_saas, instead of four N/A rows.
+            ("{{ iam_vendor }} Deployment and Environments",
+             "{% if is_saas %}"
+             "how {{ iam_vendor }} is consumed as a vendor-hosted SaaS service "
+             "for this client. First a markdown TABLE with columns NO, "
+             "Environment, Purpose, Proposed: one row per environment named at "
+             "discovery for this platform. Then state what the vendor manages "
+             "(application, database and processing infrastructure) and what "
+             "the client must provide (secure connectivity, integration agents "
+             "or connectors, gateway or proxy components, firewall rules). "
+             "Never invent CPU, memory or storage figures."
+             "{% endif %}"),
+            ("Consolidated Environment and Infrastructure Model",
+             "{% if is_saas %}"
+             "one markdown TABLE with columns NO, Solution Area, Platform, "
+             "Deployment Model, Baseline Environments, Infrastructure Sizing: "
+             "one row per solution area in scope (for example WIAM, CIAM, IGA, "
+             "PAM), each mapped to the vendor platform that owns it. "
+             "Infrastructure Sizing reads 'Managed by <vendor>' for the "
+             "platform itself; client-side connectivity components are sized "
+             "after the discovery assessment."
              "{% endif %}"),
             ("Proposed HRMS Integration and Joiner Workflow",
              "the authoritative source feed and the joiner workflow it triggers, "
@@ -769,8 +748,9 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "immediately following go-live, transitioning to a remote Annual "
              "Maintenance Contract. Use the hypercare duration and support "
              "model named at discovery; where discovery does not state one, "
-             "propose IV's standard hypercare length and say so explicitly "
-             "rather than presenting an assumption as a stated fact."),
+             "say the hypercare duration will be agreed with the client. "
+             "Never state a duration as IV's standard unless the EVIDENCE "
+             "shows it."),
             ("Scope of Operation Support",
              "what IS and is NOT covered under AMC, as a markdown TABLE with "
              "columns Service, In Scope, Out of Scope. Cover application-level "
@@ -1194,8 +1174,9 @@ MIGRATION_SECTIONS: list[SectionSpec] = [
              "immediately following cutover, transitioning to a remote Annual "
              "Maintenance Contract. Use the hypercare duration and support "
              "model named at discovery; where discovery does not state one, "
-             "propose IV's standard hypercare length and say so explicitly "
-             "rather than presenting an assumption as a stated fact."),
+             "say the hypercare duration will be agreed with the client. "
+             "Never state a duration as IV's standard unless the EVIDENCE "
+             "shows it."),
             ("Scope of Operation Support",
              "what IS and is NOT covered under AMC, as a markdown TABLE with "
              "columns Service, In Scope, Out of Scope."),

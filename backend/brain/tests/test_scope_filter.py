@@ -341,3 +341,32 @@ def test_the_scale_judgement_is_wired_into_drafting():
     src = inspect.getsource(document_engine.generate_proposal)
     assert "scale_fn(discovery_answers)" in src
     assert "scope_filter.SCALE_ANSWER_KEY" in src
+
+
+# ESNAD 09-23: the `training` answer was an in-scope training programme, and
+# the exclusion check searched it for the word "training".
+_ESNAD = {
+    "training": "The vendor shall deliver a structured training program covering "
+                "all IAM user populations. Helpdesk / L1 Support - Instructor-led; 1 day.",
+    "out_of_scope": "excluding OS, network, and underlying platform patching; "
+                    "L1 helpdesk and end-user support remain with ESNAD",
+    "business_objectives": "Consolidate identity", "in_scope": "WIAM, CIAM, IGA, PAM",
+}
+
+
+def _kept_ids(answers):
+    tpl = proposal_templates.get_template("implementation")
+    keep, _ = S.select_sections(tpl, answers)
+    return {s.id for s in keep}
+
+
+def test_an_in_scope_training_answer_keeps_knowledge_transfer():
+    assert "knowledge_transfer" in _kept_ids(_ESNAD)
+
+
+def test_a_negative_training_answer_still_drops_knowledge_transfer():
+    assert "knowledge_transfer" not in _kept_ids(dict(_ESNAD, training="Not required"))
+
+
+def test_similar_experience_is_kept_without_case_study_answers():
+    assert "similar_experience" in _kept_ids(_ESNAD)

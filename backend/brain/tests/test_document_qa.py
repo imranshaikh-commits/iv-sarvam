@@ -272,3 +272,20 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _runner import run_tests  # noqa: E402
 
 run_tests(globals(), "DOCUMENT QA TESTS")
+
+
+def test_review_aside_with_nested_parenthetical_is_removed_whole():
+    """ESNAD Company Profile shipped '... retail sectors. and partner tier
+    status for insertion here.]' -- the aside ended at the nested ')'."""
+    src = ("We serve retail. [SME REVIEW: confirm certifications (e.g. Ping "
+           "Advanced) and partner tier status for insertion here.] We deliver.")
+    out = qa.strip_review_markers(src)
+    assert "insertion here" not in out and "]" not in out, out
+    assert out.startswith("We serve retail.") and out.endswith("We deliver.")
+
+
+def test_dash_only_table_cell_becomes_hyphen_not_comma():
+    """ESNAD's RACI shipped '| , |' cells from '| — |'."""
+    out = qa.strip_em_dashes("| Kickoff | A/C | R | — | — | Notes here |")
+    assert "| , |" not in out and ", |" not in out, out
+    assert "| - | - |" in out, out

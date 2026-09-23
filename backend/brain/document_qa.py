@@ -82,12 +82,17 @@ _META_SENTENCE_RE = re.compile(
 # "— needs SME confirmation" and left "(needs SME confirmation)" untouched: 45
 # survived into the run-3 document. Same lesson as the meta-commentary blocklist,
 # one level down. Brackets, dashes and bare trailing clauses are all covered.
+# Each bracket type closes only on its OWN closer. The shared closer class let
+# "[SME REVIEW: confirm certifications (e.g. X) and partner tier ...]" end at
+# the ")" of the nested parenthetical, which left "and partner tier status for
+# insertion here.]" in ESNAD's Company Profile.
+_REVIEW_WORDS = (r"\b(?:SME|to\s+be\s+confirmed|TBC|TBD|needs?\s+confirmation|"
+                 r"requires?\s+confirmation|not\s+confirmed|unverified)\b")
 _REVIEW_ASIDE_RE = re.compile(
     r"(?:"
-    r"\s*[\(\[\{][^)\]\}]{0,400}?"                      # bracketed aside
-    r"\b(?:SME|to\s+be\s+confirmed|TBC|TBD|needs?\s+confirmation|"
-    r"requires?\s+confirmation|not\s+confirmed|unverified)\b"
-    r"[^)\]\}]{0,400}?[\)\]\}]"
+    rf"\s*\[[^\]]{{0,400}}?{_REVIEW_WORDS}[^\]]{{0,400}}?\]"   # [bracketed]
+    rf"|\s*\([^)]{{0,400}}?{_REVIEW_WORDS}[^)]{{0,400}}?\)"    # (parenthetical)
+    rf"|\s*\{{[^}}]{{0,400}}?{_REVIEW_WORDS}[^}}]{{0,400}}?\}}"  # {{braced}}
     r"|"
     r"\s*[—–,-]{1,2}\s*(?:this\s+)?(?:would\s+|will\s+)?"  # dash/comma-led aside
     r"(?:needs?|requires?|pending|subject\s+to)\s+"
@@ -140,6 +145,7 @@ def count_review_markers(text: str) -> int:
 # 203 in 15,551 (13.1 per 1,000), roughly 65x the house rate. Product directive:
 # never use them.
 _EM_DASH_RE = re.compile(r"\s*[—–]\s*")
+_DASH_CELL_RE = re.compile(r"\|[ \t]*[—–][ \t]*(?=\|)")
 
 
 def strip_em_dashes(text: str) -> str:
@@ -153,6 +159,9 @@ def strip_em_dashes(text: str) -> str:
     """
     if not text:
         return text
+    # A dash alone in a table cell is the model's "not applicable". The clause
+    # rule below turned it into ", " -- ESNAD's RACI shipped "| , |" cells.
+    text = _DASH_CELL_RE.sub("| - ", text)
 
     def _replace(match: re.Match) -> str:
         after = text[match.end():match.end() + 40].lstrip()

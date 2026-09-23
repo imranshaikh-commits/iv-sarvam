@@ -167,6 +167,28 @@ def _vendor_scope_clause(context: dict) -> str:
            f"describe one vendor as covering scope that belongs to the other.")
 
 
+def _engagement_facts_clause(context: dict) -> str:
+    """Facts every section must agree on, stated once in every system prompt.
+
+    Per-section routing let each section improvise them. ESNAD (envs "Dev,
+    Test, and Prod", SaaS) came back with four different environment lists and
+    a Tranche 1 milestone installing PingAM/PingDS for a vendor-hosted tenant.
+    """
+    answers = context.get("discovery_answers") or {}
+    out = ""
+    envs = " ".join(str(answers.get("envs") or "").split())
+    if envs and envs.lower() not in ("skip", "none", "n/a", "-"):
+        out += (f"\n\nENVIRONMENTS: exactly {envs}. Do not present any other "
+                f"environment (DR, UAT, QA, Staging, Sandbox) as one that is "
+                f"built or provisioned in this engagement.")
+    if context.get("is_saas"):
+        out += ("\n\nDEPLOYMENT: the platform is vendor-hosted SaaS. Never describe "
+                "installing, sizing or patching the platform's own servers, and never "
+                "name self-managed server components as deployed. The client "
+                "provides only connectivity and any integration agents or gateways.")
+    return out
+
+
 def _vendor_clause(iam_vendor: Optional[str]) -> str:
     return f" using {iam_vendor}" if iam_vendor else ""
 
@@ -411,7 +433,7 @@ def _draft_payload(model: str, system_prompt: str, user_prompt: str,
     return payload
 
 
-async def _post_draft(client: httpx.AsyncClient, payload: dict) -> str:
+async def _post_once(client: httpx.AsyncClient, payload: dict) -> dict:
     resp = await client.post(
         f"{OPENROUTER_BASE}/chat/completions",
         headers={
@@ -422,7 +444,53 @@ async def _post_draft(client: httpx.AsyncClient, payload: dict) -> str:
         timeout=180,
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    return resp.json()["choices"][0]
+
+
+def _trim_incomplete_tail(text: str) -> str:
+    """Drop the half-written last line of a response cut off at max_tokens.
+
+    A table keeps only rows that close with '|'; prose ends at its last full
+    sentence. A clean cut is a shorter section, a ragged one is a visible defect.
+    """
+    lines = (text or "").rstrip().split("\n")
+    while lines:
+        last = lines[-1].rstrip()
+        if last.lstrip().startswith("|"):
+            if last.endswith("|"):
+                break
+            lines.pop()
+            continue
+        m = list(re.finditer(r"[.!?:](?=\s|$)", last))
+        if m:
+            lines[-1] = last[: m[-1].end()]
+            break
+        lines.pop()
+    return "\n".join(lines).rstrip()
+
+
+async def _post_draft(client: httpx.AsyncClient, payload: dict) -> str:
+    """One draft call. A response cut off at max_tokens is retried once with
+    double the budget, then trimmed to its last complete sentence or row.
+
+    finish_reason used to be ignored, so ESNAD 09-23 shipped six subsections
+    ending mid-word ("is available but N", RAID row "have not |") although the
+    visible text was a fraction of the budget -- the primary model's reasoning
+    tokens count against max_tokens.
+    """
+    choice = await _post_once(client, payload)
+    if choice.get("finish_reason") != "length":
+        return choice["message"]["content"]
+    log.warning("draft cut off at max_tokens=%s (model=%s); retrying with %s",
+                payload.get("max_tokens"), payload.get("model"),
+                2 * int(payload.get("max_tokens") or MAX_DRAFT_TOKENS))
+    retry = {**payload, "max_tokens": 2 * int(payload.get("max_tokens") or MAX_DRAFT_TOKENS)}
+    choice = await _post_once(client, retry)
+    content = choice["message"]["content"]
+    if choice.get("finish_reason") == "length":
+        log.warning("draft still cut off after retry; trimming the incomplete tail")
+        content = _trim_incomplete_tail(content)
+    return content
 
 
 async def draft_with_openrouter(
@@ -810,6 +878,25 @@ async def _draft_with_retry(
     return cleaned if not _is_blank(cleaned) else None
 
 
+def _strip_echoed_title(text: str, title: str) -> str:
+    """Drop a first line that only restates the subsection heading.
+
+    The builder adds the heading; the model, told not to write headings, echoes
+    it as a plain line instead. ESNAD 09-23 had eight ("Who Had Access" under
+    "Who Had Access", "ESNAD Resource Commitments" under "Saudi Mining Services
+    Company (ESNAD) Resource Commitments").
+    """
+    title_words = set(re.findall(r"[a-z0-9]+", (title or "").lower()))
+    first, _, rest = (text or "").lstrip().partition("\n")
+    words = re.findall(r"[a-z0-9]+", first.lower())
+    line = first.strip()
+    if (title_words and words and len(words) <= 12 and rest.strip()
+            and not line.startswith("|") and not line.endswith((".", "!", "?", ":"))
+            and set(words) <= title_words):
+        return rest.lstrip()
+    return text
+
+
 def _draft_failed_placeholder(section_title: str, sub_title: Optional[str],
                               error: str) -> str:
     """Text for a (sub)section the model never successfully attempted.
@@ -953,7 +1040,8 @@ async def draft_section(
         proposal_type=context.get("proposal_type", "implementation"),
         client_name=context.get("client_name", "the client"),
         vendor_clause=_vendor_clause(context.get("iam_vendor")),
-        vendor_scope_clause=_vendor_scope_clause(context),
+        vendor_scope_clause=(_vendor_scope_clause(context)
+                             + _engagement_facts_clause(context)),
         purpose=section_spec.purpose,
         marker=SME_REVIEW_MARKER,
         evidence=evidence_block,
@@ -1083,6 +1171,7 @@ async def draft_section(
                             sub_title, section_spec.id)
                 sub_content = _assumption_placeholder(context, section_title, sub_title, facet)
                 needs_sme_review = True
+            sub_content = _strip_echoed_title(sub_content, sub_title)
             subsection_results.append({"title": sub_title, "content": sub_content})
             # An untitled subsection is continuous prose under the section
             # heading (IV's executive summary), so no "### " marker.
@@ -2148,7 +2237,7 @@ def _add_appendices(document: Document, metadata: dict,
     # B. Timeline / phasing
     _cur[0] = "B"
     _heading("Appendix B — Indicative Timeline")
-    _dur = " ".join(str((metadata.get("discovery_answers") or {}).get("engagement_duration") or "").split())
+    _dur = " ".join(str((metadata.get("discovery_answers") or {}).get("duration") or "").split())
     if _dur and _dur.lower() not in ("skip", "none", "n/a", "-"):
         _note(f"Client-supplied engagement duration: {_dur}.")
     _table(
@@ -2180,8 +2269,11 @@ def _add_appendices(document: Document, metadata: dict,
 
     _rows = [
         _row("Identities / users", "user_count"),
-        _row("Target applications", "app_count", "applications_to_onboard"),
-        _row("Environments", "environments"),
+        # Intake ids, not invented names: "environments" and
+        # "applications_to_onboard" never existed, so ESNAD printed TBC over
+        # "Dev, Test, and Prod". test_appendix_reads_real_intake_ids pins this.
+        _row("Target applications", "app_count", "apps_to_onboard"),
+        _row("Environments", "envs"),
         _row("Deployment model", "deployment_model"),
         _row("Hardware sizing", "hardware_sizing_inputs"),
         _row("Cluster topology", "cluster_topology"),
@@ -2194,10 +2286,11 @@ def _add_appendices(document: Document, metadata: dict,
     # D. Integration inventory
     _cur[0] = "D"
     _heading("Appendix D — Integration Inventory")
+    _int_rows = _integration_rows(_ans.get("target_integrations"))
     _table(
         document,
         ["System / Application", "Integration Type", f"{vendor} Connector", "Notes"],
-        [
+        _int_rows or [
             ["Directory / HR source", "Authoritative source", f"{_APPENDIX_ASSUMPTION} TBC", "System of record for identities"],
             ["Core business applications", "Provisioning target", f"{_APPENDIX_ASSUMPTION} TBC", "Confirm inventory in discovery"],
             ["Downstream / custom apps", f"{_APPENDIX_ASSUMPTION} TBC", f"{_APPENDIX_ASSUMPTION} TBC", "May require custom connector"],
@@ -2244,6 +2337,25 @@ def _add_appendices(document: Document, metadata: dict,
               "deliberately omitted and must be completed by the commercial "
               "owner before issue.")
         _table(document, ["Item", "Basis"], _crows)
+
+
+def _integration_rows(value) -> list[list[str]]:
+    """Appendix D rows from the `target_integrations` answer.
+
+    "Nafath (Citizen authentication, SSO); GIS (Esri Geoportal, Maps) (SSO)"
+    -> one row per system, the trailing parenthetical as its integration type.
+    ESNAD named nine systems and the appendix printed three TBC rows.
+    """
+    rows = []
+    for item in re.split(r";|\n", str(value or "")):
+        item = item.strip(" .-")
+        if not item or item.lower() in ("skip", "none", "n/a"):
+            continue
+        m = re.match(r"^(.*?)\s*\(([^()]*)\)\s*$", item)
+        name, kind = (m.group(1), m.group(2)) if m and m.group(1) else (item, "To be confirmed in discovery")
+        rows.append([name.strip(), kind.strip(), "To be confirmed in discovery",
+                     "Client-supplied at discovery"])
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -2314,7 +2426,6 @@ async def generate_proposal(
             if _scale:
                 discovery_answers = dict(discovery_answers)
                 discovery_answers[scope_filter.SCALE_ANSWER_KEY] = _scale
-                context["discovery_answers"] = discovery_answers
                 log.info("engagement scale: %s (%s)", _scale, _why[:100])
         except Exception as e:  # noqa: BLE001 - heuristic still applies
             log.warning("scale judgement failed: %s", e)

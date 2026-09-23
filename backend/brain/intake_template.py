@@ -298,7 +298,7 @@ _BUCKETS: list[dict] = [
             _q("kt", "Knowledge transfer", "textarea"),
             _q("hypercare", "Hypercare", "text"),
             _q("support_model", "Support model", "textarea"),
-            _q("post_sla", "SLA", "textarea"),
+            _q("post_sla", "Support SLA: severity levels with response and resolution times", "textarea"),
             _q("postgolive_reporting_cadence", "Reporting cadence", "text"),
         ],
     },

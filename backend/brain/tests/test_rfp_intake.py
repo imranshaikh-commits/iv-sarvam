@@ -413,3 +413,24 @@ def test_skip_and_na_values_are_never_merged_in(monkeypatch):
 
     field = next(f for f in ex.fields if f.field_id == "app_count")
     assert field.value == "9"
+
+
+def test_extraction_prompt_labels_every_field_both_paths(tmp_path):
+    """ESNAD's SLA severity matrix was never extracted in three runs: the page
+    prompt listed bare ids ('post_sla'), so the model had to guess what each
+    meant, and every draft invented an SLA contradicting the client's own. The
+    prompt must carry each field's label, on BOTH the vision and text paths."""
+    import asyncio
+    seen = []
+
+    async def spy(model, messages):
+        seen.append(messages[0]["content"])
+        return R._PageExtraction()
+
+    img = tmp_path / "p.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    asyncio.run(R.extract_page_vision(str(img), ["post_sla"], spy))
+    asyncio.run(R._extract_page_text("some page text", ["post_sla"], spy))
+    assert len(seen) == 2
+    for prompt in seen:
+        assert "post_sla:" in prompt and "severity" in prompt, prompt[-300:]

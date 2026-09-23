@@ -25,6 +25,34 @@ def test_real_amlak_degenerate_paragraph():
     assert degenerate
 
 
+def test_repeated_subheaders_in_a_capability_overview_not_flagged():
+    """The per-vendor Solution Overview is nested markdown. A model that
+    repeats the same sub-headers under every capability area produced a
+    repeated 6-gram across header lines, which fired the 'shorter' re-draft
+    and then truncated at the first area. Headers are structure, not prose."""
+    paras = [
+        "Adaptive MFA evaluates device, location and behaviour before each sign-in.",
+        "Federation brokers SAML and OIDC trust with every relying party.",
+        "Journeys chain authentication nodes into a visual, versioned flow.",
+        "The identity store keeps profiles and consent records per tenant.",
+        "PingGateway enforces token validation in front of legacy APIs.",
+        "Risk signals feed a score that can trigger step-up or denial.",
+    ]
+    parts = []
+    for i, p in enumerate(paras):
+        parts += [f"## Capability {i + 1}", p, "### Key Features", "- first",
+                  "### Use Cases", "- a use case", "### Configuration", "- a setting"]
+    degenerate, reason = qa.is_degenerate("\n".join(parts))
+    assert not degenerate, f"structured overview flagged: {reason}"
+
+
+def test_padding_hidden_between_headers_still_caught():
+    """Dropping header lines must not hide a padded paragraph under them."""
+    bad = "## Overview\n" + "The platform enforces stated constraints for all users. " * 8
+    degenerate, _ = qa.is_degenerate(bad)
+    assert degenerate
+
+
 def test_legitimate_technical_prose_not_flagged():
     """Vendor names and IAM terms repeat legitimately — no false positives."""
     good = (

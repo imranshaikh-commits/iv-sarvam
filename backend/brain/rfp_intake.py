@@ -444,7 +444,10 @@ Transcribe what this page states. Do not summarise, do not infer anything not
 written on the page, and do not carry over content from other pages.
 
 Return, for THIS PAGE ONLY:
-- field_values: any of these that this page states outright: {field_ids}
+- field_values: any of these that this page states outright. Use the id
+  (left of the colon) exactly as field_id; the text after it says what the
+  field means:
+{field_ids}
 - requirements: numbered requirement lines (e.g. "AM-04", "ILM-01") with their
   reference and full text
 - eligibility_gates: mandatory bidder qualifications, ONLY if this page is
@@ -455,6 +458,15 @@ Return, for THIS PAGE ONLY:
 Leave anything not on THIS page empty. A wrong answer is worse than an empty
 one: this system will show every value to a human with this page number
 attached, so a value must be traceable to what is actually written here."""
+
+
+def _field_list(field_ids: list[str]) -> str:
+    """'id: label' per line. Bare ids alone ('post_sla') left the model to
+    guess meaning: ESNAD's SLA severity matrix was never extracted in three
+    runs, so every draft invented an SLA contradicting the client's own."""
+    import intake_template
+    labels = {q["id"]: q["label"] for q in intake_template.iter_questions(None)}
+    return "\n".join(f"  {fid}: {labels.get(fid, fid)}" for fid in field_ids)
 
 
 class _FieldValue(BaseModel):
@@ -499,7 +511,7 @@ async def extract_page_vision(image_path: str, field_ids: list[str],
             b64 = base64.b64encode(fh.read()).decode("ascii")
         messages = [
             {"role": "system", "content": _PAGE_EXTRACT_PROMPT.format(
-                field_ids=", ".join(field_ids))},
+                field_ids=_field_list(field_ids))},
             {"role": "user", "content": [
                 {"type": "image_url",
                  "image_url": {"url": f"data:image/png;base64,{b64}"}},
@@ -611,7 +623,7 @@ async def _extract_page_text(text: str, field_ids: list[str],
     try:
         messages = [
             {"role": "system", "content": _PAGE_EXTRACT_PROMPT.format(
-                field_ids=", ".join(field_ids))},
+                field_ids=_field_list(field_ids))},
             {"role": "user", "content": text[:6000]},
         ]
         return await structured_fn(_PageExtraction, messages)

@@ -238,6 +238,10 @@ about across after before between during over under within without through
 # table row has almost no function words by construction and repeats its column
 # shape on every line.
 _TABLE_LINE_RE = re.compile(r"^\s*[|>]")
+# Headers are structure, like table rows. A capability overview that repeats
+# the same sub-headers per area ("Key Features / Use Cases") was scored as a
+# repeated phrase, re-drafted "shorter", then truncated at the first area.
+_HEADER_LINE_RE = re.compile(r"^\s*#{1,6}\s")
 _LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]\s|\d+[.)]\s)")
 # A genuine bullet is telegraphic and short. A 783-word line that merely OPENS
 # with "1. " is prose, and dropping it hid the worst paragraph in Amlak run 3
@@ -251,7 +255,7 @@ def _prose_only(text: str) -> str:
     for line in (text or "").splitlines():
         if not line.strip():
             continue
-        if _TABLE_LINE_RE.match(line):
+        if _TABLE_LINE_RE.match(line) or _HEADER_LINE_RE.match(line):
             continue
         if _LIST_MARKER_RE.match(line) and len(line.split()) <= _MAX_LIST_ITEM_WORDS:
             continue

@@ -1787,7 +1787,9 @@ async def reject_architecture(proposal_id: str | None, comment: str) -> str:
 
 
 _SELF_BASE = os.environ.get("SHILPI_SELF_BASE", "http://127.0.0.1:8000")
-_DRAFT_TIMEOUT_S = float(os.environ.get("SHILPI_DRAFT_TIMEOUT_S", "1500"))
+# Safety net, not a shaper. 56 compliance calls plus full-budget vendor
+# overviews pushed an ESNAD run toward 25 min; a timeout loses the whole run.
+_DRAFT_TIMEOUT_S = float(os.environ.get("SHILPI_DRAFT_TIMEOUT_S", "2400"))
 
 
 async def generate_proposal_from_chat(session_id: str | None,

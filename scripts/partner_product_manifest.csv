@@ -17,3 +17,11 @@ Saviynt,Enterprise Identity Cloud (EIC),IGA,architecture_guide,https://saviynt.c
 Saviynt,Enterprise Identity Cloud (EIC),PAM,solution_brief,https://saviynt.com/solution-guides/saviynt-iga-and-pam/,,"IGA+PAM convergence, matches ESNAD's own Saviynt scope split"
 Microsoft,Entra External ID,CIAM,architecture_guide,https://learn.microsoft.com/en-us/entra/architecture/deployment-external-intro,,"Official Learn deployment guide, continuously updated, no fixed year"
 Microsoft,Entra External ID,CIAM,architecture_guide,https://learn.microsoft.com/en-us/entra/external-id/customers/concept-planning-your-solution,,"CIAM planning guide, same drift caveat"
+Ping Identity,PingOne Advanced Identity Cloud,Access Management,solution_brief,https://www.pingidentity.com/en/platform/pingone-advanced-identity-cloud.html,,AIC product page - the product IV actually proposed for ESNAD; corpus had zero AIC docs before this
+Ping Identity,PingOne Advanced Identity Cloud,Access Management,architecture_guide,https://www.pingidentity.com/en/platform/pingone-advanced-identity-cloud-architecture.html,,AIC tenant-isolation architecture page
+Ping Identity,PingOne Advanced Identity Cloud,Access Management,admin_guide,https://docs.pingidentity.com/pingoneaic/journeys/journeys.html,,AIC journeys (auth orchestration) docs; HTML nav noise expected
+Ping Identity,PingOne Advanced Identity Cloud,CIAM,admin_guide,https://docs.pingidentity.com/pingoneaic/journeys/solution-journeys.html,,"AIC prebuilt journey solutions (registration, sign-in, MFA)"
+Saviynt,Enterprise Identity Cloud (EIC),IGA,solution_brief,https://insights.saviynt.com/rs/507-NMC-378/images/Saviynt_IGA_%20Solution%20Guide.pdf,,Saviynt IGA solution guide PDF
+Saviynt,Enterprise Identity Cloud (EIC),PAM,solution_brief,https://insights.saviynt.com/rs/507-NMC-378/images/Solution%20Guide%20CPAM.pdf,,Saviynt Cloud PAM solution guide PDF
+Saviynt,Enterprise Identity Cloud (EIC),PAM,solution_brief,https://saviynt.com/solution-guides/privileged-access-management,,Saviynt PAM solution guide page
+Saviynt,Enterprise Identity Cloud (EIC),IGA,solution_brief,https://saviynt.com/solution-guides/enterprise-identity-for-the-cloud-era/,,Saviynt Identity Cloud platform overview

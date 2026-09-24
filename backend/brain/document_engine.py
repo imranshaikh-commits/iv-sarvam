@@ -262,6 +262,17 @@ def _looks_like_saas(deployment_model: Optional[str]) -> bool:
 # was. 2500 leaves ample room for a substantive subsection.
 MAX_DRAFT_TOKENS = 2500
 DRAFT_REASONING_EFFORT = os.environ.get("SHILPI_DRAFT_REASONING_EFFORT", "low").strip()
+# Prompt caching. Every subsection of a section re-sends the same system prompt
+# (rules + ~24 evidence chunks + product docs + facts, 20-32k tokens on
+# Sonnet). The OpenRouter log for ESNAD 09-24 showed 0 cached tokens and 73% of
+# the run's $6.15 spent re-reading those identical blocks. Marked cacheable,
+# repeats bill at ~10% (Anthropic) / ~25% (Gemini). Sent as a text part with
+# cache_control; dropped with the other optional params on a 400.
+DRAFT_PROMPT_CACHE = os.environ.get("SHILPI_DRAFT_PROMPT_CACHE", "1").strip() not in ("0", "", "false")
+
+
+def _cacheable(text: str) -> list[dict]:
+    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +475,8 @@ def _draft_payload(model: str, system_prompt: str, user_prompt: str,
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": _cacheable(system_prompt)
+             if include_frequency_penalty and DRAFT_PROMPT_CACHE else system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         "stream": False,

@@ -1940,3 +1940,15 @@ def test_diagram_caption_carries_the_colour_key():
     document_engine._embed_diagram(doc, {"title": "t", "stream": buf,
                                          "legend": "Colour key: blue = Ping Identity."})
     assert doc.paragraphs[-1].text == "Colour key: blue = Ping Identity."
+
+
+def test_drafting_system_prompt_is_marked_cacheable():
+    """OpenRouter log, ESNAD 09-24 (Sonnet 5): 0 cached tokens; 73% of $6.15
+    spent re-sending the same 20-32k-token section prompt per subsection."""
+    p = document_engine._draft_payload("m", "SYSTEM " * 50, "u")
+    sys_msg = p["messages"][0]["content"]
+    assert isinstance(sys_msg, list) and sys_msg[0]["cache_control"] == {"type": "ephemeral"}
+    assert sys_msg[0]["text"].startswith("SYSTEM")
+    # The 400 fallback sends a plain string, for providers that reject parts.
+    plain = document_engine._draft_payload("m", "S", "u", include_frequency_penalty=False)
+    assert plain["messages"][0]["content"] == "S"

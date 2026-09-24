@@ -1640,7 +1640,9 @@ def test_a_rate_limit_is_retried_not_shipped_as_a_failed_subsection():
 def test_drafting_evidence_carries_no_chat_rules_and_reasoning_is_capped():
     """The chat SYSTEM_PROMPT rode inside every drafting evidence block and
     Gemini obeyed its 'end with Assumptions & Open Questions' rule 22 times."""
-    os.environ.setdefault("OPENROUTER_API_KEY", "test-key")  # app reads it at import
+    for k, v in (("OPENROUTER_API_KEY", "x"), ("SUPABASE_URL", "http://x"),
+                 ("SUPABASE_KEY", "x")):
+        os.environ.setdefault(k, v)  # app reads these at import
     import inspect, app
     src = inspect.getsource(app)
     assert "build_grounded_system, include_rules=False" in src

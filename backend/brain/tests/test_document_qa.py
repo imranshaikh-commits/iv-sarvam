@@ -289,3 +289,21 @@ def test_dash_only_table_cell_becomes_hyphen_not_comma():
     out = qa.strip_em_dashes("| Kickoff | A/C | R | — | — | Notes here |")
     assert "| , |" not in out and ", |" not in out, out
     assert "| - | - |" in out, out
+
+
+def test_self_labelled_product_citations_are_stripped():
+    """ESNAD 09-24 shipped '[Saviynt EIC 1]' and '[6-Saviynt refs]'."""
+    out = qa.strip_citations("PAM covers Taadeen [Saviynt EIC 1]. Tenants isolate[6-Saviynt refs].")
+    assert "[" not in out, out
+    keep = "Flag it [SME REVIEW]. See [the guide](http://x/1)."
+    assert qa.strip_citations(keep) == keep
+
+
+def test_words_run_together_in_a_table_cell_are_degenerate():
+    """ESNAD's Total BoQ: 'ProvisionofSaviyntlicensesrequiredforIGAandPAM'."""
+    rows = "\n".join(f"| {i} | Saviynt - Licenses | ProvisionofSaviyntlicensesrequiredforIGAandPAMscope |"
+                     for i in range(8))
+    text = "The combined bill of quantities is below.\n| # | Item | Description |\n|---|---|---|\n" + rows
+    assert qa.is_degenerate(text)[0]
+    normal = "\n".join(f"| {i} | Saviynt EIC | Identity governance licence subscription |" for i in range(30))
+    assert not qa.is_degenerate("Lead in.\n| # | Item | Description |\n|---|---|---|\n" + normal)[0]

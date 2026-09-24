@@ -389,7 +389,10 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "engagements comparable to this one by vendor, sector and scope. Naming "
              "past clients is permitted and expected - IV's own proposals do it. State "
              "the client, sector, vendor and the nature of the work. Never state an "
-             "outcome metric the evidence does not support."),
+             "outcome metric the evidence does not support. Cite only work IV "
+             "DELIVERED: a past proposal is not a reference, and a client is not "
+             "a reference for a product the evidence does not show IV delivering "
+             "there."),
             # IV's own reference section is a sector/client table, not case
             # studies: the corpus holds client lists but no outcomes, so a
             # "problem, delivered, outcome" facet could only be invented.
@@ -792,10 +795,16 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "Basis. Leave price cells as 'To be confirmed' - Shilpi does "
              "NOT invent commercial figures. Vendor-specific: only line "
              "items {{ iam_vendor }} itself supplies, not other vendors in "
-             "this engagement."),
+             "this engagement. List only products and modules IN scope; "
+             "never a module this proposal excludes, and never a product "
+             "code or SKU the evidence does not give. Take quantities from the "
+             "population by domain (workforce users, customer identities, "
+             "privileged accounts) where one applies."),
             ("Total Bill of Quantities",
              "the combined BOQ as a markdown TABLE with EXACTLY these columns: "
-             "#, Item, Description, Unit Price, Total Price. Leave price cells "
+             "#, Item, Description, Unit Price, Total Price. One row per "
+             "delivery phase from the plan, plus one licence row per vendor, "
+             "each description one short sentence. Leave price cells "
              "as 'To be confirmed' - Shilpi does NOT invent commercial figures."),
             # IV splits payment into a licence schedule (by year) and an
             # implementation schedule (by milestone, with percentages).

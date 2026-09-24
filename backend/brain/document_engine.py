@@ -198,11 +198,34 @@ def _engagement_facts_clause(context: dict) -> str:
                 f"environment (DR, UAT, QA, Staging, Sandbox) as one that is "
                 f"built or provisioned in this engagement.")
     if context.get("is_saas"):
-        out += ("\n\nDEPLOYMENT: the platform is vendor-hosted SaaS. Never describe "
-                "installing, sizing or patching the platform's own servers, and never "
-                "name self-managed server components as deployed. The client "
-                "provides only connectivity and any integration agents or gateways.")
+        out += ("\n\nDEPLOYMENT: the platform is vendor-hosted SaaS. The vendor "
+                "provisions and operates the tenants. Never describe installing, "
+                "sizing or patching the platform's own servers, and never name "
+                "self-managed server components as deployed. The client provides "
+                "only connectivity and any integration agents or gateways.")
+        for vendor in context.get("iam_vendors") or [context.get("iam_vendor") or ""]:
+            for key, (saas, self_managed) in _SAAS_PRODUCTS.items():
+                if key in (vendor or "").lower():
+                    out += (f" {vendor}'s SaaS platform is {saas}; do not present "
+                            f"{self_managed} as part of this solution.")
+    pop = " ".join(str(answers.get("population_by_domain") or "").split())
+    if pop and pop.lower() not in ("skip", "none", "n/a", "-"):
+        # ESNAD 09-24: "10,000 users, including 5,000 workforce and 10,000
+        # CIAM" -- a licensing total set against per-domain figures.
+        out += (f"\n\nPOPULATION BY DOMAIN: {pop}. Quote these per-domain "
+                f"figures; never state a single user total smaller than their sum.")
     return out
+
+
+# Vendor -> (its SaaS platform, its self-managed products). ESNAD 09-24 named
+# PingFederate, PingDirectory and PingAccess as components of a PingOne
+# Advanced Identity Cloud tenant; IV's own proposal names AIC and PingGateway.
+_SAAS_PRODUCTS = {
+    "ping": ("PingOne Advanced Identity Cloud (with PingGateway where an edge "
+             "gateway is needed)",
+             "PingFederate, PingDirectory, PingAccess, PingAM, PingDS or PingIDM"),
+    "sailpoint": ("SailPoint Identity Security Cloud", "IdentityIQ"),
+}
 
 
 def _vendor_clause(iam_vendor: Optional[str]) -> str:
@@ -333,6 +356,9 @@ _SECTION_DISCOVERY_FIELDS: dict[str, tuple[str, ...]] = {
     "commercial": (
         "license_included", "pricing_model", "payment_milestones", "taxes",
         "travel", "support_terms", "validity_period", "currency",
+        # ESNAD 09-24's BoQ had [SME REVIEW] quantities beside a known
+        # population and listed modules the proposal excludes.
+        "in_scope", "population_by_domain", "delivery_phases",
     ),
     "compliance_matrix": ("rfp_text", "regulations", "certifications"),
 

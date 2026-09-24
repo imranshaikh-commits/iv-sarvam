@@ -1864,3 +1864,17 @@ def test_trim_never_wipes_a_list_and_keeps_nested_headers():
         body, "Ping Identity Solution Overview") == body
     assert document_engine._strip_echoed_title(
         "## Who Had Access\nHistory is kept.", "Who Had Access") == "History is kept."
+
+
+def test_saas_clause_names_the_saas_product_and_population_rule():
+    """ESNAD 09-24: PingFederate/PingDirectory presented as AIC components,
+    ESNAD told to provision vendor tenants, and 10,000 users set against
+    5,000 workforce + 10,000 CIAM."""
+    ctx = {"is_saas": True, "iam_vendors": ["Ping Identity", "Saviynt"],
+           "discovery_answers": {"population_by_domain": "WIAM users: 5000\nCIAM users: 10000"}}
+    c = document_engine._engagement_facts_clause(ctx)
+    assert "PingOne Advanced Identity Cloud" in c and "PingFederate" in c
+    assert "vendor provisions and operates the tenants" in c
+    assert "WIAM users: 5000 CIAM users: 10000" in c and "smaller than their sum" in c
+    assert "PingFederate" not in document_engine._engagement_facts_clause(
+        {"is_saas": False, "iam_vendors": ["Ping Identity"], "discovery_answers": {}})

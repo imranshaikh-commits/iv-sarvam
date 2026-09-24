@@ -42,6 +42,10 @@ log = logging.getLogger("shilpi.qa")
 # Inline evidence markers like [1], [12], or runs like [1][3][7]. These exist
 # for internal traceability; the client-facing document must not carry them.
 _CITATION_RE = re.compile(r"\s*\[\d{1,3}\](?:\s*\[\d{1,3}\])*")
+# Product-evidence citations the model labels itself: "[Saviynt EIC 1]",
+# "[6-Saviynt refs]" (both shipped in ESNAD 09-24). Short, bracketed, holds a
+# digit, and is not a markdown link.
+_LABELLED_CITATION_RE = re.compile(r"\s*\[[^\[\]\n]{0,30}?\d[^\[\]\n]{0,30}?\](?!\()")
 
 
 def strip_citations(text: str) -> str:
@@ -49,6 +53,7 @@ def strip_citations(text: str) -> str:
     if not text:
         return text
     out = _CITATION_RE.sub("", text)
+    out = _LABELLED_CITATION_RE.sub("", out)
     # "...unified architecture ." -> "...unified architecture."
     out = re.sub(r"\s+([.,;:!?])", r"\1", out)
     out = re.sub(r"[ \t]{2,}", " ", out)
@@ -307,6 +312,9 @@ def repetition_score(text: str, n: int = DEGENERATE_NGRAM) -> tuple[int, str]:
     return count, phrase
 
 
+_RUN_TOGETHER_RE = re.compile(r"[A-Za-z]{40,}")
+
+
 def is_degenerate(text: str) -> tuple[bool, str]:
     """Is this text padded, collapsed or otherwise not prose? (verdict, reason).
 
@@ -325,6 +333,13 @@ def is_degenerate(text: str) -> tuple[bool, str]:
     """
     if not text or len(text.split()) < DEGENERATE_MIN_WORDS:
         return False, ""
+
+    # Words run together with the spaces gone ("ProvisionofSaviyntlicenses
+    # requiredforIGAandPAMscope"): ESNAD's Total BoQ collapsed this way inside
+    # table cells, which every prose-only check below skips by design.
+    run = _RUN_TOGETHER_RE.search(text)
+    if run:
+        return True, f'words run together: "{run.group(0)[:40]}"'
 
     # Every check runs on PROSE ONLY. A 30-row markdown table repeats its column
     # shape on every line and has almost no function words, so scoring the raw

@@ -2155,3 +2155,24 @@ def test_section_evidence_is_capped_at_16_and_product_at_6_per_vendor():
         retrieve_product_fn=product))
     assert len(chunks) == de.SECTION_EVIDENCE_CAP == 16
     assert len(prod) == 2 * de.PRODUCT_EVIDENCE_PER_VENDOR == 12
+
+
+def test_structured_calls_default_to_low_reasoning_and_json_cutoffs_retry():
+    import asyncio
+    seen = {}
+
+    class _C:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kw):
+                    seen.update(kw)
+                    return "ok"
+    orig = app.instructor_client
+    app.instructor_client = lambda: _C
+    try:
+        asyncio.run(app._structured_across_models(app.Requirement, [], models=["m"]))
+    finally:
+        app.instructor_client = orig
+    assert seen["extra_body"] == {"reasoning": {"effort": app.STRUCTURED_REASONING_EFFORT}}
+    assert app._is_length_error(ValueError("1 validation error: Invalid JSON: EOF while parsing"))

@@ -81,6 +81,7 @@ TOP_K = int(os.environ.get("TOP_K", "8"))
 # evidence, not the whole fan-out. See classify_coverage for the measurement.
 COMPLIANCE_EVIDENCE_CHUNKS = int(os.environ.get("SHILPI_COMPLIANCE_EVIDENCE_CHUNKS", "12"))
 COMPLIANCE_MAX_TOKENS = int(os.environ.get("SHILPI_COMPLIANCE_MAX_TOKENS", "2000"))
+STRUCTURED_REASONING_EFFORT = os.environ.get("SHILPI_STRUCTURED_REASONING_EFFORT", "low").strip()
 # Compliance classification is 56 small structured calls per ESNAD run: pick
 # covered/partial/missing and quote evidence. A classification task, so it runs
 # on a cheap model first (GPT-6 Luna, $0.10/$0.50 per M) and falls back to the
@@ -2052,6 +2053,11 @@ async def _structured_across_models(response_model, messages: list[dict],
     """Try each model in turn. Model-level failures only."""
     ic = instructor_client()
     chain = list(models) if models else [PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL]
+    # Structured calls extract or classify; they do not need to think at length.
+    # On Gemini 3.8 Flash reasoning was 64% of output cost in ESNAD 09-24,
+    # including RFP page reading and compliance. Callers may pass their own.
+    if STRUCTURED_REASONING_EFFORT:
+        kwargs.setdefault("extra_body", {"reasoning": {"effort": STRUCTURED_REASONING_EFFORT}})
     for model in chain:
         try:
             result = await ic.chat.completions.create(
@@ -2091,9 +2097,13 @@ def build_evidence_block(chunks: list[dict]) -> str:
 
 
 def _is_length_error(e: Exception) -> bool:
-    """Instructor's wording for a structured reply cut off at max_tokens."""
+    """A structured reply cut off at max_tokens, however it surfaces. Six ESNAD
+    09-24 compliance replies stopped mid-JSON at ~1986 tokens and surfaced as a
+    JSON parse error, so they skipped the cheap retry and went to the fallback."""
     low = str(e).lower()
-    return "max_tokens" in low or "incomplete" in low or "length limit" in low
+    return any(k in low for k in ("max_tokens", "incomplete", "length limit",
+                                  "eof while parsing", "unterminated string",
+                                  "json_invalid", "invalid json"))
 
 
 async def classify_coverage(req: Requirement, chunks: list[dict]) -> CoverageEntry:

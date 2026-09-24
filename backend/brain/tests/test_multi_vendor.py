@@ -2176,3 +2176,42 @@ def test_structured_calls_default_to_low_reasoning_and_json_cutoffs_retry():
         app.instructor_client = orig
     assert seen["extra_body"] == {"reasoning": {"effort": app.STRUCTURED_REASONING_EFFORT}}
     assert app._is_length_error(ValueError("1 validation error: Invalid JSON: EOF while parsing"))
+
+
+def test_section_facts_ride_in_the_cached_system_prompt_not_each_call():
+    """Facts and RFP context are constant per section; in the user message they
+    re-billed at full price on every subsection while the system prompt cached."""
+    import asyncio
+    seen = []
+
+    async def emb(client, text):
+        return [0.0]
+
+    async def retrieve(client, e, q, **kw):
+        return []
+
+    async def fake_draft(client, system_prompt, user_prompt, max_tokens=0):
+        seen.append((system_prompt, user_prompt))
+        return "A grounded sentence."
+
+    orig = de.draft_with_openrouter
+    de.draft_with_openrouter = fake_draft
+    try:
+        section = next(s for s in pt.get_template("implementation") if s.id == "scope_understanding")
+        ctx = {"client_name": "X", "iam_vendor": "V", "iam_vendors": ["V"],
+               "proposal_type": "implementation", "rfp_text": "RFP-MARKER text",
+               "discovery_answers": {"in_scope": "FACT-MARKER " * 30}}
+        asyncio.run(de.draft_section(None, section, ctx, embed_fn=emb, retrieve_fn=retrieve,
+                                     build_grounded_system_fn=lambda c: "", top_k=4, fanout=1))
+    finally:
+        de.draft_with_openrouter = orig
+    assert seen
+    for system_prompt, user_prompt in seen:
+        assert "FACT-MARKER" in system_prompt and "RFP-MARKER" in system_prompt
+        assert "FACT-MARKER" not in user_prompt and "RFP-MARKER" not in user_prompt
+
+
+def test_scale_judgement_and_requirement_extraction_use_the_cheap_tier():
+    import inspect
+    assert "models=COMPLIANCE_LLM_MODELS" in inspect.getsource(app.judge_engagement_scale)
+    assert "models=COMPLIANCE_LLM_MODELS" in inspect.getsource(app.extract_requirements)

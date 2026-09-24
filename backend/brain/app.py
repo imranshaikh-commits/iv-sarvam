@@ -562,6 +562,7 @@ async def judge_engagement_scale(answers: dict) -> tuple[str, str]:
         res: _ScaleResult = await asyncio.wait_for(
             _structured_with_fallback(
                 _ScaleResult,
+                models=COMPLIANCE_LLM_MODELS,  # a one-word judgement: cheap tier
                 messages=[{"role": "system", "content": _SCALE_PROMPT},
                           {"role": "user", "content": listing[:4000]}],
                 temperature=0, max_retries=1),
@@ -2076,6 +2077,8 @@ async def _structured_across_models(response_model, messages: list[dict],
 async def extract_requirements(rfp_text: str) -> list[Requirement]:
     resp: ExtractedRequirements = await _structured_with_fallback(
         ExtractedRequirements,
+        models=COMPLIANCE_LLM_MODELS,  # extraction, not writing: cheap tier
+        max_tokens=COMPLIANCE_MAX_TOKENS * 2,
         messages=[
             {"role": "system", "content": _EXTRACT_PROMPT},
             {"role": "user", "content": f"Extract up to {MAX_REQUIREMENTS} compliance requirements from the following RFP text.\n\nRFP TEXT:\n{rfp_text[:12000]}"},

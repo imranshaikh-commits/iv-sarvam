@@ -1153,6 +1153,18 @@ async def draft_section(
     # Reuse the brain's evidence/system-prompt builder, then layer section-specific
     # drafting instructions on top so the model drafts THIS section.
     section_title = section_spec.render_title(context)
+    rfp_ctx = (context.get("rfp_text") or "")[:4000]
+    # The discovery answers relevant to THIS section. Without this the drafting
+    # engine saw only rfp_text and invented or omitted every captured specific.
+    client_facts = (f"CLIENT-SUPPLIED FACTS FOR THIS SECTION — these are "
+                    f"authoritative and MUST be used verbatim where relevant. Do not "
+                    f"replace them with generic statements, and do not claim they are "
+                    f"unavailable:\n{discovery_ctx}\n\n") if discovery_ctx else ""
+    # Facts and RFP context are the same for every subsection of this section,
+    # so they live in the cached system prompt, not the per-call user message
+    # (where they re-billed at full price on every facet).
+    section_context = f"\n\n{client_facts}RFP / requirement context:\n{rfp_ctx}"
+
     def _system_for(pchunks: list[dict]) -> str:
         evidence_block = build_grounded_system_fn(chunks)
         if pchunks and build_product_evidence_fn:
@@ -1167,15 +1179,8 @@ async def draft_section(
             purpose=section_spec.purpose,
             marker=SME_REVIEW_MARKER,
             evidence=evidence_block,
-        )
+        ) + section_context
     system_prompt = _system_for(product_chunks)
-    rfp_ctx = (context.get("rfp_text") or "")[:4000]
-    # The discovery answers relevant to THIS section. Without this the drafting
-    # engine saw only rfp_text and invented or omitted every captured specific.
-    client_facts = (f"CLIENT-SUPPLIED FACTS FOR THIS SECTION — these are "
-                    f"authoritative and MUST be used verbatim where relevant. Do not "
-                    f"replace them with generic statements, and do not claim they are "
-                    f"unavailable:\n{discovery_ctx}\n\n") if discovery_ctx else ""
 
     # Plan the subsection facets.
     #
@@ -1217,9 +1222,7 @@ async def draft_section(
         user_prompt = (
             f"Draft the \"{section_title}\" section now, grounded in the "
             f"CLIENT-SUPPLIED FACTS above or the EVIDENCE, citing evidence "
-            f"inline as [N].\n\n"
-            f"{client_facts}"
-            f"RFP / requirement context:\n{rfp_ctx}"
+            f"inline as [N]."
         )
         try:
             content = await _draft_once(user_prompt)
@@ -1272,9 +1275,7 @@ async def draft_section(
                 f"inline as [N]; client-supplied facts are stated directly and "
                 f"not cited. Do not repeat content that belongs in other "
                 f"subsections.\n"
-                f"{length_rule}\n\n"
-                f"{client_facts}"
-                f"RFP / requirement context:\n{rfp_ctx}"
+                f"{length_rule}"
             )
             # "Why Ping Identity" drafted from a pool that also held Saviynt's
             # docs sold Saviynt's features as Ping's. A subsection named for one

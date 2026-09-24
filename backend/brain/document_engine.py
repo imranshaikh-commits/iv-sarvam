@@ -489,7 +489,10 @@ async def _post_once(client: httpx.AsyncClient, payload: dict) -> dict:
         timeout=180,
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]
+    body = resp.json()
+    choice = body["choices"][0]
+    choice["_usage"] = body.get("usage") or {}
+    return choice
 
 
 def _trim_incomplete_tail(text: str) -> str:
@@ -514,6 +517,16 @@ def _trim_incomplete_tail(text: str) -> str:
     return "\n".join(lines).rstrip()
 
 
+_LENGTH_RETRY_MIN_TOKENS = int(os.environ.get("SHILPI_LENGTH_RETRY_MIN_TOKENS", "6000"))
+
+
+def _usage_note(choice: dict) -> str:
+    """Visible vs reasoning tokens, so a cut-off log says which one ran out."""
+    u = choice.get("_usage") or {}
+    reasoning = (u.get("completion_tokens_details") or {}).get("reasoning_tokens")
+    return f"completion={u.get('completion_tokens')} reasoning={reasoning}"
+
+
 async def _post_draft(client: httpx.AsyncClient, payload: dict) -> str:
     """One draft call. A response cut off at max_tokens is retried once with
     double the budget, then trimmed to its last complete sentence or row.
@@ -526,16 +539,20 @@ async def _post_draft(client: httpx.AsyncClient, payload: dict) -> str:
     choice = await _post_once(client, payload)
     if choice.get("finish_reason") != "length":
         return choice["message"]["content"]
-    log.warning("draft cut off at max_tokens=%s (model=%s); retrying with %s",
-                payload.get("max_tokens"), payload.get("model"),
-                2 * int(payload.get("max_tokens") or MAX_DRAFT_TOKENS))
+    budget = int(payload.get("max_tokens") or MAX_DRAFT_TOKENS)
+    # At least 6000: ESNAD 09-24 was still cut off at 2x (1800 for prose,
+    # 5000 for Tranche 3, which then shipped 3 rows). Billing is on tokens
+    # actually generated, so a higher ceiling costs nothing unless used.
+    retry_budget = max(2 * budget, _LENGTH_RETRY_MIN_TOKENS)
+    log.warning("draft cut off at max_tokens=%s (model=%s, %s); retrying with %s",
+                budget, payload.get("model"), _usage_note(choice), retry_budget)
     # Deliberately above MAX_DRAFT_TOKENS for this one retry: the ceiling
     # guards against padding, and this call was cut by hidden reasoning.
-    retry = {**payload, "max_tokens": 2 * int(payload.get("max_tokens") or MAX_DRAFT_TOKENS)}
-    choice = await _post_once(client, retry)
+    choice = await _post_once(client, {**payload, "max_tokens": retry_budget})
     content = choice["message"]["content"]
     if choice.get("finish_reason") == "length":
-        log.warning("draft still cut off after retry; trimming the incomplete tail")
+        log.warning("draft still cut off after retry (%s); trimming the incomplete tail",
+                    _usage_note(choice))
         content = _trim_incomplete_tail(content)
     return content
 

@@ -1781,7 +1781,7 @@ def test_a_draft_cut_off_at_max_tokens_is_retried_with_double_budget():
     never read. A 'length' stop must trigger one bigger retry."""
     c = _SeqClient([("is available but N", "length"), ("Complete answer.", "stop")])
     out = asyncio.run(document_engine._post_draft(c, {"model": "m", "max_tokens": 900}))
-    assert out == "Complete answer." and c.budgets == [900, 1800]
+    assert out == "Complete answer." and c.budgets == [900, document_engine._LENGTH_RETRY_MIN_TOKENS]
 
 
 def test_a_draft_still_cut_off_after_retry_is_trimmed_cleanly():

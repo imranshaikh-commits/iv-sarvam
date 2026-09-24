@@ -261,6 +261,7 @@ def _looks_like_saas(deployment_model: Optional[str]) -> bool:
 # padding with degenerate synonym chains. Length was never the gap — fidelity
 # was. 2500 leaves ample room for a substantive subsection.
 MAX_DRAFT_TOKENS = 2500
+DRAFT_REASONING_EFFORT = os.environ.get("SHILPI_DRAFT_REASONING_EFFORT", "low").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +445,10 @@ def discovery_context_for(section_id: str, answers: Optional[dict],
         text = " ".join(str(val).split())
         if not text or text.lower() in ("skip", "none", "n/a", "na", "-"):
             continue
+        # A template placeholder pasted back verbatim ("<IV's real tier/cert
+        # counts, or skip>") reached Company Profile in three ESNAD sessions.
+        if text.startswith("<") and text.endswith(">"):
+            continue
         lines.append(f"- {_humanise_field(key)}: {text}")
     if not lines:
         return ""
@@ -469,6 +474,11 @@ def _draft_payload(model: str, system_prompt: str, user_prompt: str,
         # Clamp to the hard ceiling so a bad depth config can never inflate a call.
         "max_tokens": min(int(max_tokens), MAX_DRAFT_TOKENS),
     }
+    if include_frequency_penalty and DRAFT_REASONING_EFFORT:
+        # Hidden reasoning counts against max_tokens: Gemini 3.8 Flash spent
+        # ~860 of every 900 tokens on it in ESNAD 09-24, so 19 drafts needed
+        # a retry. Dropped with the other optional params on a 400.
+        payload["reasoning"] = {"effort": DRAFT_REASONING_EFFORT}
     if include_frequency_penalty:
         # Raised from 0.2: the low value was chosen to preserve repeated vendor
         # and product terms, but it also let an exhausted model pad with synonym
@@ -608,7 +618,13 @@ def _is_retryable_budget_error(e: httpx.HTTPStatusError) -> bool:
     An exhausted balance is not retryable and must fail fast; an in-flight
     ceiling clears on its own. OpenRouter distinguishes them in the body.
     """
-    if e.response is None or e.response.status_code != 402:
+    if e.response is None:
+        return False
+    # 429 is a rate limit and always clears; ESNAD 09-24 (Gemini) lost
+    # "Connectors and Integrations" to one after the fallback hit it too.
+    if e.response.status_code == 429:
+        return True
+    if e.response.status_code != 402:
         return False
     try:
         body = e.response.text.lower()
@@ -941,7 +957,22 @@ async def _draft_with_retry(
     elif issues:
         log.info("QA: %s", "; ".join(issues))
 
+    cleaned = _trim_mid_sentence_end(cleaned)
     return cleaned if not _is_blank(cleaned) else None
+
+
+def _trim_mid_sentence_end(text: Optional[str]) -> Optional[str]:
+    """A prose draft whose last line stops mid-sentence lost its tail somewhere
+    finish_reason did not report ("...and preventative Seg", ESNAD 09-24).
+    Lists, tables and headers legitimately end without punctuation."""
+    if not text:
+        return text
+    last = text.rstrip().split("\n")[-1].strip()
+    if (not last or re.match(r"^([-*•|#>]|\d+[.)]\s)", last)
+            or last.endswith((".", "!", "?", ":", ")", '"', "]", "|"))):
+        return text
+    log.warning("draft ends mid-sentence (%r); trimming", last[-40:])
+    return _trim_incomplete_tail(text)
 
 
 def _strip_echoed_title(text: str, title: str) -> str:

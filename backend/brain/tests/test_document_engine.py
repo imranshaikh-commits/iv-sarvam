@@ -1623,10 +1623,46 @@ def test_an_exhausted_balance_is_not_retried_forever():
 
 def test_other_status_codes_are_not_mistaken_for_budget_errors():
     import httpx
-    for code in (400, 429, 500):
+    for code in (400, 500):
         resp = httpx.Response(code, text="{}", request=httpx.Request("POST", "https://x"))
         err = httpx.HTTPStatusError(str(code), request=resp.request, response=resp)
         assert not document_engine._is_retryable_budget_error(err), code
+
+
+def test_a_rate_limit_is_retried_not_shipped_as_a_failed_subsection():
+    """ESNAD 09-24 (Gemini): a 429 on primary AND fallback shipped
+    'Connectors and Integrations' as DRAFTING FAILED. 429 always clears."""
+    resp = httpx.Response(429, text="{}", request=httpx.Request("POST", "https://x"))
+    err = httpx.HTTPStatusError("429", request=resp.request, response=resp)
+    assert document_engine._is_retryable_budget_error(err)
+
+
+def test_drafting_evidence_carries_no_chat_rules_and_reasoning_is_capped():
+    """The chat SYSTEM_PROMPT rode inside every drafting evidence block and
+    Gemini obeyed its 'end with Assumptions & Open Questions' rule 22 times."""
+    import inspect, app
+    src = inspect.getsource(app)
+    assert "build_grounded_system, include_rules=False" in src
+    ev = app.build_grounded_system([], include_rules=False)
+    assert "Open Questions" not in ev and "EVIDENCE" in ev
+    p = document_engine._draft_payload("m", "s", "u")
+    assert p.get("reasoning") == {"effort": document_engine.DRAFT_REASONING_EFFORT}
+    assert "reasoning" not in document_engine._draft_payload(
+        "m", "s", "u", include_frequency_penalty=False)
+
+
+def test_prose_ending_mid_sentence_is_trimmed_lists_are_not():
+    t = document_engine._trim_mid_sentence_end
+    assert t("Core IGA runs campaigns. Core IGA orchestrates preventative Seg") \
+        == "Core IGA runs campaigns."
+    keep = "Scope:\n- Access reviews\n- Policy enforcement"
+    assert t(keep) == keep
+
+
+def test_placeholder_answers_never_reach_the_prompt():
+    ctx = document_engine.discovery_context_for(
+        "company_profile", {"partner_tier_certifications": "<IV's real tier/cert counts, or skip>"})
+    assert "<" not in ctx
 
 
 def test_a_drafting_failure_is_not_reported_as_weak_evidence():

@@ -41,7 +41,10 @@ log = logging.getLogger("shilpi.qa")
 # --- citations --------------------------------------------------------------
 # Inline evidence markers like [1], [12], or runs like [1][3][7]. These exist
 # for internal traceability; the client-facing document must not carry them.
-_CITATION_RE = re.compile(r"\s*\[\d{1,3}\](?:\s*\[\d{1,3}\])*")
+# "[1]", "[1][3]", "[1], [3]", "[1, 3]", "[2-4]". Gemini separates runs with
+# commas; stripping them one at a time left 177 ",." pairs in ESNAD 09-24.
+_CITE_ONE = r"\[\d{1,3}(?:\s*[-–,]\s*\d{1,3})*\]"
+_CITATION_RE = re.compile(rf"\s*{_CITE_ONE}(?:\s*[,;]?\s*{_CITE_ONE})*")
 # Product-evidence citations the model labels itself: "[Saviynt EIC 1]",
 # "[6-Saviynt refs]" (both shipped in ESNAD 09-24). Short, bracketed, holds a
 # digit, and is not a markdown link.
@@ -54,6 +57,8 @@ def strip_citations(text: str) -> str:
         return text
     out = _CITATION_RE.sub("", text)
     out = _LABELLED_CITATION_RE.sub("", out)
+    out = re.sub(r",\s*([.;:!?])", r"\1", out)
+    out = re.sub(r",[ \t]*(\||$)", r" \1", out, flags=re.M)
     # "...unified architecture ." -> "...unified architecture."
     out = re.sub(r"\s+([.,;:!?])", r"\1", out)
     out = re.sub(r"[ \t]{2,}", " ", out)
@@ -132,7 +137,10 @@ def strip_review_markers(text: str) -> str:
     """
     if not text:
         return text
-    out = text.replace(SME_REVIEW_SENTINEL, _SENTINEL_GUARD)
+    # "[SME REVIEW: the incumbent platform]" is a real gap: keep the flag, drop
+    # the note. Deleting the whole bracket left "The incumbent IAM platform is."
+    out = re.sub(r"\[\s*SME REVIEW\s*[:\-–][^\]]*\]", SME_REVIEW_SENTINEL, text)
+    out = out.replace(SME_REVIEW_SENTINEL, _SENTINEL_GUARD)
     out = _REVIEW_ASIDE_RE.sub("", out)
     out = re.sub(r"\s+([.,;:!?])", r"\1", out)
     out = re.sub(r"\(\s*\)|\[\s*\]", "", out)

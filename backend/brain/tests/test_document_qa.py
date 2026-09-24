@@ -277,11 +277,15 @@ run_tests(globals(), "DOCUMENT QA TESTS")
 def test_review_aside_with_nested_parenthetical_is_removed_whole():
     """ESNAD Company Profile shipped '... retail sectors. and partner tier
     status for insertion here.]' -- the aside ended at the nested ')'."""
-    src = ("We serve retail. [SME REVIEW: confirm certifications (e.g. Ping "
+    src = ("We serve retail. [to be confirmed: certifications (e.g. Ping "
            "Advanced) and partner tier status for insertion here.] We deliver.")
     out = qa.strip_review_markers(src)
     assert "insertion here" not in out and "]" not in out, out
     assert out.startswith("We serve retail.") and out.endswith("We deliver.")
+    # An SME note keeps its flag and loses only the note, so the sentence
+    # around it survives ("The incumbent IAM platform is." in 09-24).
+    out = qa.strip_review_markers("The incumbent platform is [SME REVIEW: unknown (e.g. X)].")
+    assert out == "The incumbent platform is [SME REVIEW].", out
 
 
 def test_dash_only_table_cell_becomes_hyphen_not_comma():
@@ -307,3 +311,10 @@ def test_words_run_together_in_a_table_cell_are_degenerate():
     assert qa.is_degenerate(text)[0]
     normal = "\n".join(f"| {i} | Saviynt EIC | Identity governance licence subscription |" for i in range(30))
     assert not qa.is_degenerate("Lead in.\n| # | Item | Description |\n|---|---|---|\n" + normal)[0]
+
+
+def test_comma_separated_citation_runs_leave_no_comma_debris():
+    """Gemini wrote '[1], [3].' -- 177 ',.' pairs survived in ESNAD 09-24."""
+    out = qa.strip_citations("Consulting firm (IAM) [1], [3]. Pune [2, 4]. Cell [5], | next")
+    assert ",." not in out and ", |" not in out, out
+    assert "(IAM)." in out and "Pune." in out

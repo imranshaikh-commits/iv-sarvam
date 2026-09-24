@@ -620,8 +620,13 @@ async def classify_intent_llm(text: str) -> tuple[Optional[str], str]:
     return intent, res.reading or ""
 
 
-def build_grounded_system(chunks: list[dict]) -> str:
-    lines = [SYSTEM_PROMPT, "\n=== EVIDENCE (from IV's past proposals) ===\n"]
+def build_grounded_system(chunks: list[dict], include_rules: bool = True) -> str:
+    # Drafting passes include_rules=False: its own system prompt has the rules.
+    # The chat rules embedded here contradicted it ("(needs SME confirmation)",
+    # "end with an Assumptions & Open Questions list") and Gemini obeyed:
+    # 22 such blocks in ESNAD 09-24.
+    lines = ([SYSTEM_PROMPT] if include_rules else []) + [
+        "\n=== EVIDENCE (from IV's past proposals) ===\n"]
     for i, c in enumerate(chunks, 1):
         head = c.get("heading") or "untitled section"
         lines.append(
@@ -2568,7 +2573,8 @@ async def generate_proposal_endpoint(request: Request):
                 iam_vendor=iam_vendor,
                 embed_fn=embed_query,
                 retrieve_fn=retrieve_chunks,
-                build_grounded_system_fn=build_grounded_system,
+                build_grounded_system_fn=functools.partial(
+                    build_grounded_system, include_rules=False),
                 run_compliance_matrix_fn=run_compliance_matrix,
                 # client_facing=True: this render goes into a DOCX that leaves
                 # the building. It drops the Evidence column (verbatim quotes

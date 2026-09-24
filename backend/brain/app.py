@@ -81,6 +81,13 @@ TOP_K = int(os.environ.get("TOP_K", "8"))
 # evidence, not the whole fan-out. See classify_coverage for the measurement.
 COMPLIANCE_EVIDENCE_CHUNKS = int(os.environ.get("SHILPI_COMPLIANCE_EVIDENCE_CHUNKS", "12"))
 COMPLIANCE_MAX_TOKENS = int(os.environ.get("SHILPI_COMPLIANCE_MAX_TOKENS", "2000"))
+# Compliance classification is 56 small structured calls per ESNAD run: pick
+# covered/partial/missing and quote evidence. A classification task, so it runs
+# on a cheap model first (GPT-6 Luna, $0.10/$0.50 per M) and falls back to the
+# drafting models. Override with SHILPI_COMPLIANCE_MODELS (comma-separated).
+COMPLIANCE_LLM_MODELS = list(dict.fromkeys(
+    [m.strip() for m in os.environ.get("SHILPI_COMPLIANCE_MODELS", "openai/gpt-6-luna").split(",")
+     if m.strip()] + [PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL]))
 MODEL_ID = "shilpi-architect"
 
 # Single Inspirit Vision organisation. Hard-coded until real multi-tenant auth
@@ -2108,6 +2115,8 @@ async def _classify_coverage_once(req: Requirement, chunks: list[dict],
                                   max_tokens: int) -> CoverageEntry:
     entry: CoverageEntry = await _structured_with_fallback(
         CoverageEntry,
+        models=COMPLIANCE_LLM_MODELS,
+        extra_body={"reasoning": {"effort": "low"}},
         messages=[
             {"role": "system", "content": _CLASSIFY_PROMPT},
             {"role": "user", "content": f"REQUIREMENT {req.id}:\n{req.text}\n\n=== EVIDENCE (from IV's past proposals) ===\n{build_evidence_block(chunks)}"},

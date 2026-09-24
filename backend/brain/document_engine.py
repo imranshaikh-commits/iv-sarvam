@@ -67,6 +67,11 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 PRIMARY_LLM_MODEL = os.environ.get("SHILPI_PRIMARY_MODEL", "").strip() or "z-ai/glm-5.2"
 FALLBACK_LLM_MODEL = os.environ.get("SHILPI_FALLBACK_MODEL", "").strip() or "qwen/qwen3-235b-a22b-2507"
 TOP_K = int(os.environ.get("TOP_K", "8"))
+# Evidence sent with every subsection of a section. ESNAD 09-24 prompts were
+# 10-32k tokens, mostly these chunks, re-sent per subsection. Both are env
+# knobs so a quality regression can be rolled back without a deploy.
+SECTION_EVIDENCE_CAP = int(os.environ.get("SHILPI_SECTION_EVIDENCE_CAP", "16"))
+PRODUCT_EVIDENCE_PER_VENDOR = int(os.environ.get("SHILPI_PRODUCT_EVIDENCE_PER_VENDOR", "6"))
 # Concurrency is what trips OpenRouter's in-flight budget ceiling: the limit is
 # on requests in flight at once, not on spend. Run 11 lost sixteen subsections
 # to a 402 at concurrency 3 with a 61-subsection template. Retry with backoff is
@@ -796,7 +801,9 @@ async def _retrieve_fanout(
             merged.append(c)
     merged.sort(key=lambda c: float(c.get("similarity") or 0.0), reverse=True)
     # Cap evidence to keep prompts bounded: base top_k, plus headroom per extra query.
-    cap = top_k * max(1, fanout)
+    # Was top_k x fanout = 24 at full depth, and every subsection re-sends it.
+    # 16 keeps the best-ranked evidence (merged is sorted by similarity).
+    cap = min(top_k * max(1, fanout), SECTION_EVIDENCE_CAP)
     proposal_chunks = merged[:cap]
 
     product_chunks: list[dict] = []
@@ -833,7 +840,8 @@ async def _retrieve_fanout(
         product_chunks.sort(key=lambda c: float(c.get("similarity") or 0.0), reverse=True)
         # top_k PER vendor: one shared cap let the better-embedding vendor's
         # docs crowd the other out of its own "Solution Overview".
-        product_chunks = product_chunks[:top_k * max(1, len([v for v in vendors if v]))]
+        product_chunks = product_chunks[:PRODUCT_EVIDENCE_PER_VENDOR
+                                        * max(1, len([v for v in vendors if v]))]
 
     return proposal_chunks, product_chunks
 

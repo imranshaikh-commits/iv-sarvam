@@ -2111,3 +2111,47 @@ def test_diagram_facts_and_stack_are_wired_into_the_app():
     assert "PingOne Advanced Identity Cloud" in facts and "PingFederate" in facts
     assert "CLIENT SYSTEMS" in facts and "Taadeen Platform" in facts
     assert "MULTI-VENDOR" in facts
+
+
+def test_compliance_classification_runs_on_a_cheap_model_first():
+    """56 structured classification calls per run went to the drafting model."""
+    import asyncio
+    seen = {}
+
+    async def fake(response_model, messages, models=None, **kw):
+        seen["models"], seen["kw"] = models, kw
+        return app.CoverageEntry(requirement_id="x", status="covered", summary="s",
+                                 recommendation="r")
+
+    orig = app._structured_with_fallback
+    app._structured_with_fallback = fake
+    try:
+        asyncio.run(app._classify_coverage_once(app.Requirement(id="AM-01", text="SSO"), [], 2000))
+    finally:
+        app._structured_with_fallback = orig
+    assert seen["models"][0] == "openai/gpt-6-luna"
+    assert app.PRIMARY_LLM_MODEL in seen["models"], "no fallback to the drafting models"
+    assert seen["kw"]["extra_body"] == {"reasoning": {"effort": "low"}}
+
+
+def test_section_evidence_is_capped_at_16_and_product_at_6_per_vendor():
+    import asyncio
+
+    async def emb(client, text):
+        return [0.0]
+
+    async def retrieve(client, e, q, **kw):
+        return [{"chunk_text": f"chunk {hash(q)} {i}", "similarity": 0.9 - i / 100} for i in range(8)]
+
+    async def product(client, e, vendor, k=8, capability=None):
+        return [{"chunk_text": f"{vendor} doc {i}", "vendor": vendor, "similarity": 0.8}
+                for i in range(8)]
+
+    section = next(s for s in pt.get_template("implementation") if s.id == "solution_overview")
+    ctx = {"client_name": "X", "iam_vendor": "Ping Identity and Saviynt",
+           "iam_vendors": ["Ping Identity", "Saviynt"], "proposal_type": "implementation"}
+    chunks, prod = asyncio.run(de._retrieve_fanout(
+        None, section, ctx, embed_fn=emb, retrieve_fn=retrieve, top_k=8, fanout=3,
+        retrieve_product_fn=product))
+    assert len(chunks) == de.SECTION_EVIDENCE_CAP == 16
+    assert len(prod) == 2 * de.PRODUCT_EVIDENCE_PER_VENDOR == 12

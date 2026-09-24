@@ -1,8 +1,11 @@
 fastapi==0.115.*
 uvicorn==0.34.*
 httpx==0.28.*
-openai>=1.50,<2
-instructor>=1.12,<2
+# Pinned to the versions the working container runs (checked 2026-09-24).
+# instructor 1.17 rejects Mode.OPENROUTER_STRUCTURED_OUTPUTS for the openai
+# client (ModeError), which would break every structured call on a fresh build.
+openai==1.109.1
+instructor==1.12.0
 pydantic>=2.7,<3
 python-docx>=1.1,<2
 jinja2>=3.1,<4

@@ -390,9 +390,13 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "past clients is permitted and expected - IV's own proposals do it. State "
              "the client, sector, vendor and the nature of the work. Never state an "
              "outcome metric the evidence does not support."),
-            ("Case Studies",
-             "two or three short case studies: client, problem, what was delivered, "
-             "outcome. Keep each to about 80 words."),
+            # IV's own reference section is a sector/client table, not case
+            # studies: the corpus holds client lists but no outcomes, so a
+            # "problem, delivered, outcome" facet could only be invented.
+            ("Client References by Sector",
+             "a markdown TABLE with columns Client Sector, Client List. Use ONLY "
+             "client names and sectors that appear in the EVIDENCE; never add a "
+             "client, sector or outcome the evidence does not name."),
         ),
     ),
     SectionSpec(
@@ -469,7 +473,8 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
             ("{{ iam_vendor }} Extension Modules and Add-ons",
              "optional modules beyond the core platform and when each is worth "
              "adding. Note explicitly which are IN scope for this engagement and "
-             "which are not."),
+             "which are not. A capability the client-supplied scope names is IN "
+             "scope; never describe it as an excluded or future add-on."),
         ),
     ),
     SectionSpec(

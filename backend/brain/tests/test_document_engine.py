@@ -1835,3 +1835,32 @@ def test_appendix_reads_real_intake_ids():
         "Nafath (Citizen authentication, SSO); GIS (Esri Geoportal, Maps) (SSO, RBAC)")
     assert rows[0][:2] == ["Nafath", "Citizen authentication, SSO"]
     assert rows[1][:2] == ["GIS (Esri Geoportal, Maps)", "SSO, RBAC"]
+
+
+def test_vendor_split_is_stated_even_without_a_vendor_scope_map():
+    """ESNAD had vendor_scope_map null, so 'Why Ping Identity' claimed
+    Saviynt's IGA features. The vendor answer states the split; use it."""
+    v = "Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM"
+    clause = document_engine._vendor_scope_clause(
+        {"iam_vendor": v, "iam_vendors": ["Ping Identity", "Saviynt"],
+         "discovery_answers": {}})
+    assert "MULTI-VENDOR" in clause and v in clause
+    assert document_engine._vendor_scope_clause(
+        {"iam_vendor": "SailPoint", "iam_vendors": ["SailPoint"]}) == ""
+
+
+def test_extension_modules_see_the_scope():
+    assert "in_scope" in document_engine._SECTION_DISCOVERY_FIELDS["solution_overview"]
+
+
+def test_trim_never_wipes_a_list_and_keeps_nested_headers():
+    """Review findings on round 2: the trim cascaded through a whole bullet
+    list, and echo-stripping deleted the first '## ' capability header."""
+    t = "## Governance\n- Certification campaigns\n- Access reviews\n- Policy enforce"
+    assert document_engine._trim_incomplete_tail(t) == \
+        "## Governance\n- Certification campaigns\n- Access reviews"
+    body = "## Ping Identity Overview\nAdaptive MFA evaluates each sign-in."
+    assert document_engine._strip_echoed_title(
+        body, "Ping Identity Solution Overview") == body
+    assert document_engine._strip_echoed_title(
+        "## Who Had Access\nHistory is kept.", "Who Had Access") == "History is kept."

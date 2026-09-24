@@ -116,9 +116,11 @@ def _explicitly_excluded(section_id: str, answers: dict) -> Optional[str]:
     # A section's OWN fields exclude it only when they say no. ESNAD's
     # `training` answer was a full in-scope training programme; searching it
     # for the word "training" dropped the Knowledge Transfer section IV wrote.
-    for k in _OWN_FIELDS.get(section_id, ()):
-        if _NEGATIVE_ANSWER_RE.match(str(answers.get(k) or "")):
-            return f"{k}: {answers[k]}".strip()[:80]
+    own = [str(answers.get(k) or "") for k in _OWN_FIELDS.get(section_id, ())]
+    negative = [v for v in own if _NEGATIVE_ANSWER_RE.match(v)]
+    positive = [v for v in own if not _is_empty(v) and not _NEGATIVE_ANSWER_RE.match(v)]
+    if negative and not positive:
+        return negative[0].strip()[:80]
     haystack = str(answers.get("out_of_scope") or "").lower()
     if not haystack.strip():
         return None

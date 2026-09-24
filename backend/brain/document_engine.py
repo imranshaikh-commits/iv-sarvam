@@ -157,14 +157,30 @@ def _vendor_scope_clause(context: dict) -> str:
     holds even in sections that were never split.
     """
     vmap = (context.get("discovery_answers") or {}).get("vendor_scope_map") or {}
-    if len(vmap) < 2:
+    if len(vmap) >= 2:
+        lines = "; ".join(f"{v} owns {s}" for v, s in vmap.items())
+    elif len(context.get("iam_vendors") or []) > 1:
+        # ESNAD had no vendor_scope_map, so this clause never fired and "Why
+        # Ping Identity" sold Saviynt's IGA features. The vendor answer itself
+        # ("Ping Identity for Access Management and CIAM, Saviynt for IGA and
+        # PAM") states the split; use it.
+        lines = context.get("iam_vendor") or ""
+    else:
         return ""
-    lines = "; ".join(f"{v} owns {s}" for v, s in vmap.items())
     return (f"\n\nMULTI-VENDOR ENGAGEMENT — {lines}. When describing the "
            f"architecture or capabilities, attribute each part to the "
            f"correct vendor explicitly. Do not blend the two vendors' "
            f"capabilities into one undifferentiated description, and do not "
            f"describe one vendor as covering scope that belongs to the other.")
+
+
+def _subsection_vendor(sub_title: str, context: dict) -> Optional[str]:
+    """The one vendor a subsection heading names, in a multi-vendor proposal."""
+    vendors = [v for v in (context.get("iam_vendors") or []) if v]
+    if len(vendors) < 2:
+        return None
+    named = [v for v in vendors if v.lower() in (sub_title or "").lower()]
+    return named[0] if len(named) == 1 else None
 
 
 def _engagement_facts_clause(context: dict) -> str:
@@ -286,6 +302,9 @@ _SECTION_DISCOVERY_FIELDS: dict[str, tuple[str, ...]] = {
         "sod", "access_review_cadence", "target_integrations", "audit",
         "monitoring", "identity_types", "differentiators", "regulations",
         "population_by_domain",
+        # The Extension Modules subsection decides what is IN scope; without
+        # the scope it called JIT an excluded add-on while the SOW required it.
+        "in_scope",
     ),
     "proposed_solution": (
         "deployment_model", "hardware_sizing_inputs", "cluster_topology",
@@ -453,19 +472,19 @@ def _trim_incomplete_tail(text: str) -> str:
     A table keeps only rows that close with '|'; prose ends at its last full
     sentence. A clean cut is a shorter section, a ragged one is a visible defect.
     """
+    # ONE line at most: a cascade wiped whole bullet lists ("- Access
+    # reviews" has no terminal punctuation). Colons are not sentence ends.
     lines = (text or "").rstrip().split("\n")
-    while lines:
-        last = lines[-1].rstrip()
-        if last.lstrip().startswith("|"):
-            if last.endswith("|"):
-                break
+    last = lines[-1].rstrip() if lines else ""
+    if last.lstrip().startswith("|"):
+        if not last.endswith("|"):
             lines.pop()
-            continue
-        m = list(re.finditer(r"[.!?:](?=\s|$)", last))
+    elif last:
+        m = list(re.finditer(r"[.!?](?=\s|$)", last))
         if m:
             lines[-1] = last[: m[-1].end()]
-            break
-        lines.pop()
+        else:
+            lines.pop()
     return "\n".join(lines).rstrip()
 
 
@@ -484,6 +503,8 @@ async def _post_draft(client: httpx.AsyncClient, payload: dict) -> str:
     log.warning("draft cut off at max_tokens=%s (model=%s); retrying with %s",
                 payload.get("max_tokens"), payload.get("model"),
                 2 * int(payload.get("max_tokens") or MAX_DRAFT_TOKENS))
+    # Deliberately above MAX_DRAFT_TOKENS for this one retry: the ceiling
+    # guards against padding, and this call was cut by hidden reasoning.
     retry = {**payload, "max_tokens": 2 * int(payload.get("max_tokens") or MAX_DRAFT_TOKENS)}
     choice = await _post_once(client, retry)
     content = choice["message"]["content"]
@@ -737,9 +758,11 @@ async def _retrieve_fanout(
                     continue
                 if key:
                     seen_product.add(key)
-                product_chunks.append(c)
+                product_chunks.append({**c, "_for_vendor": v})
         product_chunks.sort(key=lambda c: float(c.get("similarity") or 0.0), reverse=True)
-        product_chunks = product_chunks[:top_k]
+        # top_k PER vendor: one shared cap let the better-embedding vendor's
+        # docs crowd the other out of its own "Solution Overview".
+        product_chunks = product_chunks[:top_k * max(1, len([v for v in vendors if v]))]
 
     return proposal_chunks, product_chunks
 
@@ -890,9 +913,13 @@ def _strip_echoed_title(text: str, title: str) -> str:
     first, _, rest = (text or "").lstrip().partition("\n")
     words = re.findall(r"[a-z0-9]+", first.lower())
     line = first.strip()
+    # A markdown header is structure the nested-overview facets ask for
+    # ("## Ping Identity Overview" under "Ping Identity Solution Overview");
+    # strip one only when it IS the title.
+    is_header = line.startswith("#")
     if (title_words and words and len(words) <= 12 and rest.strip()
             and not line.startswith("|") and not line.endswith((".", "!", "?", ":"))
-            and set(words) <= title_words):
+            and (set(words) == title_words if is_header else set(words) <= title_words)):
         return rest.lstrip()
     return text
 
@@ -1032,20 +1059,22 @@ async def draft_section(
     # Reuse the brain's evidence/system-prompt builder, then layer section-specific
     # drafting instructions on top so the model drafts THIS section.
     section_title = section_spec.render_title(context)
-    evidence_block = build_grounded_system_fn(chunks)
-    if product_chunks and build_product_evidence_fn:
-        evidence_block += build_product_evidence_fn(product_chunks)
-    system_prompt = _SECTION_SYSTEM_TEMPLATE.format(
-        title=section_title,
-        proposal_type=context.get("proposal_type", "implementation"),
-        client_name=context.get("client_name", "the client"),
-        vendor_clause=_vendor_clause(context.get("iam_vendor")),
-        vendor_scope_clause=(_vendor_scope_clause(context)
-                             + _engagement_facts_clause(context)),
-        purpose=section_spec.purpose,
-        marker=SME_REVIEW_MARKER,
-        evidence=evidence_block,
-    )
+    def _system_for(pchunks: list[dict]) -> str:
+        evidence_block = build_grounded_system_fn(chunks)
+        if pchunks and build_product_evidence_fn:
+            evidence_block += build_product_evidence_fn(pchunks)
+        return _SECTION_SYSTEM_TEMPLATE.format(
+            title=section_title,
+            proposal_type=context.get("proposal_type", "implementation"),
+            client_name=context.get("client_name", "the client"),
+            vendor_clause=_vendor_clause(context.get("iam_vendor")),
+            vendor_scope_clause=(_vendor_scope_clause(context)
+                                 + _engagement_facts_clause(context)),
+            purpose=section_spec.purpose,
+            marker=SME_REVIEW_MARKER,
+            evidence=evidence_block,
+        )
+    system_prompt = _system_for(product_chunks)
     rfp_ctx = (context.get("rfp_text") or "")[:4000]
     # The discovery answers relevant to THIS section. Without this the drafting
     # engine saw only rfp_text and invented or omitted every captured specific.
@@ -1153,9 +1182,16 @@ async def draft_section(
                 f"{client_facts}"
                 f"RFP / requirement context:\n{rfp_ctx}"
             )
+            # "Why Ping Identity" drafted from a pool that also held Saviynt's
+            # docs sold Saviynt's features as Ping's. A subsection named for one
+            # vendor sees only that vendor's product evidence.
+            sub_vendor = _subsection_vendor(sub_title, context)
+            sub_system = (_system_for([c for c in product_chunks
+                                       if c.get("_for_vendor") == sub_vendor])
+                          if sub_vendor else system_prompt)
             try:
                 sub_content = await _draft_with_retry(
-                    client, system_prompt, user_prompt, budget)
+                    client, sub_system, user_prompt, budget)
             except Exception as e:
                 log.error("draft_section subsection %s failed for %s: %s", sub_title, section_spec.id, e)
                 # NOT the SME marker: this is a system failure, not a content
@@ -2520,8 +2556,10 @@ async def generate_proposal(
             compliance_markdown = render_matrix_markdown_fn(matrix)
         except Exception as e:
             log.error("Compliance matrix generation failed: %s", e)
+            # The exception text stays in the log: it can carry model output
+            # fragments, and this string ships inside the client document.
             compliance_markdown = (
-                f"{SME_REVIEW_MARKER}: compliance matrix generation failed ({e}). "
+                f"{SME_REVIEW_MARKER}: compliance matrix generation failed. "
                 "Run the /v1/compliance-matrix endpoint separately."
             )
 

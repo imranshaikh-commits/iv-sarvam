@@ -370,3 +370,7 @@ def test_a_negative_training_answer_still_drops_knowledge_transfer():
 
 def test_similar_experience_is_kept_without_case_study_answers():
     assert "similar_experience" in _kept_ids(_ESNAD)
+
+
+def test_a_negative_kt_answer_does_not_override_an_in_scope_training_plan():
+    assert "knowledge_transfer" in _kept_ids(dict(_ESNAD, kt="None"))

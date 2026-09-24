@@ -2027,3 +2027,72 @@ def test_client_facing_matrix_keeps_the_full_requirement_text():
         requirement_id="AM-01", requirement_text=text, status="covered",
         summary="s", recommendation="r")], overall_notes="")
     assert text in A.render_matrix_markdown(m, client_facing=True)
+
+
+def test_vendor_named_subsection_sees_only_its_vendors_product_docs():
+    """ESNAD 09-23: 'Why Ping Identity' was drafted from one pooled evidence
+    block holding Saviynt's docs too, and claimed Saviynt's IGA features."""
+    import asyncio
+    seen = {}
+
+    async def fake_embed(client, text):
+        return [0.0] * 1536
+
+    async def fake_retrieve(client, embedding, query, **kw):
+        return []
+
+    async def product_fn(client, embedding, vendor, k=8, capability=None):
+        tag = "PINGDOC" if vendor.startswith("Ping") else "SAVDOC"
+        return [{"chunk_text": f"{tag} {vendor}", "vendor": vendor, "similarity": 0.9}]
+
+    async def fake_draft(client, system_prompt, user_prompt, max_tokens=0):
+        title = user_prompt.split('"')[1]
+        seen[title] = system_prompt
+        return "Grounded sentence about the platform."
+
+    orig = de.draft_with_openrouter
+    de.draft_with_openrouter = fake_draft
+    try:
+        section = next(s for s in pt.get_template("implementation")
+                       if s.id == "solution_overview")
+        ctx = {"client_name": "X", "iam_vendor": "Ping Identity and Saviynt",
+               "iam_vendors": ["Ping Identity", "Saviynt"],
+               "proposal_type": "implementation", "discovery_answers": {}}
+        asyncio.run(de.draft_section(
+            None, section, ctx, embed_fn=fake_embed, retrieve_fn=fake_retrieve,
+            build_grounded_system_fn=lambda chunks: "",
+            top_k=4, fanout=1, retrieve_product_fn=product_fn,
+            build_product_evidence_fn=lambda cs: " ".join(c["chunk_text"] for c in cs)))
+    finally:
+        de.draft_with_openrouter = orig
+    assert "PINGDOC" in seen["Why Ping Identity"] and "SAVDOC" not in seen["Why Ping Identity"]
+    assert "SAVDOC" in seen["Why Saviynt"] and "PINGDOC" not in seen["Why Saviynt"]
+    shared = seen["Access Certification"]
+    assert "PINGDOC" in shared and "SAVDOC" in shared
+
+
+def test_a_truncated_compliance_classification_is_retried_with_double_budget():
+    """A reasoning model cut off mid-JSON used to turn a requirement into
+    'To be confirmed' with no retry. 56 ESNAD requirements ride on this."""
+    import asyncio
+    budgets = []
+
+    async def fake_once(req, chunks, max_tokens):
+        budgets.append(max_tokens)
+        if len(budgets) == 1:
+            raise RuntimeError("The output is incomplete due to a max_tokens length limit")
+        return "ok"
+
+    orig = app._classify_coverage_once
+    app._classify_coverage_once = fake_once
+    try:
+        out = asyncio.run(app.classify_coverage(
+            app.Requirement(id="AM-01", text="SSO"), []))
+    finally:
+        app._classify_coverage_once = orig
+    assert out == "ok" and budgets == [app.COMPLIANCE_MAX_TOKENS, 2 * app.COMPLIANCE_MAX_TOKENS]
+
+
+def test_rfp_page_extraction_goes_through_the_budget_retry():
+    import inspect
+    assert "_structured_with_fallback(" in inspect.getsource(app.rfp_structured_call)

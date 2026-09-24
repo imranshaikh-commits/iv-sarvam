@@ -497,7 +497,9 @@ async def rfp_structured_call(response_model, messages: list[dict]):
     takes the model call as an injected function, so it stays free of app.py's
     dependency surface and is independently testable.
     """
-    return await _structured_across_models(
+    # Through the budget-retry wrapper: a 402 in-flight error on one page used
+    # to come back as an empty page, indistinguishable from a blank one.
+    return await _structured_with_fallback(
         response_model, messages, models=[PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL])
 
 
@@ -1787,9 +1789,11 @@ async def reject_architecture(proposal_id: str | None, comment: str) -> str:
 
 
 _SELF_BASE = os.environ.get("SHILPI_SELF_BASE", "http://127.0.0.1:8000")
-# Safety net, not a shaper. 56 compliance calls plus full-budget vendor
-# overviews pushed an ESNAD run toward 25 min; a timeout loses the whole run.
-_DRAFT_TIMEOUT_S = float(os.environ.get("SHILPI_DRAFT_TIMEOUT_S", "2400"))
+# Safety net, not a shaper; a timeout loses the whole run after every credit
+# is spent. ESNAD 09-23 generated in <=33 min with 20 requirements and two
+# sections dropped; the next run adds 36 compliance calls, Knowledge Transfer,
+# Similar Experience and length retries, so 40 min was no longer a margin.
+_DRAFT_TIMEOUT_S = float(os.environ.get("SHILPI_DRAFT_TIMEOUT_S", "3600"))
 
 
 async def generate_proposal_from_chat(session_id: str | None,
@@ -2034,7 +2038,29 @@ def build_evidence_block(chunks: list[dict]) -> str:
     return "\n\n".join(lines) if lines else "(no relevant evidence found in the proposal corpus)"
 
 
+def _is_length_error(e: Exception) -> bool:
+    """Instructor's wording for a structured reply cut off at max_tokens."""
+    low = str(e).lower()
+    return "max_tokens" in low or "incomplete" in low or "length limit" in low
+
+
 async def classify_coverage(req: Requirement, chunks: list[dict]) -> CoverageEntry:
+    """Classify one requirement. A reply cut off at max_tokens is retried once
+    at double the budget: the primary model's reasoning tokens count against
+    it, and a truncated classification otherwise ships as "To be confirmed",
+    indistinguishable from a genuine evidence gap."""
+    try:
+        return await _classify_coverage_once(req, chunks, COMPLIANCE_MAX_TOKENS)
+    except Exception as e:  # noqa: BLE001
+        if not _is_length_error(e):
+            raise
+        log.warning("Compliance %s cut off at max_tokens=%d; retrying at %d",
+                    req.id, COMPLIANCE_MAX_TOKENS, 2 * COMPLIANCE_MAX_TOKENS)
+        return await _classify_coverage_once(req, chunks, 2 * COMPLIANCE_MAX_TOKENS)
+
+
+async def _classify_coverage_once(req: Requirement, chunks: list[dict],
+                                  max_tokens: int) -> CoverageEntry:
     entry: CoverageEntry = await _structured_with_fallback(
         CoverageEntry,
         messages=[
@@ -2048,7 +2074,7 @@ async def classify_coverage(req: Requirement, chunks: list[dict]) -> CoverageEnt
         # incomplete due to a max_tokens length limit" and the requirement fails
         # entirely. The response is a small object with a handful of quotes, so
         # the headroom is cheap; the evidence cap above is the substantive fix.
-        max_tokens=COMPLIANCE_MAX_TOKENS,
+        max_tokens=max_tokens,
         # LOW frequency_penalty: caps runaway repetition without penalizing the
         # repeated vendor/product/evidence terms that verbatim-quote grounding
         # relies on. A degenerate spiral shouldn't be retried (it just multiplies

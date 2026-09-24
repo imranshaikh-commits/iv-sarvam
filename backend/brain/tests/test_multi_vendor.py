@@ -2096,3 +2096,18 @@ def test_a_truncated_compliance_classification_is_retried_with_double_budget():
 def test_rfp_page_extraction_goes_through_the_budget_retry():
     import inspect
     assert "_structured_with_fallback(" in inspect.getsource(app.rfp_structured_call)
+
+
+def test_diagram_facts_and_stack_are_wired_into_the_app():
+    """Facts must reach BOTH spec call sites; the stack is added at assembly."""
+    import inspect
+    src = inspect.getsource(app)
+    assert src.count("facts=_diagram_facts(answers)") == 2
+    assert '"diagram_type": "stack"' in src and "_stack_spec(intake_answers" in src
+    facts = app._diagram_facts({
+        "iam_vendor": "Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM",
+        "deployment_model": "SaaS hosted within the Kingdom", "envs": "Dev, Test, and Prod",
+        "target_integrations": "Taadeen Platform (SSO); Complex Management (custom connector)"})
+    assert "PingOne Advanced Identity Cloud" in facts and "PingFederate" in facts
+    assert "CLIENT SYSTEMS" in facts and "Taadeen Platform" in facts
+    assert "MULTI-VENDOR" in facts

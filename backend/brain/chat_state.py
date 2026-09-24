@@ -436,6 +436,8 @@ def classify_architecture_intent(text: str) -> str | None:
 # DIAGRAM_TYPES. IV's sample proposals use the left-hand names; the renderer
 # only understands the right-hand ones.
 DIAGRAM_TYPE_MAP: dict[str, str] = {
+    "solution stack": "stack",
+    "stack": "stack",
     "solution/reference": "architecture",
     "solution": "architecture",
     "reference": "architecture",
@@ -496,6 +498,13 @@ DEFAULT_DIAGRAMS_PER_ROUND = 3
 # "deployment" diagram that was just the logical flow again — no zones, no load
 # balancer, no HA — which is the one thing a deployment diagram exists to convey.
 DIAGRAM_TYPE_GUIDANCE: dict[str, str] = {
+    # Built deterministically (diagram_engine.build_stack_spec), not by the
+    # model; this text only applies if a stack is ever drafted by an LLM.
+    "stack": (
+        "Show the SOLUTION STACK on one page: user populations on the left, each "
+        "vendor platform as a block of its capability areas, the client's named "
+        "applications on the right, identity sources and SIEM along the bottom."
+    ),
     "architecture": (
         "Show the LOGICAL solution: identity sources, the IAM platform components "
         "broken out by product role (federation / lifecycle / directory / MFA / "
@@ -687,6 +696,8 @@ _PLAN_RATIONALE = {
     "sequence": "the interaction order between user, IdP, MFA and application",
     "component": "the integration inventory and connectors",
     "data_flow": "where identity data originates, is stored and is retained",
+    "stack": "the whole solution on one page: users, each platform's capabilities, "
+             "and the client's named systems (drawn from your answers, not by the model)",
 }
 
 
@@ -769,7 +780,7 @@ def apply_plan_edit(plan: list[tuple[str, str]], text: str) -> list[tuple[str, s
 # taking a dependency on diagram_engine.py for one constant. Kept in sync by
 # the test that asserts the two match (test_llm_add_fallback_type_is_valid).
 _LLM_ADD_ENGINE_TYPES = ("architecture", "flow", "sequence", "network",
-                         "data_flow", "component")
+                         "data_flow", "component", "stack")
 
 _LLM_ADD_PROMPT = (
     "A consultant is editing a proposed set of architecture diagrams for an "

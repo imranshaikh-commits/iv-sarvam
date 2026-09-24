@@ -215,7 +215,8 @@ def test_generate_diagram_spec_uses_injected_helper_with_caps():
     assert spec.title == "My Architecture"  # caller title preserved
     assert captured["model"] is DiagramSpec
     kw = captured["kwargs"]
-    assert kw["max_tokens"] == de.DIAGRAM_SPEC_MAX_TOKENS == 1500
+    assert kw["max_tokens"] == de.DIAGRAM_SPEC_MAX_TOKENS
+    assert kw.get("extra_body", {}).get("reasoning") == {"effort": de.DIAGRAM_REASONING_EFFORT}
     assert kw["frequency_penalty"] == 0.2
     assert kw["max_retries"] == 1
     # returned spec is sanitized
@@ -565,7 +566,10 @@ def test_architecture_groups_are_zones_not_lanes():
         nodes=[diagram_engine.DiagramNode(id="a", label="Node", group="DMZ")],
         edges=[],
     )
-    assert "direction: right" not in diagram_engine.build_d2(spec)
+    # Zones carry no lane direction of their own; only the root sets one
+    # (left to right for structural views since ESNAD 09-24).
+    d2 = diagram_engine.build_d2(spec)
+    assert d2.count("direction:") == 1 and d2.startswith("direction: right"), d2[:60]
 
 
 def test_aspect_penalty_scores_a_band_not_a_ceiling():
@@ -762,3 +766,96 @@ def test_a_question_label_alone_is_enough():
              {"id": "x", "label": "Approve", "group": "Manager"}]
     edges = [{"source": "a", "target": "q"}, {"source": "q", "target": "x"}]
     assert diagram_engine.spec_shortfall(_flow(nodes, edges)) is not None
+
+
+# ---------------------------------------------------------------------------
+# ESNAD 09-24 diagram review: wrong products, no named systems, tangles,
+# shapes lost, no colour, everything in a trailing section.
+# ---------------------------------------------------------------------------
+_ESNAD_SYSTEMS = (
+    "Nafath (Citizen and workforce authentication, SSO through federation); "
+    "Taadeen Platform (Privileged access, federation, SSO); Bravo/ inspection platform "
+    "(Federation, SSO); ESM / ITSM Platform (Access request workflows, SSO); Bidding "
+    "platform (Federation, SSO); GIS (Esri Geoportal, Admin, Maps) (SSO); PowerBi/ "
+    "reporting tools (SSO); Bytebase, Grafana & OutSystem (Privileged access, SSO); "
+    "Complex Management (Custom connector-based provisioning and SSO)")
+
+
+def _esnad_stack():
+    return diagram_engine.build_stack_spec(
+        title="ESNAD — Solution Stack", client_name="ESNAD", is_saas=True,
+        iam_vendor="Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM",
+        population="WIAM users: 5000\nCIAM users: 10000\nPAM privileged accounts: 50",
+        target_integrations=_ESNAD_SYSTEMS,
+        context="Integrate with ERP, HR, AD/LDAP, Taadeen, CRM/ESM, APIs, SIEM")
+
+
+def test_sanitize_keeps_node_shapes():
+    """Every decision diamond rendered as a rectangle: shape was dropped."""
+    spec = diagram_engine.DiagramSpec(title="t", nodes=[
+        diagram_engine.DiagramNode(id="q", label="MFA Required?", shape="decision"),
+        diagram_engine.DiagramNode(id="d", label="AD", shape="datastore")], edges=[])
+    shapes = [n.shape for n in diagram_engine.sanitize_spec(spec).nodes]
+    assert shapes == ["decision", "datastore"]
+    d2 = diagram_engine.build_d2(diagram_engine.sanitize_spec(spec))
+    assert "shape: diamond" in d2 and "shape: cylinder" in d2
+
+
+def test_stack_is_built_from_facts_with_the_right_products_and_systems():
+    spec = _esnad_stack()
+    labels = " | ".join(n.label for n in spec.nodes)
+    groups = {n.group for n in spec.nodes}
+    assert "Ping Identity: PingOne Advanced Identity Cloud (SaaS)" in groups
+    assert "Saviynt: Saviynt Enterprise Identity Cloud (SaaS)" in groups
+    for name in ("Taadeen Platform", "Bidding platform", "Complex Management",
+                 "Workforce users (5,000)", "Customer users (10,000)",
+                 "Privileged administrators (50 accounts)", "Nafath (national login)"):
+        assert name in labels, name
+    assert not any(k in labels for k in ("Ping DS", "Ping IDM", "Ping AM", "PingFederate"))
+    # SSO reaches the whole application group with one arrow, not nine.
+    assert any(e.target == "group:ESNAD applications" for e in spec.edges)
+    d2 = diagram_engine.build_d2(spec)
+    assert "-> ESNAD_applications" in d2, "group edge did not resolve to the container"
+
+
+def test_vendor_colours_and_legend():
+    d2 = diagram_engine.build_d2(_esnad_stack())
+    assert "#1A56DB" in d2 and "#1E8E3E" in d2, "Ping blue / Saviynt green missing"
+    assert d2.startswith("direction: right")
+    assert f"font-size: {diagram_engine.D2_NODE_FONT}" in d2
+    legend = diagram_engine.legend_for(_esnad_stack())
+    assert "blue = Ping Identity" in legend and "green = Saviynt" in legend
+
+
+def test_no_border_radius_on_non_rectangles():
+    spec = diagram_engine.DiagramSpec(title="t", nodes=[
+        diagram_engine.DiagramNode(id="q", label="Approved?", shape="decision")], edges=[])
+    block = diagram_engine.build_d2(spec).split('q: "Approved?"')[1].split("\n}\n")[0]
+    assert "border-radius" not in block
+
+
+def test_too_complex_spec_is_sent_back_to_simplify_then_kept():
+    nodes = [diagram_engine.DiagramNode(id=f"n{i}", label=f"Node {i}") for i in range(20)]
+    edges = [diagram_engine.DiagramEdge(source=f"n{i}", target=f"n{i+1}") for i in range(19)]
+    spec = diagram_engine.DiagramSpec(diagram_type="architecture", title="t",
+                                      nodes=nodes, edges=edges)
+    why = diagram_engine.spec_shortfall(spec)
+    assert why and "too complex" in why
+    assert not diagram_engine._is_fatal_shortfall(why)
+    assert "Simplify" in diagram_engine._correction_for(why)
+
+
+def test_engagement_facts_reach_the_spec_prompt_untruncated():
+    seen = {}
+
+    async def fake(model, messages, **kw):
+        seen["prompt"] = messages[1]["content"]
+        return diagram_engine.DiagramSpec(title="x", nodes=[
+            diagram_engine.DiagramNode(id="a", label="A"),
+            diagram_engine.DiagramNode(id="b", label="B")],
+            edges=[diagram_engine.DiagramEdge(source="a", target="b")])
+
+    facts = "DEPLOYMENT: PingOne Advanced Identity Cloud; CLIENT SYSTEMS: Taadeen"
+    asyncio.run(diagram_engine.generate_diagram_spec(
+        fake, title="t", context_text="x" * 20000, facts=facts))
+    assert facts in seen["prompt"]

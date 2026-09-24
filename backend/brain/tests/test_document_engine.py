@@ -1914,3 +1914,29 @@ def test_saas_clause_names_the_saas_product_and_population_rule():
     assert "WIAM users: 5000 CIAM users: 10000" in c and "smaller than their sum" in c
     assert "PingFederate" not in document_engine._engagement_facts_clause(
         {"is_saas": False, "iam_vendors": ["Ping Identity"], "discovery_answers": {}})
+
+
+def test_each_esnad_diagram_has_a_home_section():
+    """ESNAD 09-24 sent Integration, PAM and IGA to a trailing section."""
+    cases = {
+        ("stack", "ESNAD — Solution Stack"): "Why Ping Identity",
+        ("flow", "ESNAD — Privileged Access Management"): "Saviynt Solution Overview",
+        ("flow", "ESNAD — Identity Governance"): "Access Certification",
+        ("flow", "ESNAD — Identity Lifecycle"): "Proposed HRMS Integration and Joiner Workflow",
+        ("component", "ESNAD — Integration"): "Connectors and Integrations",
+        ("architecture", "ESNAD — Solution Architecture"): "Proposed Future IAM State for X",
+    }
+    for (dtype, title), heading in cases.items():
+        pat = document_engine._placement_for({"diagram_type": dtype, "title": title})
+        assert pat and pat.search(heading), (title, heading)
+
+
+def test_diagram_caption_carries_the_colour_key():
+    import io as _io
+    from docx import Document as _Doc
+    from PIL import Image
+    buf = _io.BytesIO(); Image.new("RGB", (400, 200), "white").save(buf, "PNG"); buf.seek(0)
+    doc = _Doc()
+    document_engine._embed_diagram(doc, {"title": "t", "stream": buf,
+                                         "legend": "Colour key: blue = Ping Identity."})
+    assert doc.paragraphs[-1].text == "Colour key: blue = Ping Identity."

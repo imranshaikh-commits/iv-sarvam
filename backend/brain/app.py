@@ -1403,6 +1403,42 @@ def _answers_summary(answers: dict, limit: int = 12000) -> str:
     return "\n".join(parts)[:limit]
 
 
+def _diagram_facts(answers: dict) -> str:
+    """The facts every diagram must agree with -- the same ones drafted text
+    gets (vendor split, SaaS products, environments, population) plus the
+    client's named systems. ESNAD 09-24's diagrams had none of them and drew
+    Ping DS / IDM / AM for a SaaS tenant and "Cloud SaaS Applications" for
+    nine named systems."""
+    import document_engine
+    from proposal_templates import split_vendors
+    iam_vendor = str(answers.get("iam_vendor") or "")
+    ctx = {"iam_vendor": iam_vendor, "iam_vendors": split_vendors(iam_vendor),
+           "discovery_answers": answers,
+           "is_saas": document_engine._looks_like_saas(answers.get("deployment_model"))}
+    facts = (document_engine._vendor_scope_clause(ctx)
+             + document_engine._engagement_facts_clause(ctx)).strip()
+    names = diagram_engine._system_names(str(answers.get("target_integrations") or ""))
+    if names:
+        facts += ("\n\nCLIENT SYSTEMS (use these names for application nodes): "
+                  + "; ".join(names))
+    return facts
+
+
+def _stack_spec(answers: dict, title: str) -> DiagramSpec:
+    """The deterministic solution stack for this engagement (no model call)."""
+    import document_engine
+    return diagram_engine.build_stack_spec(
+        title=title, client_name=str(answers.get("client_name") or "Client"),
+        iam_vendor=str(answers.get("iam_vendor") or ""),
+        vendor_scope_map=answers.get("vendor_scope_map") or None,
+        is_saas=document_engine._looks_like_saas(answers.get("deployment_model")),
+        population=str(answers.get("population_by_domain") or ""),
+        target_integrations=str(answers.get("target_integrations") or ""),
+        context=" ".join(str(answers.get(k) or "") for k in
+                         ("in_scope", "directories", "integration_hrms",
+                          "current_hrms", "source_of_truth", "monitoring", "audit")))
+
+
 async def _architecture_evidence(client: httpx.AsyncClient, answers: dict) -> str:
     """Retrieve IV's own architecture write-ups to ground the spec.
 
@@ -1551,14 +1587,16 @@ async def propose_one_diagram(
         full_title = f"{client_name} — {title}"
         guidance = chat_state.deployment_guidance_for(title, dtype)
         try:
-            spec = await asyncio.wait_for(
-                diagram_engine.generate_diagram_spec(
-                    _structured_with_fallback, title=full_title, diagram_type=dtype,
-                    context_text=context, client_name=client_name,
-                    iam_vendor=iam_vendor, vendor_scope_map=vendor_scope_map,
-                    guidance=guidance, evidence_text=evidence,
-                    models=DIAGRAM_LLM_MODELS or None),
-                timeout=_DIAGRAM_SPEC_TIMEOUT_S)
+            spec = _stack_spec(answers, full_title) if dtype == "stack" else \
+                await asyncio.wait_for(
+                    diagram_engine.generate_diagram_spec(
+                        _structured_with_fallback, title=full_title, diagram_type=dtype,
+                        context_text=context, client_name=client_name,
+                        iam_vendor=iam_vendor, vendor_scope_map=vendor_scope_map,
+                        guidance=guidance, evidence_text=evidence,
+                        models=DIAGRAM_LLM_MODELS or None,
+                        facts=_diagram_facts(answers)),
+                    timeout=_DIAGRAM_SPEC_TIMEOUT_S)
         except asyncio.TimeoutError:
             log.warning("diagram spec timed out for %s", title)
             return (f"**{title}** didn't come back in time. Say **regenerate** to retry "
@@ -1651,21 +1689,23 @@ async def propose_architecture(
             guidance = chat_state.deployment_guidance_for(title, dtype)
             async with sem:
                 try:
-                    spec = await asyncio.wait_for(
-                        diagram_engine.generate_diagram_spec(
-                            _structured_with_fallback,
-                            title=full_title,
-                            diagram_type=dtype,
-                            context_text=context,
-                            client_name=client_name,
-                            iam_vendor=iam_vendor,
-                            vendor_scope_map=vendor_scope_map,
-                            guidance=guidance,
-                            evidence_text=evidence,
-                            models=DIAGRAM_LLM_MODELS or None,
-                        ),
-                        timeout=_DIAGRAM_SPEC_TIMEOUT_S,
-                    )
+                    spec = _stack_spec(answers, full_title) if dtype == "stack" else \
+                        await asyncio.wait_for(
+                            diagram_engine.generate_diagram_spec(
+                                _structured_with_fallback,
+                                title=full_title,
+                                diagram_type=dtype,
+                                context_text=context,
+                                client_name=client_name,
+                                iam_vendor=iam_vendor,
+                                vendor_scope_map=vendor_scope_map,
+                                guidance=guidance,
+                                evidence_text=evidence,
+                                models=DIAGRAM_LLM_MODELS or None,
+                                facts=_diagram_facts(answers),
+                            ),
+                            timeout=_DIAGRAM_SPEC_TIMEOUT_S,
+                        )
                 except asyncio.TimeoutError:
                     log.warning("diagram spec timed out after %ss for %s — skipping",
                                 _DIAGRAM_SPEC_TIMEOUT_S, title)
@@ -2560,8 +2600,25 @@ async def generate_proposal_endpoint(request: Request):
                 embed_diagrams.append(
                     {"title": drow.get("title") or "Architecture Diagram",
                      "status": "approved", "image_bytes": image,
-                     "diagram_type": drow.get("diagram_type")}
+                     "diagram_type": drow.get("diagram_type"),
+                     "legend": diagram_engine.legend_for(spec)}
                 )
+
+    # The one-page solution stack, built from the answers with no model call.
+    # Every element is a discovery fact, so it needs no approval round; IV leads
+    # its solution section with this picture and no ESNAD run had one.
+    if intake_answers.get("iam_vendor") and not any(
+            (d.get("diagram_type") or "") == "stack" for d in embed_diagrams):
+        try:
+            stack = _stack_spec(intake_answers,
+                                f"{client_name or 'Client'} — Solution Stack")
+            image = diagram_engine.render_spec(stack, fmt="png")
+            if image and len(stack.nodes) >= 3:
+                embed_diagrams.insert(0, {
+                    "title": stack.title, "status": "approved", "image_bytes": image,
+                    "diagram_type": "stack", "legend": diagram_engine.legend_for(stack)})
+        except Exception as e:  # noqa: BLE001 - a missing picture never fails a run
+            log.warning("solution stack render failed (skipping): %s", e)
 
     try:
         async with httpx.AsyncClient() as client:

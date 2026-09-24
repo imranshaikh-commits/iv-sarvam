@@ -1801,10 +1801,11 @@ def _embeddable_diagrams(diagrams: Optional[list[dict]]) -> list[dict]:
         title = d.get("title") or "Architecture Diagram"
         image = d.get("image_bytes")
         path = d.get("image_path")
+        extra = {"diagram_type": d.get("diagram_type"), "legend": d.get("legend")}
         if image:
-            out.append({"title": title, "stream": io.BytesIO(image)})
+            out.append({"title": title, "stream": io.BytesIO(image), **extra})
         elif path and os.path.exists(path):
-            out.append({"title": title, "stream": path})
+            out.append({"title": title, "stream": path, **extra})
     return out
 
 
@@ -1931,7 +1932,14 @@ async def _attach_assets(client, sections: list[dict], context: dict,
 # Matched on the diagram's TYPE and title against the subsection heading, since
 # the diagram plan and the template are written independently.
 _DIAGRAM_PLACEMENT: tuple[tuple[str, str], ...] = (
-    (r"joiner|integration|hrms|lifecycle|jml", r"HRMS Integration|Joiner"),
+    # Specific before generic: ESNAD 09-24 sent Integration, PAM and IGA to the
+    # trailing section because only the joiner and solution patterns existed,
+    # and "integration" was swallowed by the joiner rule.
+    (r"\bstack\b", r"^Why\b"),
+    (r"privileged|\bpam\b", r"Privileged|Saviynt Solution Overview"),
+    (r"governance|certification|\biga\b", r"Access Certification"),
+    (r"joiner|hrms|lifecycle|jml", r"HRMS Integration|Joiner"),
+    (r"integration", r"Connectors and Integrations|Application Onboarding"),
     (r"deployment", r"Proposed Deployment Architecture"),
     (r"security|network", r"Proposed Production Architecture"),
     (r"solution|reference|architecture", r"Proposed Future IAM State"),
@@ -1970,6 +1978,15 @@ def _embed_diagram(document: Document, item: dict) -> None:
                             max_w=_DIAGRAM_MAX_W, max_h=_DIAGRAM_MAX_H)
     except Exception as e:  # noqa: BLE001 - a bad render must not sink the section
         log.warning("could not embed diagram %s: %s", item.get("title"), e)
+        return
+    # The colour key, under the picture: IV's diagrams carry a legend; ours
+    # colour by vendor and say so here rather than inside the image.
+    if item.get("legend"):
+        cap = document.add_paragraph()
+        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = cap.add_run(item["legend"])
+        run.italic = True
+        run.font.size = Pt(9)
 
 
 def _render_section_assets(document: Document, sec: dict) -> None:

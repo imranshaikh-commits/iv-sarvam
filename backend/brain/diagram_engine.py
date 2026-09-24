@@ -41,11 +41,22 @@ MAX_LABEL_LEN = 80
 MAX_TITLE_LEN = 120
 MAX_ID_LEN = 64
 
-# Per-call LLM budget for diagram-spec generation (task-mandated cap).
-DIAGRAM_SPEC_MAX_TOKENS = 1500
+# Per-call LLM budget for diagram-spec generation. Was 1500; a reasoning model
+# spends much of that before writing any JSON, so the spec came back cut off
+# and the call fell through to the fallback. Billing is on tokens generated.
+DIAGRAM_SPEC_MAX_TOKENS = int(os.environ.get("SHILPI_DIAGRAM_SPEC_MAX_TOKENS", "4000"))
+DIAGRAM_REASONING_EFFORT = os.environ.get("SHILPI_DIAGRAM_REASONING_EFFORT", "low").strip()
+
+# READABILITY limits, below the hard caps above. ESNAD 09-24's future-state and
+# joiner diagrams carried ~40 edges each and rendered as a tangle that is
+# unreadable at page width; IV's own diagrams hold roughly a dozen elements.
+# Over these, the spec is sent back once to be simplified.
+SOFT_MAX_NODES = int(os.environ.get("SHILPI_DIAGRAM_SOFT_MAX_NODES", "14"))
+SOFT_MAX_EDGES = int(os.environ.get("SHILPI_DIAGRAM_SOFT_MAX_EDGES", "18"))
 
 # Allowlisted diagram types. Anything else is coerced to "architecture".
-DIAGRAM_TYPES = ("architecture", "flow", "sequence", "network", "data_flow", "component")
+DIAGRAM_TYPES = ("architecture", "flow", "sequence", "network", "data_flow", "component",
+                 "stack")
 
 # Graphviz rankdir per diagram type.
 _RANKDIR = {
@@ -55,6 +66,7 @@ _RANKDIR = {
     "data_flow": "LR",
     "sequence": "LR",
     "network": "LR",
+    "stack": "LR",
 }
 
 # Approval state machine. draft -> needs_review -> approved | rejected;
@@ -146,6 +158,9 @@ class DiagramSpec(BaseModel):
 # Sanitization — enforce caps, escape labels, drop dangling edges
 # ---------------------------------------------------------------------------
 
+GROUP_REF = "group:"
+
+
 def _clip(text: str, limit: int) -> str:
     text = " ".join((text or "").split())  # collapse whitespace/newlines
     return text[:limit].strip()
@@ -193,14 +208,22 @@ def sanitize_spec(spec: DiagramSpec) -> DiagramSpec:
                 id=safe_id,
                 label=_clip(node.label, MAX_LABEL_LEN) or safe_id,
                 group=_clip(node.group, MAX_LABEL_LEN) or None if node.group else None,
+                # Dropping this rendered every decision diamond, datastore and
+                # person as a rectangle ("MFA Required?" in ESNAD 09-24).
+                shape=node.shape,
             )
         )
 
     valid_ids = {n.id for n in safe_nodes}
+    # "group:<name>" connects to a whole container (the deterministic solution
+    # stack points SSO at every client application at once, not nine arrows).
+    valid_ids |= {f"{GROUP_REF}{n.group}" for n in safe_nodes if n.group}
     safe_edges: list[DiagramEdge] = []
     for edge in spec.edges[:MAX_EDGES]:
-        src = id_map.get(edge.source, _safe_node_id(edge.source, -1))
-        tgt = id_map.get(edge.target, _safe_node_id(edge.target, -1))
+        src = edge.source if edge.source.startswith(GROUP_REF) else \
+            id_map.get(edge.source, _safe_node_id(edge.source, -1))
+        tgt = edge.target if edge.target.startswith(GROUP_REF) else \
+            id_map.get(edge.target, _safe_node_id(edge.target, -1))
         if src not in valid_ids or tgt not in valid_ids:
             continue  # drop dangling edge rather than inventing a node
         safe_edges.append(
@@ -257,9 +280,14 @@ def build_dot(spec: DiagramSpec) -> str:
             lines.append("  " + _emit_node(n))
         lines.append("  }")
 
+    first_in = {}
+    for n in spec.nodes:
+        if n.group:
+            first_in.setdefault(f"{GROUP_REF}{n.group}", n.id)
     for e in spec.edges:
         attr = f' [label="{_escape_label(e.label)}"]' if e.label else ""
-        lines.append(f'  "{e.source}" -> "{e.target}"{attr};')
+        src, tgt = first_in.get(e.source, e.source), first_in.get(e.target, e.target)
+        lines.append(f'  "{src}" -> "{tgt}"{attr};')
 
     lines.append("}")
     return "\n".join(lines)
@@ -342,14 +370,60 @@ def _is_accent(label: str) -> bool:
     return any(h in low for h in _ACCENT_HINTS)
 
 
+# Colour by the vendor that owns a component, so a reader can tell Ping from
+# Saviynt at a glance: ESNAD 09-24's diagrams were all grey and IV's own use a
+# colour per platform. (keywords, name for the key, fill, stroke)
+_VENDOR_PALETTE: tuple[tuple[tuple[str, ...], str, str, str], ...] = (
+    (("ping", "forgerock", "aic"), "blue", "#E8F0FE", "#1A56DB"),
+    (("saviynt",), "green", "#E6F4EA", "#1E8E3E"),
+    (("sailpoint", "identityiq", "identitynow"), "teal", "#E0F2F1", "#00796B"),
+    (("okta",), "navy", "#E8EAF6", "#283593"),
+    (("cyberark",), "purple", "#F3E5F5", "#6A1B9A"),
+)
+
+
+def _vendor_colour(*texts: Optional[str]):
+    low = " ".join(t or "" for t in texts).lower()
+    for keys, _name, fill, stroke in _VENDOR_PALETTE:
+        if any(re.search(rf"\b{k}", low) for k in keys):
+            return fill, stroke
+    return None
+
+
+def legend_for(spec: "DiagramSpec") -> str:
+    """One-line colour key for the caption under the diagram."""
+    parts, seen = [], set()
+    for n in spec.nodes:
+        low = f"{n.label} {n.group or ''}".lower()
+        for keys, name, _f, _s in _VENDOR_PALETTE:
+            hit = next((k for k in keys if re.search(rf"\b{k}", low)), None)
+            if hit and name not in seen:
+                seen.add(name)
+                vendor = {"ping": "Ping Identity", "forgerock": "Ping Identity",
+                          "aic": "Ping Identity"}.get(hit, hit.title())
+                parts.append(f"{name} = {vendor}")
+    if not parts:
+        return ""
+    parts.append("white = client systems")
+    if any(n.shape == "decision" for n in spec.nodes):
+        parts.append("diamond = decision")
+    return "Colour key: " + "; ".join(parts) + "."
+
+
 def _iv_style(indent: str, *, fill: str, stroke: str, font_color: str,
-              bold: bool = False, stroke_width: int = 2) -> list[str]:
+              bold: bool = False, stroke_width: int = 2,
+              font_size: Optional[int] = None, rounded: bool = True) -> list[str]:
     out = [f"{indent}style: {{",
            f'{indent}  fill: "{fill}"',
            f'{indent}  stroke: "{stroke}"',
            f"{indent}  stroke-width: {stroke_width}",
-           f'{indent}  font-color: "{font_color}"',
-           f"{indent}  border-radius: 4"]
+           f'{indent}  font-color: "{font_color}"']
+    # border-radius is a rectangle property; never set it on the diamonds,
+    # cylinders and people that sanitize_spec now lets through.
+    if rounded:
+        out.append(f"{indent}  border-radius: 4")
+    if font_size:
+        out.append(f"{indent}  font-size: {font_size}")
     if bold:
         out.append(f"{indent}  bold: true")
     out.append(f"{indent}}}")
@@ -361,6 +435,11 @@ def _iv_style(indent: str, *, fill: str, stroke: str, font_color: str,
 # IIQ, Manager, Active Directory -- with the process running left to right and
 # edges crossing between lanes.
 _LANE_TYPES = frozenset({"flow", "sequence"})
+_WIDE_TYPES = frozenset({"architecture", "component", "network", "stack"})
+# Larger than D2's defaults (16 / 11): a diagram is scaled to a 6in column, and
+# ESNAD 09-24's edge labels printed at roughly 4pt.
+D2_NODE_FONT = int(os.environ.get("SHILPI_D2_NODE_FONT", "20"))
+D2_EDGE_FONT = int(os.environ.get("SHILPI_D2_EDGE_FONT", "15"))
 
 
 def build_d2(spec: DiagramSpec, *, direction: Optional[str] = None) -> str:
@@ -376,9 +455,11 @@ def build_d2(spec: DiagramSpec, *, direction: Optional[str] = None) -> str:
     """
     lanes = spec.diagram_type in _LANE_TYPES
     # Lane diagrams stack lanes DOWN and run the process RIGHT inside each one.
-    # `direction` overrides this: the renderer re-runs a diagram that came out
-    # too tall for the page with the axis flipped, and keeps whichever fits.
-    root_dir = direction or "down"
+    # Structural views read left to right (users -> platforms -> systems), as
+    # IV's do. `direction` overrides this: the renderer re-runs a diagram that
+    # came out too tall for the page with the axis flipped, and keeps whichever
+    # fits.
+    root_dir = direction or ("right" if spec.diagram_type in _WIDE_TYPES else "down")
     lines: list[str] = [
         f"direction: {root_dir}",
         "",
@@ -397,29 +478,34 @@ def build_d2(spec: DiagramSpec, *, direction: Optional[str] = None) -> str:
             loose.append(n)
 
     def emit_node(n: DiagramNode, indent: str) -> list[str]:
-        accent = _is_accent(n.label) or n.shape == "decision"
+        decision = n.shape == "decision"
+        vendor = None if decision else _vendor_colour(n.label, n.group)
         out = [f'{indent}{_d2_id(n.id)}: "{_d2_label(n.label)}" {{']
         d2_shape = NODE_SHAPES.get(n.shape, "rectangle")
         if d2_shape != "rectangle":
             out.append(f"{indent}  shape: {d2_shape}")
-        out += _iv_style(indent + "  ",
-                         fill=IV_CLEARANCE_TINT if accent else IV_WHITE,
-                         stroke=IV_CLEARANCE if accent else IV_COSMOS,
-                         font_color=IV_COSMOS, bold=accent)
+        fill, stroke = vendor or ((IV_CLEARANCE_TINT, IV_CLEARANCE) if decision
+                                  else (IV_WHITE, IV_COSMOS))
+        out += _iv_style(indent + "  ", fill=fill, stroke=stroke,
+                         font_color=IV_COSMOS, bold=bool(vendor) or decision,
+                         font_size=D2_NODE_FONT, rounded=d2_shape == "rectangle")
         out.append(f"{indent}}}")
         return out
 
     path: dict[str, str] = {}
     for group, members in grouped.items():
         gid = _d2_id(group)
+        path[f"{GROUP_REF}{group}"] = gid
         lines.append(f'{gid}: "{_d2_label(_pretty_group(group))}" {{')
         if lanes:
             # The lane itself runs across the page; the lanes stack down.
             lines.append(f"  direction: {'right' if root_dir == 'down' else 'down'}")
         # A zone should read as a boundary, not a coloured slab competing with
         # its own contents: near-white fill, hairline border.
-        lines += _iv_style("  ", fill=IV_PAPER, stroke=IV_ASH,
-                           font_color=IV_COSMOS, bold=True, stroke_width=1)
+        tint = _vendor_colour(group)
+        lines += _iv_style("  ", fill=IV_PAPER, stroke=tint[1] if tint else IV_ASH,
+                           font_color=IV_COSMOS, bold=True,
+                           stroke_width=2 if tint else 1)
         for n in members:
             path[n.id] = f"{gid}.{_d2_id(n.id)}"
             lines += emit_node(n, "  ")
@@ -438,8 +524,8 @@ def build_d2(spec: DiagramSpec, *, direction: Optional[str] = None) -> str:
         lines.append("  style: {")
         lines.append(f'    stroke: "{IV_SLATE}"')
         lines.append("    stroke-width: 1")
-        lines.append(f'    font-color: "{IV_ASH}"')
-        lines.append("    font-size: 11")
+        lines.append(f'    font-color: "{IV_SLATE}"')
+        lines.append(f"    font-size: {D2_EDGE_FONT}")
         lines.append("  }")
         lines.append("}")
 
@@ -661,6 +747,9 @@ def spec_shortfall(spec: "DiagramSpec") -> str | None:
     # So this is checked and retried rather than asked for again: a node whose
     # label is a question, or which has multiple labelled outgoing edges, is a
     # decision node whatever the model called it.
+    if n > SOFT_MAX_NODES or e > SOFT_MAX_EDGES:
+        return (f"it is too complex to read at page width ({n} nodes, {e} edges; "
+                f"the limit is {SOFT_MAX_NODES} nodes and {SOFT_MAX_EDGES} edges)")
     if spec.diagram_type in _LANE_TYPES:
         by_source: dict[str, list] = {}
         for edge in spec.edges:
@@ -788,12 +877,17 @@ You output a STRUCTURED diagram specification (typed nodes and edges) — never 
 RULES:
 1. Model the solution as a small set of clear nodes (systems, identity sources, IAM platform,
    target applications, users) connected by directed edges that show data/identity flow.
-2. Keep it readable: aim for 5-15 nodes. Never exceed the schema caps.
+2. Keep it readable at page width: at most 14 nodes and 18 edges, and ONE purpose
+   per diagram (a structure view OR a process flow, never both).
 3. Use short, stable node ids (lowercase, alphanumeric/underscore) and concise human labels.
 4. Every edge's source and target MUST reference a node id you defined.
 5. Ground the diagram in the provided context; do NOT invent specific product versions,
    vendors, or integrations that are not implied by the context.
 6. Choose an appropriate diagram_type from the allowed list.
+7. The ENGAGEMENT FACTS are authoritative. Name products exactly as they say,
+   and label each platform node with its vendor's product name. Where the
+   diagram shows applications, use the client's named systems rather than generic
+   boxes such as "Enterprise Apps" or "Cloud SaaS Applications".
 """
 
 
@@ -832,16 +926,25 @@ _DECISION_CORRECTION = (
 # which is the safe direction: the first version of this matched on the words
 # "no nodes"/"no edges" and missed the actual wordings ("it contained 2
 # node(s)", "only 1 edge(s)"), so an empty spec would have been accepted.
-_COSMETIC_SHORTFALL_RE = re.compile(r"branch points were not marked", re.I)
+_COSMETIC_SHORTFALL_RE = re.compile(r"branch points were not marked|too complex to read", re.I)
 
 
 def _is_fatal_shortfall(shortfall: str) -> bool:
     return not _COSMETIC_SHORTFALL_RE.search(shortfall or "")
 
 
+_SIMPLIFY_CORRECTION = (
+    "Simplify it: keep ONE purpose for this diagram, merge minor steps and "
+    "peripheral systems into a single node, and drop edges that repeat a path "
+    "already shown. Stay within the limit."
+)
+
+
 def _correction_for(shortfall: str) -> str:
     """Turn a rejection reason into an instruction aimed at that reason."""
     lead = f"\n\nIMPORTANT: your previous answer was rejected because {shortfall}. "
+    if "too complex" in shortfall.lower():
+        return lead + _SIMPLIFY_CORRECTION
     if "decision" in shortfall.lower():
         return lead + _DECISION_CORRECTION
     return lead + _GRAPH_CORRECTION
@@ -859,6 +962,7 @@ async def generate_diagram_spec(
     guidance: str = "",
     evidence_text: str = "",
     models: list[str] | None = None,
+    facts: str = "",
 ) -> DiagramSpec:
     """Ask the LLM for a DiagramSpec via the shared structured helper, then sanitize.
 
@@ -894,6 +998,12 @@ async def generate_diagram_spec(
             f"undifferentiated block for both vendors' capabilities.")
     if guidance.strip():
         parts.append(f"\nWHAT THIS DIAGRAM MUST SHOW (follow this closely):\n{guidance.strip()}")
+    if facts.strip():
+        # Never truncated. ESNAD 09-24's diagrams drew Ping DS / IDM / AM for a
+        # PingOne Advanced Identity Cloud (SaaS) engagement and left out every
+        # named client system: the text had these rules, the diagrams did not.
+        parts.append(f"\nENGAGEMENT FACTS (authoritative; the diagram must agree):\n"
+                     f"{facts.strip()}")
     if context_text.strip():
         parts.append(f"\nDISCOVERY ANSWERS FOR THIS ENGAGEMENT:\n"
                      f"{context_text.strip()[:_SPEC_CONTEXT_BUDGET]}")
@@ -913,6 +1023,8 @@ async def generate_diagram_spec(
             temperature=0.2,
             frequency_penalty=0.2,
             max_retries=1,
+            **({"extra_body": {"reasoning": {"effort": DIAGRAM_REASONING_EFFORT}}}
+               if DIAGRAM_REASONING_EFFORT else {}),
         )
 
     spec: DiagramSpec = await _attempt(user_prompt)
@@ -982,3 +1094,133 @@ def get_template_spec(iam_vendor: Optional[str], diagram_type: str) -> Optional[
     """Fetch a reusable template spec by (vendor, diagram_type), if any."""
     data = _TEMPLATE_CACHE.get(template_key(iam_vendor, diagram_type))
     return DiagramSpec.model_validate(data) if data else None
+
+
+# ---------------------------------------------------------------------------
+# Deterministic solution stack (no model call)
+# ---------------------------------------------------------------------------
+# IV's most useful picture is a one-page stack: users, each platform as a block
+# of its capability areas, the client's named systems. Everything on it is a
+# FACT from the answers, so it is built here rather than drafted: the model-
+# drawn equivalent in ESNAD 09-24 named the wrong products and none of the nine
+# client systems. Accurate and identical on every run.
+
+_SAAS_PLATFORM = {"ping": "PingOne Advanced Identity Cloud",
+                  "saviynt": "Saviynt Enterprise Identity Cloud",
+                  "sailpoint": "SailPoint Identity Security Cloud"}
+
+# (pattern on the vendor's scope, node label). Order is display order.
+_DOMAINS = (
+    ("wiam", r"access management|\bam\b|wiam|workforce|\bsso\b",
+     "Workforce access: SSO, adaptive MFA, federation"),
+    ("ciam", r"ciam|customer", "Customer identity (CIAM): registration, login, consent"),
+    ("iga", r"\biga\b|governance|lifecycle",
+     "Identity governance (IGA): joiner/mover/leaver, access reviews, SoD"),
+    ("pam", r"\bpam\b|privileged",
+     "Privileged access (PAM): vaulting, just-in-time access, session recording"),
+)
+
+
+def _vendor_scopes(iam_vendor: str, vendor_scope_map: Optional[dict]) -> list[tuple[str, str]]:
+    """[(vendor, scope)] from the scope map, else from 'X for A, Y for B'."""
+    if vendor_scope_map and len(vendor_scope_map) > 1:
+        return [(str(v), str(s)) for v, s in vendor_scope_map.items()]
+    out = []
+    for part in re.split(r",|;|\band\b(?=\s+[A-Z][a-z]+\s+for\b)", iam_vendor or ""):
+        m = re.match(r"\s*(.+?)\s+for\s+(.+?)\s*$", part)
+        if m:
+            out.append((m.group(1), m.group(2)))
+    return out or ([(iam_vendor.strip(), iam_vendor)] if (iam_vendor or "").strip() else [])
+
+
+def _count(text: str, pattern: str) -> Optional[str]:
+    m = re.search(rf"(?:{pattern})[^:\n]*:\s*([\d,]+)", text or "", re.I)
+    return f"{int(m.group(1).replace(',', '')):,}" if m else None
+
+
+def _system_names(target_integrations: str) -> list[str]:
+    names = []
+    for item in re.split(r";|\n", target_integrations or ""):
+        item = item.strip(" .-")
+        if not item or item.lower() in ("skip", "none", "n/a"):
+            continue
+        m = re.match(r"^(.*?)\s*\([^()]*\)\s*$", item)
+        names.append(" ".join((m.group(1) if m and m.group(1) else item).split()))
+    return names
+
+
+def build_stack_spec(*, title: str, client_name: str, iam_vendor: str,
+                     vendor_scope_map: Optional[dict] = None, is_saas: bool = False,
+                     population: str = "", target_integrations: str = "",
+                     context: str = "") -> DiagramSpec:
+    """The solution stack as a DiagramSpec, from answers alone."""
+    nodes: list[DiagramNode] = []
+    edges: list[DiagramEdge] = []
+    domain_node: dict[str, str] = {}
+
+    for vendor, scope in _vendor_scopes(iam_vendor, vendor_scope_map):
+        key = next((k for k in _SAAS_PLATFORM if k in vendor.lower()), None)
+        group = (f"{vendor}: {_SAAS_PLATFORM[key]} (SaaS)" if is_saas and key
+                 else vendor)
+        for dom, pat, label in _DOMAINS:
+            if dom not in domain_node and re.search(pat, scope, re.I):
+                nid = f"{dom}_{len(nodes)}"
+                domain_node[dom] = nid
+                nodes.append(DiagramNode(id=nid, label=label, group=group))
+
+    users = [("wiam", r"wiam|workforce", "Workforce users"),
+             ("ciam", r"ciam users|customer", "Customer users"),
+             ("pam", r"pam|privileged", "Privileged administrators")]
+    for dom, pat, label in users:
+        if dom not in domain_node:
+            continue
+        n = _count(population, pat)
+        suffix = f" ({n} accounts)" if n and dom == "pam" else f" ({n})" if n else ""
+        uid = f"users_{dom}"
+        nodes.append(DiagramNode(id=uid, label=label + suffix, group="Users", shape="person"))
+        edges.append(DiagramEdge(source=uid, target=domain_node[dom],
+                                 label="privileged sign-in" if dom == "pam" else "sign-in"))
+
+    apps_group = f"{client_name} applications"
+    sources = "Identity sources and operations"
+    systems = _system_names(target_integrations)
+    nafath = next((s for s in systems if "nafath" in s.lower()), None)
+    apps = [s for s in systems if s != nafath]
+    if len(apps) > 10:
+        apps = apps[:9] + [f"Other systems ({len(apps) - 9})"]
+    for i, name in enumerate(apps):
+        nodes.append(DiagramNode(id=f"app_{i}", label=name, group=apps_group))
+
+    blob = " ".join([target_integrations or "", context or ""])
+    if re.search(r"active directory|\bldap\b|\bAD\b", blob):
+        nodes.append(DiagramNode(id="src_ad", label="Active Directory / LDAP",
+                                 group=sources, shape="datastore"))
+    if re.search(r"\bHRMS?\b|\bERP\b|human resources", blob):
+        nodes.append(DiagramNode(id="src_hr", label="HR / ERP (authoritative source)",
+                                 group=sources, shape="datastore"))
+    if nafath:
+        nodes.append(DiagramNode(id="src_nafath", label=f"{nafath} (national login)",
+                                 group=sources, shape="external"))
+    if re.search(r"\bSIEM\b", blob):
+        nodes.append(DiagramNode(id="src_siem", label="SIEM (audit events)",
+                                 group=sources))
+    ids = {n.id for n in nodes}
+    apps_ref = f"{GROUP_REF}{apps_group}" if apps else None
+
+    def edge(src, tgt, label):
+        if src and tgt and (src in ids or src.startswith(GROUP_REF)) and \
+                (tgt in ids or tgt.startswith(GROUP_REF)):
+            edges.append(DiagramEdge(source=src, target=tgt, label=label))
+
+    for dom in ("wiam", "ciam"):
+        edge(domain_node.get(dom), apps_ref, "SSO (SAML / OIDC)")
+    edge(domain_node.get("iga"), apps_ref, "provisioning")
+    edge(domain_node.get("pam"), apps_ref, "vaulted privileged sessions")
+    edge("src_hr", domain_node.get("iga"), "joiner/mover/leaver feed")
+    edge(domain_node.get("iga"), "src_ad", "accounts and groups")
+    edge(domain_node.get("iga"), domain_node.get("pam"), "governed privileged access")
+    edge("src_nafath", domain_node.get("ciam") or domain_node.get("wiam"), "federation")
+    for dom in ("iga", "wiam"):
+        edge(domain_node.get(dom), "src_siem", "audit events")
+    return sanitize_spec(DiagramSpec(diagram_type="stack", title=title,
+                                     nodes=nodes, edges=edges))

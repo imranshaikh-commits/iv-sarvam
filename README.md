@@ -9,7 +9,7 @@
 ![Retrieval](https://img.shields.io/badge/retrieval-Supabase%20pgvector-3ECF8E)
 ![Frontend](https://img.shields.io/badge/frontend-Open%20WebUI-9333EA)
 ![Infra](https://img.shields.io/badge/infra-AWS%20EC2%20(Mumbai)-FF9900)
-![Tests](https://img.shields.io/badge/tests-646%20passing%20(manual)-555555)
+![Tests](https://img.shields.io/badge/tests-665%20passing%20(manual)-555555)
 
 > **Internal use only.** Proprietary to Inspirit Vision. This repository is public for collaboration; no client content, credentials, or infrastructure secrets are committed. **It should be made private before a second person clones it** (see [Known gaps](#known-gaps)). See [Security posture](#security-posture).
 
@@ -17,7 +17,7 @@
 
 ## Progress Dashboard
 
-> Quick-glance project status. Last updated: 2026-09-25 (IST), against commit `f770bfd` and the live Supabase project.
+> Quick-glance project status. Last updated: 2026-09-25 (IST), against commit `0bb45d7` and the live Supabase project.
 
 **Overall build completion: 84%**
 `█████████████████░░░`
@@ -51,11 +51,12 @@ Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 85, 1
 | Sprint 3 — missing house sections (Resources, RAID, Exclusions, Post-Production Support) | Done | `████████████████████` 100% |
 | Sprint 4 — partner product corpus infrastructure | Done | `████████████████████` 100% |
 | Sprint 5 — product depth in drafting | Mostly done | `██████████████░░░░░░` 70% — per-vendor product evidence (6 chunks per vendor) is drafted from and cited. Not yet re-measured against IV's ~90 sub-points per product |
-| Sprint 6 — visual density | Partial | `████████████░░░░░░░░` 60% — 83 partner product images extracted, placement and a review sheet built. 0 approved, HTML sources not extracted |
+| Sprint 6 — visual density | Mostly done | `████████████████░░░░` 80% — image kit (41 fixed IV/Ping/Saviynt images, placed by heading), 51 partner images approved, Gantt charts from the plan table. Kit files must be uploaded to storage; vendors other than Ping/Saviynt have no kit yet |
 | Sprint 7 — partner product content | Done | `████████████████████` 100% — 26 products, 323 chunks, 9 vendors (live count) |
 | Sprint 8 — intake enrichment (per-domain population, partner tier) | Done | `████████████████████` 100% |
 | Model and cost optimisation | Done | `████████████████████` 100% — about 90% cheaper per run. See [Costs](#costs) |
 | Diagram overhaul (facts, placement, vendor colour, solution stack, D2 0.9.0) | Done | `████████████████████` 100% |
+| ESNAD 09-25 review fixes (6 sprints, all generic) | Done, awaiting a run | `████████████████░░░░` 80% — structure by capability domain, fact discipline, workstream timeline + Gantt, image kit, per-domain diagram plan, BoQ from vendor quote, IP clause. Not yet measured on a run |
 | Second-RFP validation | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% — needs a different RFP (ideally SailPoint) with IV's real proposal to compare against |
 | Human reviewer verdict | Not started | `░░░░░░░░░░░░░░░░░░░░` 0% |
 
@@ -88,7 +89,7 @@ Checked against the code and the live database on 2026-09-25. Items fixed since 
 - **`outcome` is `unknown` for all 110 proposals.** Weighting retrieval toward proposals that won would compound more than any other change here, and it needs a person who knows the answers.
 
 **Output quality**
-- **Imagery.** IV's ESNAD submission carries 66 images. Partner product images now have placement: approved `product` images from `partner_product_assets` go only into product sections, only for a vendor being proposed, and interleave across vendors. A later section now gets the next-best images instead of none. Still pending: **a human has approved 0 of the 83 partner images** (`review_assets.py --partner`), the pool is Ping-heavy (19 product images vs 1 for Saviynt), HTML sources are not extracted, and placement needs `SHILPI_ASSETS_ENABLED=1` on the host.
+- **Imagery.** IV's ESNAD submission carries 66 images. A fixed image kit (`asset_selection.KIT`) now places IV's house slides in every proposal and each proposed vendor's analyst views, product slides and reference architectures under the right heading; only Ping Identity and Saviynt have vendor kits so far, and the kit files must be uploaded (`scripts/upload_asset_kit.py`). Keyword-matched IV-library product images are no longer placed. Partner product images now have placement: approved `product` images from `partner_product_assets` go only into product sections, only for a vendor being proposed, and interleave across vendors. A later section now gets the next-best images instead of none. Still pending: **a human has approved 0 of the 83 partner images** (`review_assets.py --partner`), the pool is Ping-heavy (19 product images vs 1 for Saviynt), HTML sources are not extracted, and placement needs `SHILPI_ASSETS_ENABLED=1` on the host.
 - **`[SME REVIEW]` markers still need a human.** They are by design, but a draft is not client-ready until someone resolves them.
 - **Industry can be missed by RFP extraction** when the RFP never states it. The field label now tells the extractor to infer it from the client name, but that change is unverified in a live run.
 - **Company Profile is thin**, because the `company_profile` corpus chunks are mostly fragments. Sprint 8 added partner tier and certification intake fields, but the prose depth still depends on the corpus.
@@ -96,7 +97,7 @@ Checked against the code and the live database on 2026-09-25. Items fixed since 
 - **Diagram visual parity.** D2 output is accurate and legible but visibly machine-laid-out next to IV's hand-drawn decks. Closing that needs editable export (`.drawio`/`.pptx`) or a designer template set. The durable per-vendor spec-template store is also deferred.
 
 **Engineering**
-- **No CI.** 646 tests across 13 files run only by hand.
+- **No CI.** 665 tests across 13 files run only by hand.
 - **Cost is not recorded per proposal.** Cost is measured from the OpenRouter activity CSV after the fact, and nothing is stored with the generated proposal.
 - **Reranking is built, off, and unmeasured.** The retrieval harness talks to the database directly, so the brain's post-retrieval steps have never been scored.
 - **Canonical status is split.** `docs/03_CURRENT_STATE.md`, `docs/PHASES.md`, `docs/09_NEAR_TERM_SPRINTS.md` and this dashboard overlap, with no stated precedence between them.
@@ -593,7 +594,7 @@ iv-sarvam/
 │   ├── supabase_client.py            # thin PostgREST helpers (fail-soft)
 │   ├── branding.py                   # DOCX branding (logo, theme, header/footer)
 │   ├── assets/                       # optimized IV logo PNGs
-│   ├── tests/                        # 646 tests across 13 files; run manually, not in CI
+│   ├── tests/                        # 665 tests across 13 files; run manually, not in CI
 │   ├── Dockerfile                    # explicit COPY allowlist — a new module MUST be
 │   │                                 #   added here or the container crash-loops on import
 │   └── requirements.txt
@@ -656,7 +657,7 @@ pip install -r requirements.txt
 uvicorn app:app --host 127.0.0.1 --port 8000
 
 # keyless tests (no API keys needed); pins matter — instructor 1.17 breaks OpenRouter mode
-python -m pytest tests -q          # 646 tests; each tests/test_*.py also runs standalone
+python -m pytest tests -q          # 665 tests; each tests/test_*.py also runs standalone
 
 # diagrams render with D2 0.9.0 + librsvg (rsvg-convert); without them the
 # engine falls back to Graphviz and the real-D2 compile test is skipped

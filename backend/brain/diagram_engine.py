@@ -442,6 +442,88 @@ D2_NODE_FONT = int(os.environ.get("SHILPI_D2_NODE_FONT", "20"))
 D2_EDGE_FONT = int(os.environ.get("SHILPI_D2_EDGE_FONT", "15"))
 
 
+def _stack_label(label: str) -> str:
+    """Two short lines for a stack card: 'IGA: a, b, c' -> 'IGA' / 'a · b · c';
+    'Workforce users (5,000)' -> 'Workforce users' / '5,000'."""
+    m = re.match(r"^(.*?)\s*\(([\d,]+(?: accounts)?)\)$", label)
+    if m:
+        return f"{m.group(1)}\\n{m.group(2)}"
+    head, sep, tail = label.partition(": ")
+    if sep:
+        return f"{head}\\n" + " · ".join(p.strip() for p in tail.split(","))
+    return label
+
+
+# The stack is the one diagram read as a whole page, so it gets bigger type.
+_STACK_FONT = int(os.environ.get("SHILPI_STACK_FONT", "26"))
+
+
+def build_stack_d2(spec: DiagramSpec) -> str:
+    """The solution stack as a fixed grid, in IV's layout: users, one column per
+    platform, the client's applications, and a band of identity sources below.
+
+    Graph layout (ELK) put the sources on the far side and looped arrows round
+    the whole picture, at a width that printed near 5pt. A grid keeps columns in
+    reading order and only draws arrows between neighbouring columns, so no
+    arrow crosses a column.
+    """
+    order: list[str] = []
+    members: dict[str, list[DiagramNode]] = {}
+    for n in spec.nodes:
+        if n.group not in members:
+            order.append(n.group or "Other")
+            members[n.group or "Other"] = []
+        members[n.group or "Other"].append(n)
+    sources = [g for g in order if g.lower().startswith("identity sources")]
+    users = [g for g in order if g == "Users"]
+    vendors = [g for g in order if _vendor_colour(g)]
+    apps = [g for g in order if g not in sources + users + vendors]
+    columns = users + vendors + apps
+
+    def container(gid: str, group: str, cols: int, indent: str) -> list[str]:
+        tint = _vendor_colour(group)
+        # "Ping Identity: PingOne Advanced Identity Cloud (SaaS)" -> two lines,
+        # and the product line split again so the title never overflows.
+        title = group.replace(": ", "\\n", 1).replace(" Identity Cloud", "\\nIdentity Cloud")
+        out = [f'{indent}{gid}: "{_d2_label(title)}" {{', f"{indent}  grid-columns: {cols}",
+               f"{indent}  grid-gap: 24"]
+        out += _iv_style(indent + "  ", fill=IV_PAPER, stroke=tint[1] if tint else IV_ASH,
+                         font_color=IV_COSMOS, bold=True, stroke_width=2 if tint else 1,
+                         font_size=_STACK_FONT + 2)
+        for i, n in enumerate(members[group]):
+            fill, stroke = tint or (IV_WHITE, IV_COSMOS)
+            out.append(f'{indent}  n{i}: "{_d2_label(_stack_label(n.label))}" {{')
+            out += _iv_style(indent + "    ", fill=fill if tint else IV_WHITE, stroke=stroke,
+                             font_color=IV_COSMOS, font_size=_STACK_FONT)
+            out.append(f"{indent}  }}")
+        out.append(f"{indent}}}")
+        return out
+
+    lines = ["grid-columns: 1", "grid-gap: 40", "style: {", f'  fill: "{IV_WHITE}"', "}",
+             "main: \"\" {", f"  grid-columns: {max(1, len(columns))}", "  grid-gap: 190",
+             "  style: {", "    stroke-width: 0", f'    fill: "{IV_WHITE}"', "  }"]
+    ids = []
+    for i, g in enumerate(columns):
+        ids.append(f"c{i}")
+        # One column up to ten applications: a taller, narrower page prints
+        # larger than a wide one (3140px wide printed the text at ~5pt).
+        cols = 2 if g in apps and len(members[g]) > 10 else 1
+        lines += container(f"c{i}", g, cols, "  ")
+    lines.append("}")
+    for g in sources:
+        lines += container("sources", g, max(1, len(members[g])), "")
+    # Arrows between neighbouring columns only, labelled by what crosses.
+    labels = {("Users", "vendor"): "sign-in", ("vendor", "vendor"): "identity data",
+              ("vendor", "apps"): "SSO · provisioning"}
+    kind = lambda g: "Users" if g in users else "vendor" if g in vendors else "apps"
+    for a, b, ga, gb in zip(ids, ids[1:], columns, columns[1:]):
+        lab = labels.get((kind(ga), kind(gb)), "")
+        lines += [f'main.{a} -> main.{b}: "{lab}" {{', "  style: {",
+                  f'    stroke: "{IV_SLATE}"', "    stroke-width: 2",
+                  f'    font-color: "{IV_SLATE}"', f"    font-size: {_STACK_FONT - 4}", "  }", "}"]
+    return "\n".join(lines) + "\n"
+
+
 def build_d2(spec: DiagramSpec, *, direction: Optional[str] = None) -> str:
     """Render a DiagramSpec as D2 source, styled to the IV light theme.
 
@@ -453,6 +535,8 @@ def build_d2(spec: DiagramSpec, *, direction: Optional[str] = None) -> str:
     themes paint containers as saturated slabs; IV's own decks are near-white
     with restrained accent colour, and the labels have to stay legible.
     """
+    if spec.diagram_type == "stack":
+        return build_stack_d2(spec)
     lanes = spec.diagram_type in _LANE_TYPES
     # Lane diagrams stack lanes DOWN and run the process RIGHT inside each one.
     # Structural views read left to right (users -> platforms -> systems), as

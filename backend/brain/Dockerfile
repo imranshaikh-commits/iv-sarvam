@@ -23,7 +23,9 @@ RUN apt-get update \
 # D2 renders architecture diagrams with real nested containers (DMZ / secure
 # zone / data zone), which Graphviz lays out poorly. Graphviz stays installed as
 # the fallback, so a failed D2 fetch never breaks diagram rendering.
-ARG D2_VERSION=0.6.9
+# 0.9.0 matches the version diagrams are checked against locally (the solution
+# stack uses grid layout).
+ARG D2_VERSION=0.9.0
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) d2arch=amd64 ;; arm64) d2arch=arm64 ;; *) d2arch="" ;; esac; \
@@ -31,8 +33,8 @@ RUN set -eux; \
         curl -fsSL "https://github.com/terrastruct/d2/releases/download/v${D2_VERSION}/d2-v${D2_VERSION}-linux-${d2arch}.tar.gz" \
             -o /tmp/d2.tgz \
         && tar -xzf /tmp/d2.tgz -C /tmp \
-        && install -m 0755 "/tmp/d2-v${D2_VERSION}/bin/d2" /usr/local/bin/d2 \
-        && rm -rf /tmp/d2.tgz "/tmp/d2-v${D2_VERSION}" \
+        && install -m 0755 "$(find /tmp -path '*/bin/d2' -type f | head -1)" /usr/local/bin/d2 \
+        && rm -rf /tmp/d2.tgz /tmp/d2-v* \
         && d2 --version; \
     else echo "no d2 build for $arch - Graphviz fallback only"; fi
 COPY requirements.txt .

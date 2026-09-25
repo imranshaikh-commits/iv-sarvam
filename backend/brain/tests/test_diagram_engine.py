@@ -131,7 +131,7 @@ def test_build_dot_groups_into_clusters():
 
 def test_render_fail_soft_or_png(monkeypatch):
     spec = DiagramSpec(title="t", nodes=[DiagramNode(id="a", label="A")], edges=[])
-    if de.dot_available():
+    if de.dot_available() or (de.d2_available() and de.shutil.which("rsvg-convert")):
         out = de.render_spec(spec, fmt="png")
         assert out and out[:8] == b"\x89PNG\r\n\x1a\n"
     else:
@@ -814,15 +814,17 @@ def test_stack_is_built_from_facts_with_the_right_products_and_systems():
     assert not any(k in labels for k in ("Ping DS", "Ping IDM", "Ping AM", "PingFederate"))
     # SSO reaches the whole application group with one arrow, not nine.
     assert any(e.target == "group:ESNAD applications" for e in spec.edges)
+    # Rendered as a fixed grid in IV's column order, arrows between columns only.
     d2 = diagram_engine.build_d2(spec)
-    assert "-> ESNAD_applications" in d2, "group edge did not resolve to the container"
+    assert "grid-columns: 4" in d2 and "main.c0 -> main.c1" in d2
+    assert d2.index("Users") < d2.index("Ping Identity") < d2.index("Saviynt") \
+        < d2.index("ESNAD applications") < d2.index("Identity sources")
 
 
 def test_vendor_colours_and_legend():
     d2 = diagram_engine.build_d2(_esnad_stack())
     assert "#1A56DB" in d2 and "#1E8E3E" in d2, "Ping blue / Saviynt green missing"
-    assert d2.startswith("direction: right")
-    assert f"font-size: {diagram_engine.D2_NODE_FONT}" in d2
+    assert f"font-size: {diagram_engine._STACK_FONT}" in d2
     legend = diagram_engine.legend_for(_esnad_stack())
     assert "blue = Ping Identity" in legend and "green = Saviynt" in legend
 
@@ -912,3 +914,20 @@ def test_a_too_wide_architecture_diagram_is_retried_top_to_bottom():
     finally:
         diagram_engine._d2_run = orig
     assert "direction: down" in tried, tried
+
+
+@pytest.mark.skipif(not diagram_engine.d2_available(), reason="d2 not installed")
+def test_every_diagram_form_actually_compiles_with_d2():
+    """Real D2, not string checks: the stack grid, every node shape, vendor
+    colours and group edges must compile, or the diagram silently falls back
+    to Graphviz in production."""
+    shapes = [diagram_engine.DiagramNode(id=f"s{i}", label=f"{k} node", shape=k,
+                                         group="Saviynt IGA" if i % 2 else "Ping Identity")
+              for i, k in enumerate(diagram_engine.NODE_SHAPES)]
+    edges = [diagram_engine.DiagramEdge(source="s0", target="s1", label="x"),
+             diagram_engine.DiagramEdge(source="s1", target="group:Ping Identity", label="y")]
+    for dtype in ("flow", "architecture"):
+        spec = diagram_engine.sanitize_spec(diagram_engine.DiagramSpec(
+            diagram_type=dtype, title="t", nodes=shapes, edges=edges))
+        assert diagram_engine._d2_run(diagram_engine.build_d2(spec), 25), dtype
+    assert diagram_engine._d2_run(diagram_engine.build_d2(_esnad_stack()), 25), "stack"

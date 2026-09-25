@@ -1349,3 +1349,87 @@ def build_stack_spec(*, title: str, client_name: str, iam_vendor: str,
         edge(domain_node.get(dom), "src_siem", "audit events")
     return sanitize_spec(DiagramSpec(diagram_type="stack", title=title,
                                      nodes=nodes, edges=edges))
+
+
+# --- Gantt chart from a plan table -------------------------------------------
+# IV's proposals carry a timeline chart per workstream (ESNAD V3.0: 14 plan
+# images). Shilpi's plan was tables only, with no dates. The drafted
+# "Workstream Timeline" table (Workstream, Phase, Start Week, End Week, ...) is
+# the single source; this draws it, so chart and table can never disagree.
+_GANTT_COLOURS = ("#231154", "#E85A24", "#1A56DB", "#1E8E3E", "#7C3AED", "#B45309")
+
+
+def _gantt_font(size: int):
+    from PIL import ImageFont
+    for path in (os.environ.get("SHILPI_GANTT_FONT",
+                                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+                 "/System/Library/Fonts/Supplemental/Arial.ttf"):
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # Pillow < 10.1
+        return ImageFont.load_default()
+
+
+def _week(cell: str) -> Optional[int]:
+    m = re.search(r"\d+", cell or "")
+    return int(m.group()) if m else None
+
+
+def gantt_rows(headers: list[str], rows: list[list[str]]) -> list[tuple[str, str, int, int]]:
+    """(workstream, phase, start_week, end_week) from a plan table, or [] when
+    the table has no Start Week / End Week columns."""
+    low = [h.strip().lower() for h in headers]
+    def col(*names):
+        return next((i for i, h in enumerate(low) if any(n in h for n in names)), None)
+    s, e = col("start week"), col("end week")
+    if s is None or e is None:
+        return []
+    ws, ph = col("workstream"), col("phase", "milestone", "activity")
+    out = []
+    for r in rows:
+        a, b = (_week(r[s]) if s < len(r) else None), (_week(r[e]) if e < len(r) else None)
+        if a is None or b is None or b < a:
+            continue
+        out.append(((r[ws] if ws is not None and ws < len(r) else "").strip(),
+                    (r[ph] if ph is not None and ph < len(r) else "").strip(), a, b))
+    return out
+
+
+def render_gantt(items: list[tuple[str, str, int, int]]) -> Optional[bytes]:
+    """PNG bytes of a week-based Gantt chart, one bar per row, coloured by
+    workstream. None when there is nothing to draw."""
+    if len(items) < 2:
+        return None
+    from PIL import Image, ImageDraw
+    import io
+    weeks = max(b for *_, b in items)
+    label_w, chart_w, row_h, top = 620, 1180, 38, 70
+    W, H = label_w + chart_w + 40, top + row_h * len(items) + 30
+    img = Image.new("RGB", (W, H), "white")
+    d = ImageDraw.Draw(img)
+    f, fb = _gantt_font(18), _gantt_font(16)
+    x0 = label_w
+    px = chart_w / weeks
+    step = 4 if weeks > 20 else 2 if weeks > 8 else 1
+    for w in range(1, weeks + 1, step):
+        x = x0 + (w - 1) * px
+        d.line([(x, top - 8), (x, H - 25)], fill="#E5E7EB")
+        d.text((x + 2, top - 34), f"W{w}", fill="#6B7280", font=fb)
+    colours: dict[str, str] = {}
+    for i, (ws, ph, a, b) in enumerate(items):
+        c = colours.setdefault(ws, _GANTT_COLOURS[len(colours) % len(_GANTT_COLOURS)])
+        y = top + i * row_h
+        label = f"{ws} - {ph}" if ws and ph else (ws or ph)
+        if d.textlength(label, font=f) > label_w - 20:
+            while label and d.textlength(label + "…", font=f) > label_w - 20:
+                label = label[:-1]
+            label += "…"
+        d.text((10, y + 8), label, fill="#111827", font=f)
+        d.rectangle([x0 + (a - 1) * px, y + 7, x0 + b * px - 2, y + row_h - 7], fill=c)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()

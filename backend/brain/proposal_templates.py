@@ -863,6 +863,25 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "the overall plan as a markdown TABLE with columns Phase, Key Activities, "
              "Duration. Use the engagement duration and phase count supplied at discovery "
              "exactly; do not substitute a generic timeline."),
+            # IV's ESNAD plan is per workstream with dated phases and a chart
+            # for each; Shilpi's put discovery AND design into "Month 1". This
+            # table is the single source for the Gantt chart drawn under it
+            # (diagram_engine.render_gantt), so chart and table always agree.
+            ("Workstream Timeline",
+             "the week-by-week plan as a markdown TABLE with EXACTLY these "
+             "columns: Workstream, Phase, Start Week, End Week, Key Activities. "
+             "{% if domains|length > 1 %}One workstream per capability domain in "
+             "scope ({% for d in domains %}{{ d|upper }} on {{ domain_vendors[d] }}"
+             "{{ ', ' if not loop.last }}{% endfor %}), plus one shared workstream "
+             "for programme-wide phases (kickoff, hypercare).{% else %}One "
+             "workstream per delivery stream in this engagement.{% endif %} One "
+             "row per phase per workstream, 10-20 rows. Weeks count from kickoff "
+             "(week 1) and the last End Week must fit the engagement duration "
+             "supplied at discovery. Phases are realistic: discovery, assessment "
+             "and design take several weeks before any build, never a single "
+             "month for a multi-domain programme; workstreams may run in parallel "
+             "after design; application onboarding runs in batches. Start and End "
+             "Week are plain integers."),
             # IV gives each tranche its own milestone TABLE with success
             # criteria -- 14, 6 and 6 rows. Run 9 wrote prose for all three,
             # which is why the table count trails the human original.
@@ -1330,6 +1349,13 @@ MIGRATION_SECTIONS: list[SectionSpec] = [
              "Duration. Use the engagement duration supplied at discovery exactly."),
             ("Cutover Windows and Milestones",
              "the cutover events, what each moves, and the decision gate before each."),
+            ("Migration Timeline",
+             "the week-by-week plan as a markdown TABLE with EXACTLY these "
+             "columns: Workstream, Phase, Start Week, End Week, Key Activities. "
+             "One row per phase (assessment, design, build, each migration wave "
+             "and cutover, decommissioning, hypercare), weeks counted from kickoff "
+             "and fitting the engagement duration. Start and End Week are plain "
+             "integers."),
         ),
     ),
     SectionSpec(

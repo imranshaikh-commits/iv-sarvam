@@ -47,6 +47,7 @@ from proposal_templates import (
     topic_for,
 )
 import asset_selection
+import diagram_engine
 import scope_filter
 
 # Two per section: IV's proposals carry 37 images across 11 sections, and a
@@ -1705,6 +1706,11 @@ def _add_body_with_tables(document: Document, text: str) -> None:
         headers, rows, i = parsed
         _flush()
         _add_gfm_table(document, headers, rows)
+        # A plan table with week columns gets its Gantt chart right under it.
+        chart = diagram_engine.render_gantt(diagram_engine.gantt_rows(headers, rows))
+        if chart:
+            _add_picture_fitted(document, io.BytesIO(chart),
+                                max_w=_DIAGRAM_MAX_W, max_h=_DIAGRAM_MAX_H)
     _flush()
 
 

@@ -960,3 +960,25 @@ def test_d2_measures_with_the_rendering_font_when_one_is_configured(monkeypatch)
         pytest.skip("no test font")
     monkeypatch.setattr(diagram_engine, "_D2_FONTS", (("--font-regular", font),))
     assert diagram_engine._d2_run(diagram_engine.build_d2(_esnad_stack()), 25)
+
+
+def test_gantt_is_drawn_from_week_columns_and_skipped_without_them():
+    h = ["Workstream", "Phase", "Start Week", "End Week", "Key Activities"]
+    rows = [["IGA", "Design", "1", "8", "x"], ["IGA", "Build", "W9", "Week 20", "x"],
+            ["PAM", "Build", "9", "bad", "x"]]
+    items = diagram_engine.gantt_rows(h, rows)
+    assert items == [("IGA", "Design", 1, 8), ("IGA", "Build", 9, 20)]
+    png = diagram_engine.render_gantt(items)
+    assert png and png[:4] == b"\x89PNG"
+    assert diagram_engine.gantt_rows(["Phase", "Duration"], [["a", "4 weeks"]]) == []
+    assert diagram_engine.render_gantt(items[:1]) is None
+
+
+def test_plan_table_in_a_draft_gets_a_chart_under_it():
+    from docx import Document
+    import document_engine
+    doc = Document()
+    document_engine._add_body_paragraphs(doc, (
+        "| Workstream | Phase | Start Week | End Week |\n|---|---|---|---|\n"
+        "| WIAM | Design | 1 | 8 |\n| WIAM | Build | 9 | 20 |\n"))
+    assert len(doc.tables) == 1 and len(doc.inline_shapes) == 1

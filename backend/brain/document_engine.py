@@ -1135,6 +1135,7 @@ def _assumption_placeholder(
 # binding constraint on normal output. The word instruction does the shaping.
 PROSE_SUBSECTION_TOKENS = int(os.environ.get("SHILPI_PROSE_SUBSECTION_TOKENS", "900"))
 PROSE_SUBSECTION_WORDS = int(os.environ.get("SHILPI_PROSE_SUBSECTION_WORDS", "220"))
+_STATED_LENGTH_RE = re.compile(r"roughly (\d+)\s*-\s*(\d+) words", re.I)
 # IV's own proposals have a MEDIAN body paragraph of 29 words and a longest of
 # 108. Run 8's median was 55 with twenty paragraphs over 100 and a longest of
 # 180 -- because the instruction capped the SUBSECTION and said nothing about
@@ -1301,6 +1302,13 @@ async def draft_section(
             wants_structure = _WANTS_STRUCTURE_RE.search(facet) is not None
             budget = (max_tokens if wants_table or wants_structure
                       else min(max_tokens, PROSE_SUBSECTION_TOKENS))
+            # A facet that states its own length ("roughly 500-800 words") gets
+            # it: the flat 220-word prose cap held ESNAD's executive summary to
+            # 185 words against IV's 1,034.
+            _len = _STATED_LENGTH_RE.search(facet)
+            word_cap = int(_len.group(2)) if _len else PROSE_SUBSECTION_WORDS
+            if _len:
+                budget = min(max_tokens, max(budget, word_cap * 2))
             length_rule = (
                 "Output the table and one short lead-in line, nothing else."
                 if wants_table else
@@ -1308,7 +1316,7 @@ async def draft_section(
                 f"its own. Keep every paragraph under {PROSE_PARAGRAPH_WORDS} "
                 f"words. If you run out of grounded material, stop - do not pad."
                 if wants_structure else
-                f"Write NO MORE than {PROSE_SUBSECTION_WORDS} words in total, and "
+                f"Write NO MORE than {word_cap} words in total, and "
                 f"keep every paragraph under {PROSE_PARAGRAPH_WORDS} words - break "
                 f"longer thoughts into separate short paragraphs. IV's proposals have "
                 f"a median paragraph of 29 words; short paragraphs are the house style, "

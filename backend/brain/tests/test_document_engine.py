@@ -2113,3 +2113,37 @@ def test_executive_summary_is_fed_the_facts_it_must_name():
                 if s.id == "executive_summary")
     instr = spec.subsections[0][1]
     assert "Amlak" not in instr and "500-800 words" in instr
+
+
+def test_a_stated_length_overrides_the_flat_prose_cap():
+    """The 220-word prose cap held ESNAD's executive summary to 185 words
+    (IV: 1,034) and silently overrode the instruction asking for more."""
+    import proposal_templates
+    calls: list[tuple[str, int]] = []
+
+    async def fake_draft(client, system_prompt, user_prompt, max_tokens):
+        calls.append((user_prompt, max_tokens))
+        return "Body."
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    async def no_chunks(*a, **kw):
+        return []
+
+    spec = next(s for s in proposal_templates.get_template("implementation")
+                if s.id == "executive_summary")
+    orig = document_engine._draft_with_retry
+    document_engine._draft_with_retry = fake_draft
+    try:
+        asyncio.run(document_engine.draft_section(
+            None, spec, {"client_name": "C", "iam_vendor": "V",
+                         "proposal_type": "implementation", "rfp_text": ""},
+            embed_fn=stub_embed, retrieve_fn=no_chunks,
+            build_grounded_system_fn=lambda chunks: "EVIDENCE",
+            top_k=8, subsections=1, max_tokens=3500))
+    finally:
+        document_engine._draft_with_retry = orig
+    prompt, budget = calls[0]
+    assert "NO MORE than 800 words" in prompt
+    assert budget >= 1600

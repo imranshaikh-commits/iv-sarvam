@@ -488,3 +488,22 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _runner import run_tests  # noqa: E402
 
 run_tests(globals(), "CHAT STATE TESTS")
+
+
+def test_multi_domain_plan_gets_a_diagram_per_domain():
+    """ESNAD 09-25: 6 generated diagrams against IV's 16; the plan only drew
+    what the consultant happened to list."""
+    planned = cs.plan_diagrams({
+        "iam_vendor": "Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM",
+        "required_diagram_types": "solution/reference"})
+    titles = " | ".join(t for t, _ in planned)
+    assert len(planned) == cs.MAX_DIAGRAMS_PER_ROUND
+    for want in ("SSO", "Customer", "Lifecycle", "Privileged"):
+        assert want in titles, want
+    assert titles.count("Solution") == 1   # the requested one is not duplicated
+
+
+def test_domain_top_up_respects_scope_and_explicit_count():
+    planned = cs.plan_diagrams({"iam_vendor": "CyberArk for PAM", "diagram_count": "2"})
+    assert [t for t, _ in planned] == ["Solution Architecture",
+                                        "Privileged Access Request and Session Flow"]

@@ -628,6 +628,12 @@ def plan_diagrams(answers: dict) -> list[tuple[str, str]]:
     else:
         requested = [p.strip() for p in re.split(r"[,;]", str(raw)) if p.strip()]
 
+    explicit_count = bool(re.search(r"\d", str(answers.get("diagram_count") or "")))
+    domains = _engagement_domains(answers)
+    # A multi-domain programme needs a diagram per domain, not the default 3:
+    # IV's ESNAD proposal has 16 deal-specific diagrams and ours had 6.
+    target = _requested_count(answers) if explicit_count or len(domains) < 2 else \
+        min(MAX_DIAGRAMS_PER_ROUND, 2 + len(domains))
     planned: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for item in requested:
@@ -645,12 +651,41 @@ def plan_diagrams(answers: dict) -> list[tuple[str, str]]:
         if pair not in seen:
             seen.add(pair)
             planned.append(pair)
-        if len(planned) >= _requested_count(answers):
+        if len(planned) >= target:
             break
+
+    # Top up from what is in scope: every domain gets its own flow, whatever
+    # the consultant happened to list.
+    for pattern, title, engine_type, needs in (_DOMAIN_DIAGRAMS if domains else ()):
+        if len(planned) >= target:
+            break
+        if needs and needs not in domains:
+            continue
+        if any(re.search(pattern, t, re.I) for t, _ in planned):
+            continue
+        planned.append((title, engine_type))
 
     if not planned:
         planned = [("Solution Architecture", "architecture")]
     return planned
+
+
+# (already-covered pattern, title, engine type, domain it needs or None).
+# Titles are chosen to hit document_engine's placement rules, so each lands
+# under the subsection that explains it.
+_DOMAIN_DIAGRAMS: tuple[tuple[str, str, str, Optional[str]], ...] = (
+    (r"solution|reference|architecture", "Solution Architecture", "architecture", None),
+    (r"\bsso\b|authentication|workforce", "Workforce Authentication and SSO Flow", "flow", "wiam"),
+    (r"customer|ciam|registration", "Customer Registration and Login Journey", "flow", "ciam"),
+    (r"joiner|lifecycle|jml", "Identity Lifecycle (Joiner, Mover, Leaver) Flow", "flow", "iga"),
+    (r"privileged|\bpam\b", "Privileged Access Request and Session Flow", "flow", "pam"),
+    (r"integration", "Integration Architecture", "component", None),
+)
+
+
+def _engagement_domains(answers: dict) -> list[str]:
+    from proposal_templates import engagement_domains
+    return engagement_domains(str(answers.get("iam_vendor") or ""), answers)["domains"]
 
 
 def build_plan_message(plan: list[tuple[str, str]], answers: dict) -> str:

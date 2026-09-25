@@ -2228,3 +2228,8 @@ def test_chat_turn_calls_bypass_the_response_cache():
     assert "extra_headers=_NO_RESPONSE_CACHE" in inspect.getsource(app.classify_intent_llm)
     assert "extra_headers=_NO_RESPONSE_CACHE" in inspect.getsource(app.extract_bucket_answers)
     assert app._NO_RESPONSE_CACHE == {"X-OpenRouter-Cache": "false"}
+
+
+def test_stack_context_includes_extracted_requirements():
+    import inspect
+    assert '"extracted_requirements"' in inspect.getsource(app._stack_spec)

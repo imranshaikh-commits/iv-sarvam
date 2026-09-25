@@ -686,11 +686,25 @@ def _svg_aspect(svg: bytes) -> Optional[float]:
     return (h / w) if w else None
 
 
+# Measure text with the font the PNG is drawn in. D2 sizes boxes with its own
+# Source Sans; librsvg on the server draws with DejaVu, which is wider, so text
+# ran into box edges (ESNAD 09-25). Pointing D2 at DejaVu makes both agree.
+# Only passed when the file exists (the container has fonts-dejavu-core).
+_D2_FONTS = tuple(
+    (flag, path) for flag, path in (
+        ("--font-regular", os.environ.get("SHILPI_D2_FONT_REGULAR",
+                                          "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")),
+        ("--font-bold", os.environ.get("SHILPI_D2_FONT_BOLD",
+                                       "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")),
+    ) if path and os.path.exists(path))
+
+
 def _d2_run(source: str, timeout: float, layout: Optional[str] = None) -> Optional[bytes]:
     try:
+        fonts = [x for pair in _D2_FONTS for x in pair]
         proc = subprocess.run(
             ["d2", "--theme", D2_THEME, "--layout", layout or D2_LAYOUT,
-             "--pad", "40", "-", "-"],
+             "--pad", "40", *fonts, "-", "-"],
             input=source.encode("utf-8"),
             capture_output=True, timeout=timeout, check=True,
         )
@@ -1295,7 +1309,10 @@ def build_stack_spec(*, title: str, client_name: str, iam_vendor: str,
         edges.append(DiagramEdge(source=uid, target=domain_node[dom],
                                  label="privileged sign-in" if dom == "pam" else "sign-in"))
 
-    apps_group = f"{client_name} applications"
+    # "Saudi Mining Services Company (ESNAD)" -> "ESNAD": the long name
+    # overflowed its column title.
+    short = re.search(r"\(([A-Z][A-Za-z0-9&]{1,15})\)\s*$", client_name or "")
+    apps_group = f"{short.group(1) if short else client_name} applications"
     sources = "Identity sources and operations"
     systems = _system_names(target_integrations)
     nafath = next((s for s in systems if "nafath" in s.lower()), None)
@@ -1309,7 +1326,7 @@ def build_stack_spec(*, title: str, client_name: str, iam_vendor: str,
     if re.search(r"(?i:active directory|\bldap\b)|\bAD\b", blob):
         nodes.append(DiagramNode(id="src_ad", label="Active Directory / LDAP",
                                  group=sources, shape="datastore"))
-    if re.search(r"\bHRMS?\b|\bERP\b|(?i:human resources)", blob):
+    if re.search(r"\bHR(?:MS)?\b|\bERP\b|(?i:human resources)", blob):
         nodes.append(DiagramNode(id="src_hr", label="HR / ERP (authoritative source)",
                                  group=sources, shape="datastore"))
     if nafath:

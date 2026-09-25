@@ -939,3 +939,24 @@ def test_stack_links_each_platform_to_the_sources_band():
     assert d2.count("<-> sources") == 2 and "HR feed · accounts · audit" in d2
     if diagram_engine.d2_available():
         assert diagram_engine._d2_run(d2, 25)
+
+
+def test_stack_uses_the_short_client_name_and_finds_hr_in_requirements():
+    spec = diagram_engine.build_stack_spec(
+        title="t", client_name="Saudi Mining Services Company (ESNAD)", is_saas=True,
+        iam_vendor="Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM",
+        target_integrations="Taadeen Platform, Bidding platform",
+        context='[{"id": "ILM-07", "text": "HR-driven joiner/mover/leaver from authoritative HR source"}]')
+    assert "ESNAD applications" in {n.group for n in spec.nodes}
+    assert "HR / ERP (authoritative source)" in [n.label for n in spec.nodes]
+
+
+@pytest.mark.skipif(not diagram_engine.d2_available(), reason="d2 not installed")
+def test_d2_measures_with_the_rendering_font_when_one_is_configured(monkeypatch):
+    """D2 sized boxes in Source Sans while the server drew DejaVu, so text
+    overran box edges. With a font file configured, D2 must accept it."""
+    font = "/System/Library/Fonts/Supplemental/Arial.ttf"
+    if not os.path.exists(font):
+        pytest.skip("no test font")
+    monkeypatch.setattr(diagram_engine, "_D2_FONTS", (("--font-regular", font),))
+    assert diagram_engine._d2_run(diagram_engine.build_d2(_esnad_stack()), 25)

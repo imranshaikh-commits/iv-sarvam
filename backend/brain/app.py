@@ -1457,9 +1457,12 @@ def _stack_spec(answers: dict, title: str) -> DiagramSpec:
         is_saas=document_engine._looks_like_saas(answers.get("deployment_model")),
         population=str(answers.get("population_by_domain") or ""),
         target_integrations=str(answers.get("target_integrations") or ""),
+        # extracted_requirements too: ESNAD's answers never said "HR", but its
+        # requirements do ("authoritative HR source"), and HR/ERP vanished.
         context=" ".join(str(answers.get(k) or "") for k in
                          ("in_scope", "directories", "integration_hrms",
-                          "current_hrms", "source_of_truth", "monitoring", "audit")))
+                          "current_hrms", "source_of_truth", "monitoring", "audit",
+                          "extracted_requirements")))
 
 
 async def _architecture_evidence(client: httpx.AsyncClient, answers: dict) -> str:

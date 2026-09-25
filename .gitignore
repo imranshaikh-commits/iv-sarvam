@@ -81,6 +81,13 @@ asset_review.html
 ids.txt
 scripts/asset_review.html
 scripts/ids.txt
+partner_review.html
+partner_ids.txt
+scripts/partner_review.html
+scripts/partner_ids.txt
+# Supabase table backups (client data)
+sarvam-backups/
+backups/
 
 corpus_manifest*.csv
 corpus_review_summary*.md

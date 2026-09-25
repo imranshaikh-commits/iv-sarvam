@@ -125,6 +125,15 @@ SECTION_ASSET_LIMITS: dict[str, int] = {
 DEFAULT_ASSET_LIMIT = 2
 
 
+def _is_proposed_vendor(vendor: str, wanted: Optional[list]) -> bool:
+    """A partner image's vendor ("Ping Identity") against the proposed vendors.
+    No proposed vendor means no partner image: nothing confirms it fits."""
+    v = (vendor or "").lower()
+    return bool(v) and any(
+        v.split()[0] in w.lower() or w.lower().split()[0] in v
+        for w in (wanted or []) if w and w.strip())
+
+
 def select_assets(assets: list[dict], section_id: str,
                   iam_vendor: Optional[str] = None,
                   iam_vendors: Optional[list] = None,
@@ -160,6 +169,15 @@ def select_assets(assets: list[dict], section_id: str,
         if not a.get("approved"):
             # Belt and braces: the caller filters on this, and so does this.
             continue
+        if a.get("vendor"):
+            # Partner product image (partner_product_assets): public vendor
+            # material, tagged with its vendor and approved by a human. Its OCR
+            # text is diagram-label noise, so it is matched on vendor, never on
+            # description, and only where the section takes product imagery.
+            if a.get("asset_kind") == "product" and "product" in kinds \
+                    and _is_proposed_vendor(a["vendor"], vendors_for_check):
+                scored.append((1, a))
+            continue
         desc = f"{a.get('vision_description') or ''} {a.get('ocr_text') or ''}"
         if not rx.search(desc):
             continue
@@ -170,8 +188,19 @@ def select_assets(assets: list[dict], section_id: str,
         score = int(a.get("occurrences") or 1)
         scored.append((score, a))
 
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    chosen = [a for _s, a in scored[:limit]]
+    # Interleave partner images by vendor so a Ping + Saviynt deal shows both
+    # products, not the first vendor's diagrams in every slot. IV's own assets
+    # have no vendor and keep plain score order (stable sort).
+    seen: dict[str, int] = {}
+    keyed = []
+    for score, a in scored:
+        v = (a.get("vendor") or "").lower()
+        rank = seen.get(v, 0) if v else 0
+        if v:
+            seen[v] = rank + 1
+        keyed.append((-score, rank, a))
+    keyed.sort(key=lambda t: (t[0], t[1]))
+    chosen = [a for _s, _r, a in keyed[:limit]]
     if chosen:
         log.info("assets: %d selected for section %s", len(chosen), section_id)
     return chosen

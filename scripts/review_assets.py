@@ -25,6 +25,16 @@ USAGE
     python3 scripts/review_assets.py                  # writes asset_review.html
     open asset_review.html                            # review, then Copy
     python3 scripts/review_assets.py --approve ids.txt
+
+PARTNER PRODUCT IMAGES (--partner)
+    Same flow for partner_product_assets (public vendor datasheet imagery,
+    sarvam_017). The sheet shows `product` and `unknown` images with their vendor;
+    approving one also sets asset_kind='product', because the reviewer has now
+    looked at it and it is only ever placed in product sections, for its own
+    vendor. Vendor logos (`corporate`) are left out: they never belong in IV's
+    corporate sections.
+    python3 scripts/review_assets.py --partner --out partner_review.html
+    python3 scripts/review_assets.py --partner --approve partner_ids.txt
 """
 from __future__ import annotations
 
@@ -42,6 +52,8 @@ import requests
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 BUCKET = os.getenv("SHILPI_ASSET_BUCKET", "visual-assets")
+TABLE = "visual_assets"
+PARTNER = False   # set by --partner
 # 260px thumbnails hid the problem they existed to catch. Run 8 placed a
 # Microsoft Project Gantt chart showing another client's task names, durations
 # and resource assignments into a proposal -- and it passed this review because
@@ -60,13 +72,17 @@ def sb_headers(extra: dict | None = None) -> dict:
 def fetch_assets() -> list[dict]:
     """Placeable assets only, ordered so similar things sit together."""
     rows, offset = [], 0
+    select = ("id,storage_path,asset_kind,vision_description,"
+              "width,height,size_bytes,approved")
+    if PARTNER:
+        select += ",ocr_text,partner_products(vendor,name)"
     while True:
         resp = requests.get(
-            f"{SUPABASE_URL}/rest/v1/visual_assets",
+            f"{SUPABASE_URL}/rest/v1/{TABLE}",
             headers=sb_headers({"Range": f"{offset}-{offset + 499}"}),
-            params={"select": "id,storage_path,asset_kind,vision_description,"
-                              "width,height,size_bytes,approved",
-                    "asset_kind": "in.(corporate,product)",
+            params={"select": select,
+                    "asset_kind": "in.(product,unknown)" if PARTNER
+                                  else "in.(corporate,product)",
                     "order": "asset_kind,size_bytes.desc"},
             timeout=60)
         resp.raise_for_status()
@@ -101,6 +117,12 @@ def thumbnail(blob: bytes) -> str | None:
 def clean_desc(text: str | None) -> str:
     d = re.sub(r"^\[[^\]]*\]\s*", "", (text or "").replace("\n", " ")).strip()
     return d[:190] or "(no description)"
+
+
+def partner_desc(a: dict) -> str:
+    p = a.get("partner_products") or {}
+    text = a.get("vision_description") or a.get("ocr_text") or ""
+    return f"{p.get('vendor', '?')} | {p.get('name', '')} | " + clean_desc(text)
 
 
 def build_html(cards: list[dict], out_path: str) -> None:
@@ -242,13 +264,16 @@ def apply_approvals(path: str) -> int:
     for i in range(0, len(ids), 100):
         batch = ids[i:i + 100]
         quoted = ",".join(f'"{x}"' for x in batch)
+        body = {"approved": True, "approved_by": os.getenv("USER", "human"),
+                "approved_at": "now()"}
+        if PARTNER:
+            body["asset_kind"] = "product"
         resp = requests.patch(
-            f"{SUPABASE_URL}/rest/v1/visual_assets",
+            f"{SUPABASE_URL}/rest/v1/{TABLE}",
             headers=sb_headers({"Content-Type": "application/json",
                                 "Prefer": "return=minimal"}),
             params={"id": f"in.({quoted})"},
-            json={"approved": True, "approved_by": os.getenv("USER", "human"),
-                  "approved_at": "now()"},
+            json=body,
             timeout=60)
         if resp.status_code not in (200, 204):
             raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
@@ -263,7 +288,13 @@ def main() -> int:
     ap.add_argument("--out", default="asset_review.html")
     ap.add_argument("--approve", metavar="IDS_FILE",
                     help="Apply approvals from a file of ids, one per line")
+    ap.add_argument("--partner", action="store_true",
+                    help="Review partner_product_assets instead of visual_assets")
     args = ap.parse_args()
+    if args.partner:
+        global TABLE, BUCKET, PARTNER
+        TABLE, PARTNER = "partner_product_assets", True
+        BUCKET = os.getenv("SHILPI_PARTNER_ASSET_BUCKET", "partner-product-assets")
 
     if not (SUPABASE_URL and SUPABASE_KEY):
         print("Missing SUPABASE_URL / SUPABASE_KEY", file=sys.stderr)
@@ -284,7 +315,8 @@ def main() -> int:
                       "approved": bool(a.get("approved")),
                       "w": a.get("width") or "?", "h": a.get("height") or "?",
                       "kb": round((a.get("size_bytes") or 0) / 1024),
-                      "desc": clean_desc(a.get("vision_description"))})
+                      "desc": partner_desc(a) if PARTNER
+                              else clean_desc(a.get("vision_description"))})
         if i % 50 == 0:
             print(f"  {i}/{len(assets)}", file=sys.stderr)
 

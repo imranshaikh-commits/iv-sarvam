@@ -144,3 +144,38 @@ def test_sector_words_reach_the_case_studies_section():
         lib = [{"asset_kind": "corporate", "approved": True, "occurrences": 3,
                 "vision_description": desc}]
         assert A.select_assets(lib, "similar_experience", "SailPoint"), desc
+
+
+# --- Partner product images (partner_product_assets) -----------------------
+
+def _partner(vendor, n=1, kind="product", approved=True):
+    return [{"asset_kind": kind, "approved": approved, "vendor": vendor,
+             "storage_path": f"{vendor}/{i}.png", "bucket": "partner-product-assets",
+             "ocr_text": "PingFederate PingOne DaVinci"} for i in range(n)]
+
+
+def test_partner_image_placed_only_for_a_proposed_vendor():
+    lib = _partner("Ping Identity")
+    assert A.select_assets(lib, "solution_overview", iam_vendors=["Ping Identity", "Saviynt"])
+    assert not A.select_assets(lib, "solution_overview", "SailPoint")
+    # No proposed vendor: nothing can confirm the image fits.
+    assert not A.select_assets(lib, "solution_overview")
+
+
+def test_partner_image_never_lands_in_iv_corporate_sections():
+    """A vendor's slide is not IV's company profile or case study."""
+    lib = _partner("Ping Identity") + _partner("Okta", kind="corporate")
+    for sec in ("company_profile", "similar_experience", "implementation_approach"):
+        assert not A.select_assets(lib, sec, "Ping Identity"), sec
+
+
+def test_partner_image_needs_approval_and_product_kind():
+    lib = _partner("Saviynt", approved=False) + _partner("Saviynt", kind="unknown")
+    assert not A.select_assets(lib, "proposed_solution", "Saviynt")
+
+
+def test_partner_images_interleave_vendors_in_a_multi_vendor_deal():
+    lib = _partner("Ping Identity", 3) + _partner("Saviynt", 1)
+    got = A.select_assets(lib, "solution_overview",
+                          iam_vendors=["Ping Identity", "Saviynt"], limit=2)
+    assert sorted(a["vendor"] for a in got) == ["Ping Identity", "Saviynt"]

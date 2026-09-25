@@ -59,12 +59,11 @@ log = logging.getLogger("shilpi-brain.doc-engine")
 # that it stays importable in a keyless environment (smoke test / CI).
 OPENROUTER_BASE = os.environ.get("OPENROUTER_BASE", "https://openrouter.ai/api/v1")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-# LLM models (kept in sync with app.py). document_engine must NOT import app
-# (circular-import rule), so the constants are duplicated here — including the
-# env names, so a swap moves BOTH the chat path and the drafting path. Setting
-# only one would leave the proposal drafted by a different model than the chat,
-# which is exactly the kind of split that makes a comparison run meaningless.
-PRIMARY_LLM_MODEL = os.environ.get("SHILPI_PRIMARY_MODEL", "").strip() or "z-ai/glm-5.2"
+# LLM models. The single definition: app.py imports these, so the chat path and
+# the drafting path can never run on different models. Defaults match what
+# production runs (Gemini 3.8 Flash since 2026-09-24), so losing the env line on
+# the host changes nothing; an override is still logged at startup.
+PRIMARY_LLM_MODEL = os.environ.get("SHILPI_PRIMARY_MODEL", "").strip() or "google/gemini-3.8-flash"
 FALLBACK_LLM_MODEL = os.environ.get("SHILPI_FALLBACK_MODEL", "").strip() or "qwen/qwen3-235b-a22b-2507"
 TOP_K = int(os.environ.get("TOP_K", "8"))
 # Evidence sent with every subsection of a section. ESNAD 09-24 prompts were
@@ -1935,7 +1934,8 @@ async def _attach_assets(client, sections: list[dict], context: dict,
     """Put approved, section-appropriate images on each drafted section.
 
     `asset_fns` supplies {"library": async () -> list[dict],
-                          "download": async (storage_path) -> stream|None}.
+                          "download": async (storage_path, bucket) -> stream|None}.
+    `bucket` is None for IV's own library and set for partner product images.
 
     Every image that reaches a document has been approved by a human, matched
     to the section by its vision description, and checked against the vendor
@@ -1950,20 +1950,23 @@ async def _attach_assets(client, sections: list[dict], context: dict,
     vendors = context.get("iam_vendors")
     used: set[str] = set()
     placed = 0
+    def key(a):
+        return f"{a.get('bucket') or ''}/{a['storage_path']}"
+
     for sec in sections:
+        # One image appears once per document, however many sections it suits
+        # -- the same picture twice reads as a mistake. Filter BEFORE selecting,
+        # so a later section gets the next-best images instead of re-picking
+        # the ones already placed and ending up with none.
         chosen = asset_selection.select_assets(
-            library, sec.get("id") or "", vendor, iam_vendors=vendors,
-            limit=_ASSETS_PER_SECTION)
+            [a for a in library if key(a) not in used], sec.get("id") or "",
+            vendor, iam_vendors=vendors, limit=_ASSETS_PER_SECTION)
         attached = []
         for a in chosen:
-            # One image appears once per document, however many sections it
-            # suits -- the same picture twice reads as a mistake.
-            if a["storage_path"] in used:
-                continue
-            stream = await asset_fns["download"](client, a["storage_path"])
+            stream = await asset_fns["download"](client, a["storage_path"], a.get("bucket"))
             if stream is None:
                 continue
-            used.add(a["storage_path"])
+            used.add(key(a))
             attached.append({"id": a["id"], "stream": stream})
         if attached:
             sec["assets"] = attached

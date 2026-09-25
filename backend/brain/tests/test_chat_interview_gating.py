@@ -1410,9 +1410,11 @@ def test_unparseable_prose_still_falls_through_to_the_llm():
 # Model chain override (Step 2 needs to swap the primary model for one run).
 # ---------------------------------------------------------------------------
 
-def test_model_chain_defaults_are_glm_and_qwen():
-    import importlib, document_engine
-    assert "glm" in app.PRIMARY_LLM_MODEL or os.environ.get("SHILPI_PRIMARY_MODEL")
+def test_model_chain_defaults_match_production():
+    """The host env pins Gemini 3.8 Flash; the code default must say the same, so
+    losing that env line cannot silently move production back to an old model."""
+    import document_engine
+    assert "gemini-3.8-flash" in app.PRIMARY_LLM_MODEL or os.environ.get("SHILPI_PRIMARY_MODEL")
     assert app.PRIMARY_LLM_MODEL == document_engine.PRIMARY_LLM_MODEL, \
         "chat and drafting paths must use the same model chain"
     assert app.FALLBACK_LLM_MODEL == document_engine.FALLBACK_LLM_MODEL

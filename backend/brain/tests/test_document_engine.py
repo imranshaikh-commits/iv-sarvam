@@ -966,7 +966,7 @@ def test_attach_assets_places_each_image_once():
     async def library(_c):
         return lib
 
-    async def download(_c, _p):
+    async def download(_c, _p, _b=None):
         return io.BytesIO(_png_bytes())
 
     sections = [{"id": "company_profile", "title": "Company Profile"},
@@ -978,11 +978,36 @@ def test_attach_assets_places_each_image_once():
     assert total == 1, f"the same asset was placed {total} times"
 
 
+def test_attach_assets_gives_a_later_section_the_next_images_with_their_bucket():
+    """Selection used to ignore what was already placed, so the second product
+    section re-picked the first section's images, skipped them as duplicates,
+    and ended up with none. Partner images must be fetched from their own bucket."""
+    lib = [{"id": f"p{i}", "storage_path": f"ping/{i}.png", "asset_kind": "product",
+            "approved": True, "vendor": "Ping Identity",
+            "bucket": "partner-product-assets"} for i in range(4)]
+    buckets = []
+
+    async def library(_c):
+        return lib
+
+    async def download(_c, _p, bucket=None):
+        buckets.append(bucket)
+        return io.BytesIO(_png_bytes())
+
+    sections = [{"id": "solution_overview"}, {"id": "proposed_solution"}]
+    asyncio.run(document_engine._attach_assets(
+        None, sections, {"iam_vendor": "Ping Identity"},
+        {"library": library, "download": download}))
+    per = [len(s.get("assets") or []) for s in sections]
+    assert per == [2, 2], per
+    assert set(buckets) == {"partner-product-assets"}
+
+
 def test_attach_assets_survives_an_unavailable_library():
     async def library(_c):
         raise RuntimeError("supabase down")
 
-    async def download(_c, _p):
+    async def download(_c, _p, _b=None):
         return None
 
     sections = [{"id": "company_profile", "title": "Company Profile"}]

@@ -69,13 +69,10 @@ SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
 EMBED_MODEL = "openai/text-embedding-3-small"   # must match scripts/ingest_v2.py
-# The drafting/chat chain. Overridable so the primary model can be swapped for a
-# measured comparison run without a code change, but the defaults stay here and
-# any override is LOGGED AT STARTUP — the original rule was "no env override so
-# EC2 cannot SILENTLY pin an old model", and silence was the part that mattered.
-# Keep in sync with document_engine.py, which cannot import this module.
-PRIMARY_LLM_MODEL = os.environ.get("SHILPI_PRIMARY_MODEL", "").strip() or "z-ai/glm-5.2"
-FALLBACK_LLM_MODEL = os.environ.get("SHILPI_FALLBACK_MODEL", "").strip() or "qwen/qwen3-235b-a22b-2507"
+# The drafting/chat chain, defined once in document_engine (which cannot import
+# this module) so the two paths can never drift. Any override is LOGGED AT
+# STARTUP — the original rule was "EC2 cannot SILENTLY pin an old model".
+from document_engine import PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL  # noqa: E402
 TOP_K = int(os.environ.get("TOP_K", "8"))
 # Compliance classification is per-requirement and needs the best few pieces of
 # evidence, not the whole fan-out. See classify_coverage for the measurement.
@@ -177,6 +174,10 @@ def detect_vendor(query: str) -> str | None:
 # code rather than in a reviewer's judgement.
 # ---------------------------------------------------------------------------
 ASSET_BUCKET = os.environ.get("SHILPI_ASSET_BUCKET", "visual-assets")
+# Partner product images (sarvam_017): public vendor material, separate table and
+# bucket from IV's own imagery. Placed only when approved, only as `product`, and
+# only for a vendor being proposed (asset_selection.py).
+PARTNER_ASSET_BUCKET = os.environ.get("SHILPI_PARTNER_ASSET_BUCKET", "partner-product-assets")
 # Off by default. Turning this on changes what lands in a client document, so
 # it is an explicit choice rather than something that arrives with a deploy.
 ASSETS_ENABLED = os.environ.get("SHILPI_ASSETS_ENABLED", "0") not in ("0", "", "false")
@@ -212,15 +213,41 @@ async def fetch_approved_assets(client: httpx.AsyncClient) -> list[dict]:
         counts[a["storage_path"]] = counts.get(a["storage_path"], 0) + 1
     for a in assets:
         a["occurrences"] = counts.get(a["storage_path"], 1)
-    log.info("asset library: %d approved placeable assets", len(assets))
-    return assets
+    partner = await _fetch_partner_assets(client)
+    log.info("asset library: %d approved placeable assets (+%d partner product)",
+             len(assets), len(partner))
+    return assets + partner
 
 
-async def download_asset(client: httpx.AsyncClient, storage_path: str):
+async def _fetch_partner_assets(client: httpx.AsyncClient) -> list[dict]:
+    """Approved partner product images, tagged with their vendor. Fails soft."""
+    try:
+        resp = await client.get(
+            f"{SUPABASE_URL}/rest/v1/partner_product_assets",
+            headers=supabase_client._headers(prefer_representation=False),
+            params={"select": "id,storage_path,asset_kind,ocr_text,width,height,"
+                              "approved,partner_products(vendor)",
+                    "approved": "is.true", "asset_kind": "eq.product"},
+            timeout=30.0)
+        resp.raise_for_status()
+        rows = resp.json() or []
+    except Exception as e:  # noqa: BLE001
+        log.warning("partner asset library unavailable: %s", e)
+        return []
+    out = []
+    for r in rows:
+        vendor = (r.pop("partner_products", None) or {}).get("vendor")
+        if vendor:  # an image with no vendor cannot be checked, so never placed
+            out.append({**r, "vendor": vendor, "bucket": PARTNER_ASSET_BUCKET})
+    return out
+
+
+async def download_asset(client: httpx.AsyncClient, storage_path: str,
+                         bucket: Optional[str] = None):
     """Image bytes as a stream ready for python-docx, or None."""
     try:
         resp = await client.get(
-            f"{SUPABASE_URL}/storage/v1/object/{ASSET_BUCKET}/{storage_path}",
+            f"{SUPABASE_URL}/storage/v1/object/{bucket or ASSET_BUCKET}/{storage_path}",
             headers=supabase_client._headers(prefer_representation=False), timeout=60.0)
         if resp.status_code != 200:
             log.warning("asset download failed HTTP %s for %s",
@@ -1397,7 +1424,9 @@ _DIAGRAM_SPEC_TIMEOUT_S = float(os.environ.get("SHILPI_DIAGRAM_SPEC_TIMEOUT_S", 
 # through to every generate_diagram_spec call site — defining it and forgetting
 # to pass it made the whole override silently decorative.
 DIAGRAM_LLM_MODELS = [
-    m.strip() for m in os.environ.get("SHILPI_DIAGRAM_MODELS", "").split(",") if m.strip()
+    m.strip() for m in os.environ.get(
+        "SHILPI_DIAGRAM_MODELS", "google/gemini-3.8-flash,anthropic/claude-sonnet-4.6").split(",")
+    if m.strip()
 ]
 _ARCH_ROUND_BUDGET_S = float(os.environ.get("SHILPI_ARCH_ROUND_BUDGET_S", "240"))
 # Diagrams are independent, so they run concurrently. Bounded to stay polite to

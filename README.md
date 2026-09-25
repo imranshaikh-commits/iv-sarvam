@@ -9,7 +9,7 @@
 ![Retrieval](https://img.shields.io/badge/retrieval-Supabase%20pgvector-3ECF8E)
 ![Frontend](https://img.shields.io/badge/frontend-Open%20WebUI-9333EA)
 ![Infra](https://img.shields.io/badge/infra-AWS%20EC2%20(Mumbai)-FF9900)
-![Tests](https://img.shields.io/badge/tests-641%20passing%20(manual)-555555)
+![Tests](https://img.shields.io/badge/tests-646%20passing%20(manual)-555555)
 
 > **Internal use only.** Proprietary to Inspirit Vision. This repository is public for collaboration; no client content, credentials, or infrastructure secrets are committed. **It should be made private before a second person clones it** (see [Known gaps](#known-gaps)). See [Security posture](#security-posture).
 
@@ -51,7 +51,7 @@ Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 85, 1
 | Sprint 3 — missing house sections (Resources, RAID, Exclusions, Post-Production Support) | Done | `████████████████████` 100% |
 | Sprint 4 — partner product corpus infrastructure | Done | `████████████████████` 100% |
 | Sprint 5 — product depth in drafting | Mostly done | `██████████████░░░░░░` 70% — per-vendor product evidence (6 chunks per vendor) is drafted from and cited. Not yet re-measured against IV's ~90 sub-points per product |
-| Sprint 6 — visual density | Partial | `████████░░░░░░░░░░░░` 40% — 83 partner product images extracted. 0 approved, no placement logic, HTML sources not extracted |
+| Sprint 6 — visual density | Partial | `████████████░░░░░░░░` 60% — 83 partner product images extracted, placement and a review sheet built. 0 approved, HTML sources not extracted |
 | Sprint 7 — partner product content | Done | `████████████████████` 100% — 26 products, 323 chunks, 9 vendors (live count) |
 | Sprint 8 — intake enrichment (per-domain population, partner tier) | Done | `████████████████████` 100% |
 | Model and cost optimisation | Done | `████████████████████` 100% — about 90% cheaper per run. See [Costs](#costs) |
@@ -65,7 +65,7 @@ Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 85, 1
 2. **Run a second, different RFP**, ideally a SailPoint deal where IV's real proposal exists for comparison. Every fix since 09-21 was driven by ESNAD, so a second deal is the only way to find out what was overfitted.
 3. **Clear the runway:** make the repo private, decide the `visual_assets` RLS policy, and put TLS in front of port 8080.
 4. **Get a verdict:** Ashish reads a draft against "would you sign this", and the commercial owner reads the commercial section. Also do the first **MSS** run.
-5. **Imagery:** review and approve partner product images, then build placement for them (the equivalent of `asset_selection.py`).
+5. **Imagery:** approve partner product images with `review_assets.py --partner` (placement is built) and confirm `SHILPI_ASSETS_ENABLED=1` on the host.
 
 Eval fixtures live in `docs/evals/` and are **not committed**. They contain client-confidential proposal content and this repository is public. See [`docs/evals/README.md`](docs/evals/README.md).
 
@@ -77,8 +77,8 @@ Checked against the code and the live database on 2026-09-25. Items fixed since 
 - **The repository is public.** Client review artefacts were published from it once already (see [Incidents](#incidents)). Make it private before anyone else clones it.
 - **`visual_assets` has Row Level Security disabled.** This was re-verified on 2026-09-25 and it is the only public table with RLS off. The Supabase anon key can read or write all 939 rows. Fixing it needs an access-policy decision first: `ENABLE ROW LEVEL SECURITY` with no policies blocks all access rather than securing it. Imran must decide the policy before anyone implements it.
 - **Port 8080 is plain HTTP**, with the whole proposal bank behind it. It has been open since the first session.
-- **RLS is present but not load-bearing.** `org_members` is empty, so every `is_org_member()` policy is vacuously false. The brain works only because it uses the service-role key. `approved_by` on diagrams stays NULL until user identity exists.
-- **No backups.** Intake sessions, approved diagrams and generated proposals cannot be re-derived. There is no scheduled `pg_dump`.
+- **RLS is present but not load-bearing.** `auth.users` and `org_members` are both empty, so every `is_org_member()` policy is false for everyone and the brain works only through the service-role key. Tested on 2026-09-25 as the `anon` role: every public table returns 0 rows except `visual_assets` (939). Storage buckets are all private. `sarvam_018` (written, awaiting approval to apply) removes anon execute on the two SECURITY DEFINER functions and pins `search_path` on the retrieval RPCs, which clears three Supabase advisor warnings. Making RLS load-bearing needs real users (Supabase Auth, Phase 7.2). `approved_by` on diagrams stays NULL until then.
+- **Backups are table-level only, and on the same host.** `scripts/backup_tables.py` dumps every irreplaceable table nightly through PostgREST (gzip JSONL, 14 kept) and can restore by upsert. The 173 MB `proposal_chunks` table is a weekly `--with-proposal-chunks` run. Storage buckets (rendered diagrams, generated DOCX) are not covered, and there is no off-host copy yet. The cron must be installed on the host.
 
 **Validation**
 - **No verdict from a reviewer other than the builder.** Every quality judgement here rests on one reader.
@@ -88,7 +88,7 @@ Checked against the code and the live database on 2026-09-25. Items fixed since 
 - **`outcome` is `unknown` for all 110 proposals.** Weighting retrieval toward proposals that won would compound more than any other change here, and it needs a person who knows the answers.
 
 **Output quality**
-- **Imagery.** IV's ESNAD submission carries 66 images. Shilpi places diagrams plus approved corporate assets, and the reusable corporate pool is small. 83 partner product images sit unapproved, with no placement logic and no vision descriptions for the 31 unknowns.
+- **Imagery.** IV's ESNAD submission carries 66 images. Partner product images now have placement: approved `product` images from `partner_product_assets` go only into product sections, only for a vendor being proposed, and interleave across vendors. A later section now gets the next-best images instead of none. Still pending: **a human has approved 0 of the 83 partner images** (`review_assets.py --partner`), the pool is Ping-heavy (19 product images vs 1 for Saviynt), HTML sources are not extracted, and placement needs `SHILPI_ASSETS_ENABLED=1` on the host.
 - **`[SME REVIEW]` markers still need a human.** They are by design, but a draft is not client-ready until someone resolves them.
 - **Industry can be missed by RFP extraction** when the RFP never states it. The field label now tells the extractor to infer it from the client name, but that change is unverified in a live run.
 - **Company Profile is thin**, because the `company_profile` corpus chunks are mostly fragments. Sprint 8 added partner tier and certification intake fields, but the prose depth still depends on the corpus.
@@ -96,13 +96,12 @@ Checked against the code and the live database on 2026-09-25. Items fixed since 
 - **Diagram visual parity.** D2 output is accurate and legible but visibly machine-laid-out next to IV's hand-drawn decks. Closing that needs editable export (`.drawio`/`.pptx`) or a designer template set. The durable per-vendor spec-template store is also deferred.
 
 **Engineering**
-- **Model defaults in code do not match production.** Production pins Gemini 3.8 Flash through `SHILPI_PRIMARY_MODEL` in the host env file. The code default is still `z-ai/glm-5.2`, with fallback `qwen/qwen3-235b-a22b-2507`. If the env line is lost, the brain reverts to GLM and logs it, but it does not fail. `document_engine.py` keeps its own copy of these constants.
-- **No CI.** 641 tests across 13 files run only by hand.
+- **No CI.** 646 tests across 13 files run only by hand.
 - **Cost is not recorded per proposal.** Cost is measured from the OpenRouter activity CSV after the fact, and nothing is stored with the generated proposal.
 - **Reranking is built, off, and unmeasured.** The retrieval harness talks to the database directly, so the brain's post-retrieval steps have never been scored.
 - **Canonical status is split.** `docs/03_CURRENT_STATE.md`, `docs/PHASES.md`, `docs/09_NEAR_TERM_SPRINTS.md` and this dashboard overlap, with no stated precedence between them.
 
-**Fixed since the previous README (2026-09-21):** partner product corpus populated (it had zero rows); migration drift closed (`sarvam_015`–`017` committed); the intake parser now captures everything (96/96); output is sized to the engagement; dropped sections are named in the document; the Appendix F top-level heading and the duplicate diagram gallery are fixed; diagrams now use node shapes and the solution stack; cost per run is measured.
+**Fixed since the previous README (2026-09-21):** partner product corpus populated (it had zero rows); migration drift closed (`sarvam_015`–`017` committed); the intake parser now captures everything (96/96); output is sized to the engagement; dropped sections are named in the document; the Appendix F top-level heading and the duplicate diagram gallery are fixed; diagrams now use node shapes and the solution stack; cost per run is measured; model defaults in code now match production (Gemini 3.8 Flash, diagram chain Gemini then Sonnet 4.6), defined once in `document_engine.py`.
 
 ### Recently shipped — cost, diagrams and the ESNAD reruns (2026-09-22 → 25)
 
@@ -594,7 +593,7 @@ iv-sarvam/
 │   ├── supabase_client.py            # thin PostgREST helpers (fail-soft)
 │   ├── branding.py                   # DOCX branding (logo, theme, header/footer)
 │   ├── assets/                       # optimized IV logo PNGs
-│   ├── tests/                        # 641 tests across 13 files; run manually, not in CI
+│   ├── tests/                        # 646 tests across 13 files; run manually, not in CI
 │   ├── Dockerfile                    # explicit COPY allowlist — a new module MUST be
 │   │                                 #   added here or the container crash-loops on import
 │   └── requirements.txt
@@ -617,7 +616,8 @@ iv-sarvam/
 │   ├── sarvam_014_generated_proposals_migration_type.sql
 │   ├── sarvam_015_partner_product_corpus.sql  # partner_products + chunks + match RPC
 │   ├── sarvam_016_partner_product_diversity.sql  # per-product cap of 3
-│   └── sarvam_017_partner_product_assets.sql  # partner product images + approval gate
+│   ├── sarvam_017_partner_product_assets.sql  # partner product images + approval gate
+│   └── sarvam_018_function_hardening.sql      # advisor fixes (not yet applied)
 ├── scripts/                          # ingestion, curation and measurement
 │   ├── corpus_manifest.py            # curate the Drive bank into tiers (CSV for human review)
 │   ├── ingest_v2.py                  # manifest-driven ingestion, content-hash dedup
@@ -628,6 +628,7 @@ iv-sarvam/
 │   ├── ingest_partner_products.py    # ingest partner product docs (separate corpus)
 │   ├── extract_partner_product_images.py  # partner images, heuristic classification
 │   ├── eval_retrieval.py             # 20-probe retrieval scorecard
+│   ├── backup_tables.py              # nightly table backup + upsert restore (stdlib only)
 │   └── test_*.py                     # tests for the ingestion scripts
 ├── docs/                             # project, persona, sprint docs
 ├── data/                             # raw (gitignored) + tagging templates
@@ -655,7 +656,7 @@ pip install -r requirements.txt
 uvicorn app:app --host 127.0.0.1 --port 8000
 
 # keyless tests (no API keys needed); pins matter — instructor 1.17 breaks OpenRouter mode
-python -m pytest tests -q          # 641 tests; each tests/test_*.py also runs standalone
+python -m pytest tests -q          # 646 tests; each tests/test_*.py also runs standalone
 
 # diagrams render with D2 0.9.0 + librsvg (rsvg-convert); without them the
 # engine falls back to Graphviz and the real-D2 compile test is skipped

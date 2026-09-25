@@ -1003,7 +1003,10 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "items {{ iam_vendor }} itself supplies, not other vendors in "
              "this engagement. List only products and modules IN scope; "
              "never a module this proposal excludes, and never a product "
-             "code or SKU the evidence does not give. Take quantities from the "
+             "code or SKU the evidence does not give. Where the client-supplied "
+             "licence line items (from the vendor quote) list {{ iam_vendor }} "
+             "SKUs, use them verbatim, one row each, with their quantity and "
+             "term. Otherwise take quantities from the "
              "population by domain (workforce users, customer identities, "
              "privileged accounts) where one applies."),
             ("Total Bill of Quantities",
@@ -1039,6 +1042,13 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
             ("Commercial Assumptions",
              "what the commercial structure assumes: travel, taxes, support terms, "
              "validity, using the answers supplied at discovery."),
+            # IV closes with its IP clause; 55 corpus proposals carry one.
+            ("Intellectual Property Rights",
+             "IV's standard intellectual property clause as it appears in the "
+             "EVIDENCE: ownership of pre-existing IP and tools, ownership of "
+             "deliverables, and the licence granted to the client. Reproduce "
+             "IV's position faithfully; if the evidence carries no IP clause, "
+             "write the review marker rather than drafting legal terms."),
         ),
     ),
     SectionSpec(

@@ -288,6 +288,11 @@ _BUCKETS: list[dict] = [
             _q("taxes", "Taxes", "text"),
             _q("travel", "Travel", "text"),
             _q("support_terms", "Support terms", "textarea"),
+            # IV's BoQ lists the vendor's SKUs, quantities and terms from the
+            # vendor quote; without them Shilpi's BoQ could only say TBC.
+            _q("licence_line_items",
+               "Vendor licence line items from the vendor quote (SKU, description, quantity, term)",
+               "textarea"),
         ],
     },
     {

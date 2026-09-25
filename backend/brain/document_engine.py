@@ -417,6 +417,7 @@ _SECTION_DISCOVERY_FIELDS: dict[str, tuple[str, ...]] = {
         # ESNAD 09-24's BoQ had [SME REVIEW] quantities beside a known
         # population and listed modules the proposal excludes.
         "in_scope", "population_by_domain", "delivery_phases",
+        "licence_line_items",
     ),
     "compliance_matrix": ("rfp_text", "regulations", "certifications"),
 

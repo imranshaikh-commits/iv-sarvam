@@ -19,7 +19,9 @@ url, key = os.environ["SUPABASE_URL"].rstrip("/"), os.environ["SUPABASE_KEY"]
 bucket = os.environ.get("SHILPI_ASSET_BUCKET", "visual-assets")
 folder = sys.argv[1] if len(sys.argv) > 1 else "asset_kit"
 
-names = sorted(n for n in os.listdir(folder) if n.lower().endswith(".png"))
+# "._name.png" files are macOS resource forks that a Mac-made tar carries along.
+names = sorted(n for n in os.listdir(folder)
+               if n.lower().endswith(".png") and not n.startswith("._"))
 failed = 0
 for name in names:
     with open(os.path.join(folder, name), "rb") as fh:

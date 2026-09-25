@@ -2274,3 +2274,62 @@ def test_classification_maps_the_strict_reply_back_to_a_coverage_entry():
     finally:
         app._structured_with_fallback = orig
     assert isinstance(e, app.CoverageEntry) and e.requirement_id == "AM-01" and e.requirement_text == "SSO"
+
+
+# --- Capability domains drive scope and solution structure (any vendor mix) --
+
+def _domain_ctx(iam_vendor, answers=None):
+    return {"client_name": "Acme", "iam_vendor": iam_vendor,
+            "iam_vendors": pt.split_vendors(iam_vendor), "proposal_type": "implementation",
+            "rfp_text": "", **pt.engagement_domains(iam_vendor, answers or {})}
+
+
+def _headings(ctx, section_id):
+    spec = next(s for s in pt.get_template("implementation") if s.id == section_id)
+    return spec.render_subsections(ctx)
+
+
+def test_domains_and_owners_are_read_from_either_vendor_answer_form():
+    for answer in ("Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM",
+                   "Ping Identity (Access Management, CIAM) and Saviynt (IGA, PAM)"):
+        d = pt.engagement_domains(answer)
+        assert d["domains"] == ["wiam", "ciam", "iga", "pam"], answer
+        assert d["domain_vendors"]["pam"] == "Saviynt" and d["domain_vendors"]["ciam"] == "Ping Identity"
+    # "Privileged Access Management" is PAM, never workforce access management.
+    assert pt.engagement_domains("CyberArk for Privileged Access Management")["domains"] == ["pam"]
+    assert pt.engagement_domains("SailPoint")["domains"] == []
+
+
+def test_multi_domain_scope_is_restated_domain_by_domain_with_the_owner():
+    ctx = _domain_ctx("Okta for Workforce SSO, CyberArk for PAM")
+    pairs = dict(_headings(ctx, "scope_understanding"))
+    assert "Workforce Identity and Access Management (WIAM)" in pairs
+    assert "Okta" in pairs["Workforce Identity and Access Management (WIAM)"]
+    assert "CyberArk" in pairs["Privileged Access Management (PAM)"]
+    assert "Customer Identity and Access Management (CIAM)" not in pairs  # not in scope
+    assert "Compliance and Regulatory Alignment" in pairs
+    assert not any(h.startswith("Identity and Access Management - ") for h in pairs)
+
+
+def test_single_domain_engagement_keeps_the_governance_facets():
+    ctx = _domain_ctx("SailPoint")
+    heads = [h for h, _ in _headings(ctx, "solution_overview")]
+    assert "Who Has Access Today" in heads and "Access Certification" in heads
+    assert "Identity and Access Management - SailPoint" in [h for h, _ in _headings(ctx, "scope_understanding")]
+
+
+def test_multi_domain_solution_is_per_vendor_by_owned_domain_not_generic_facets():
+    ctx = _domain_ctx("Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM")
+    pairs = _headings(ctx, "solution_overview")
+    heads = [h for h, _ in pairs]
+    assert "Who Has Access Today" not in heads and "Access Certification" not in heads
+    ping = dict(pairs)["Ping Identity Solution Overview"]
+    sav = dict(pairs)["Saviynt Solution Overview"]
+    assert "Customer Identity" in ping and "Privileged Access" not in ping
+    assert "just-in-time" in sav and "passwordless" not in sav
+
+
+def test_no_duplicate_headings_in_a_multi_domain_template():
+    ctx = _domain_ctx("Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM")
+    heads = [h for s in pt.get_template("implementation") for h, _ in s.render_subsections(ctx) if h]
+    assert len(heads) == len(set(heads)), sorted({h for h in heads if heads.count(h) > 1})

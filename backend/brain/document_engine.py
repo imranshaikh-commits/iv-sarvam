@@ -36,6 +36,7 @@ from docx.shared import Inches, Pt, RGBColor
 import branding
 import document_qa
 from proposal_templates import (
+    engagement_domains,
     COMPLIANCE_SECTION_ID,
     SUBSECTION_FACETS,
     DepthTier,
@@ -218,6 +219,19 @@ def _engagement_facts_clause(context: dict) -> str:
         # CIAM" -- a licensing total set against per-domain figures.
         out += (f"\n\nPOPULATION BY DOMAIN: {pop}. Quote these per-domain "
                 f"figures; never state a single user total smaller than their sum.")
+    if out:
+        # ESNAD 09-25 repeated "5,000 WIAM users" 57 times and "Dev, Test, and
+        # Prod" 63 times (IV's own proposal: 4 and 3), because these facts sit in
+        # every section's prompt and every subsection restated them.
+        out += ("\n\nUSING THESE FACTS: they keep sections consistent; they are "
+                "not content to repeat. State a population, environment list or "
+                "deployment model only where this subsection is about it, at most "
+                "once, and never as an opener or closer. Elsewhere refer to 'the "
+                "workforce', 'each environment', 'the SaaS tenants'.")
+    if answers:
+        out += ("\n\nSYSTEMS: name only systems, directories and products that the "
+                "client-supplied facts or requirements name. Never add one they do "
+                "not (for example a cloud directory the client never mentioned).")
     return out
 
 
@@ -340,6 +354,11 @@ _SECTION_DISCOVERY_FIELDS: dict[str, tuple[str, ...]] = {
     "executive_summary": (
         "business_objectives", "pain_points", "differentiators", "decision_criteria",
         "duration", "app_count", "user_count", "audience", "population_by_domain",
+        # IV's executive summary names the systems, protocols, regulations,
+        # residency, delivery model and support model; it could not without these.
+        "target_integrations", "idp_sso", "regulations", "data_residency",
+        "deployment_model", "delivery_phases", "support_model", "identity_types",
+        "in_scope",
     ),
     "company_profile": (
         "partner_positioning", "vendor_partner_positioning",
@@ -353,6 +372,11 @@ _SECTION_DISCOVERY_FIELDS: dict[str, tuple[str, ...]] = {
         "business_objectives", "in_scope", "out_of_scope", "current_state",
         "existing_iam_platform", "pain_points", "app_count", "user_count",
         "identity_types", "apps_to_onboard", "population_by_domain",
+        # Domain-by-domain scope restates integrations, compliance, testing,
+        # training and support in the client's own terms.
+        "target_integrations", "idp_sso", "regulations", "data_residency",
+        "delivery_phases", "envs", "support_model", "training", "kt",
+        "is_migration", "existing_iam_platform",
     ),
     "solution_overview": (
         "sod", "access_review_cadence", "target_integrations", "audit",
@@ -1861,7 +1885,7 @@ def _embeddable_diagrams(diagrams: Optional[list[dict]]) -> list[dict]:
 
 
 def _unplaced_diagrams(diagrams: Optional[list[dict]],
-                       sections: list[dict]) -> list[dict]:
+                       sections: list[dict], owners: Optional[dict] = None) -> list[dict]:
     """Diagrams no subsection heading will claim.
 
     The contents page is written BEFORE the sections are rendered, so it cannot
@@ -1877,9 +1901,7 @@ def _unplaced_diagrams(diagrams: Optional[list[dict]],
                 for sec in sections for sub in (sec.get("subsections") or [])]
     claimed: set = set()
     for heading in headings:
-        item = _claim_diagram(embeddable, heading, claimed)
-        if item is None:
-            continue
+        _claim_diagram(embeddable, heading, claimed, owners)
     return [d for d in embeddable if id(d) not in claimed]
 
 
@@ -1990,10 +2012,15 @@ _DIAGRAM_PLACEMENT: tuple[tuple[str, str], ...] = (
     # Specific before generic: ESNAD 09-24 sent Integration, PAM and IGA to the
     # trailing section because only the joiner and solution patterns existed,
     # and "integration" was swallowed by the joiner rule.
+    # {pam}/{iga}/{ciam}/{wiam} become the vendor that owns that domain in
+    # THIS engagement (proposal_templates.engagement_domains), so a PAM diagram
+    # lands under whichever vendor's overview covers PAM, for any vendor mix.
     (r"\bstack\b", r"^Why\b"),
-    (r"privileged|\bpam\b", r"Privileged|Saviynt Solution Overview"),
-    (r"governance|certification|\biga\b", r"Access Certification"),
+    (r"privileged|\bpam\b", r"Privileged|^{pam} Solution Overview"),
+    (r"governance|certification|\biga\b", r"Access Certification|^{iga} Solution Overview"),
     (r"joiner|hrms|lifecycle|jml", r"HRMS Integration|Joiner"),
+    (r"\bciam\b|customer|authentication|\bsso\b|federation",
+     r"Integration with Identity Provider|^{ciam} Solution Overview|^{wiam} Solution Overview"),
     (r"integration", r"Connectors and Integrations|Application Onboarding"),
     (r"deployment", r"Proposed Deployment Architecture"),
     (r"security|network", r"Proposed Production Architecture"),
@@ -2001,30 +2028,31 @@ _DIAGRAM_PLACEMENT: tuple[tuple[str, str], ...] = (
     (r"migration|cutover", r"Migration Pattern|Proposed Target Architecture"),
 )
 
-_DIAGRAM_PLACEMENT_RE = tuple(
-    (re.compile(d, re.I), re.compile(h, re.I)) for d, h in _DIAGRAM_PLACEMENT)
-
-
-def _placement_for(diagram: dict) -> Optional[re.Pattern]:
+def _placement_for(diagram: dict, owners: Optional[dict] = None) -> Optional[re.Pattern]:
     """The subsection-heading pattern this diagram should sit under, if any."""
     key = f"{diagram.get('diagram_type') or ''} {diagram.get('title') or ''}"
-    for dpat, hpat in _DIAGRAM_PLACEMENT_RE:
-        if dpat.search(key):
-            return hpat
+    for dpat, hpat in _DIAGRAM_PLACEMENT:
+        if re.search(dpat, key, re.I):
+            # An unknown owner never matches, rather than matching any overview.
+            hpat = re.sub(r"\{(\w+)\}", lambda m: re.escape((owners or {}).get(m.group(1)) or "")
+                          or "(?!)", hpat)
+            return re.compile(hpat, re.I)
     return None
 
 
-def _claim_diagram(embeddable: list[dict], heading: str,
-                   used: set) -> Optional[dict]:
-    """The diagram belonging under this subsection heading, once."""
+def _claim_diagram(embeddable: list[dict], heading: str, used: set,
+                   owners: Optional[dict] = None) -> list[dict]:
+    """Every diagram belonging under this subsection heading, each once. One
+    vendor overview can explain two diagrams (IGA and PAM on one platform)."""
+    out = []
     for item in embeddable:
         if id(item) in used:
             continue
-        pattern = _placement_for(item)
+        pattern = _placement_for(item, owners)
         if pattern and pattern.search(heading or ""):
             used.add(id(item))
-            return item
-    return None
+            out.append(item)
+    return out
 
 
 def _embed_diagram(document: Document, item: dict) -> None:
@@ -2093,6 +2121,9 @@ def assemble_docx(
     diagrams are silently skipped. When no diagram qualifies, the document is
     byte-for-byte the same as before (Pass 1-3 unchanged).
     """
+    # Which vendor owns each capability domain: diagram placement follows it.
+    _owners = engagement_domains(metadata.get("iam_vendor") or "",
+                                 metadata.get("discovery_answers") or {})["domain_vendors"]
     metadata = {
         **metadata,
         "generated_at": metadata.get("generated_at")
@@ -2121,7 +2152,7 @@ def assemble_docx(
         # Only advertise the gallery if a diagram will actually land in it.
         # _placed_diagrams is populated during section rendering, which happens
         # after the contents page is written, so this is computed the same way.
-        "Solution Architecture Diagrams" if _unplaced_diagrams(diagrams, sections) else None,
+        "Solution Architecture Diagrams" if _unplaced_diagrams(diagrams, sections, _owners) else None,
         "Compliance Matrix" if any(
             s.get("id") == COMPLIANCE_SECTION_ID for s in sections) else None,
     ) if t]
@@ -2190,8 +2221,8 @@ def assemble_docx(
                 _add_body_paragraphs(document, sub.get("content", ""))
                 # The diagram that explains THIS subsection, immediately after
                 # the prose describing it -- the way IV places them.
-                claimed = _claim_diagram(_inline_diagrams, title, _placed_diagrams)
-                if claimed:
+                for claimed in _claim_diagram(_inline_diagrams, title,
+                                              _placed_diagrams, _owners):
                     _embed_diagram(document, claimed)
         else:
             _add_body_paragraphs(document, sec.get("content", ""))
@@ -2640,6 +2671,9 @@ async def generate_proposal(
         # specs for a product that is never deployed on IV/client hardware.
         # One shared flag, one shared decision, across all four.
         "is_saas": _is_saas,
+        # Which capability domains are in scope and which vendor owns each:
+        # scope and solution structure follow them for any vendor mix.
+        **engagement_domains(iam_vendor or "", discovery_answers or {}),
     }
     if len(_vendors) > 1:
         log.info("multi-vendor proposal: %s", _vendors)

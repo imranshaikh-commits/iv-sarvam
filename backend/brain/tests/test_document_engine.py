@@ -1397,7 +1397,7 @@ def test_iv_subsections_that_were_absent_are_now_present():
     headings = [h for s in proposal_templates.get_template("implementation")
                 for h, _ in s.render_subsections(ctx)]
     joined = " | ".join(headings)
-    for required in ("Stage 1 - Build Current State", "Project Plan", "Logistics",
+    for required in ("Discovery and Current-State Baseline", "Project Plan", "Logistics",
                      "Assumptions", "Resident Engineer",
                      "Application Integration Bucket"):
         assert required in joined, f"IV has this subsection and we do not: {required}"
@@ -1954,9 +1954,29 @@ def test_each_esnad_diagram_has_a_home_section():
         ("component", "ESNAD — Integration"): "Connectors and Integrations",
         ("architecture", "ESNAD — Solution Architecture"): "Proposed Future IAM State for X",
     }
+    owners = {"wiam": "Ping Identity", "ciam": "Ping Identity",
+              "iga": "Saviynt", "pam": "Saviynt"}
     for (dtype, title), heading in cases.items():
-        pat = document_engine._placement_for({"diagram_type": dtype, "title": title})
+        pat = document_engine._placement_for({"diagram_type": dtype, "title": title}, owners)
         assert pat and pat.search(heading), (title, heading)
+
+
+def test_domain_diagrams_follow_whichever_vendor_owns_the_domain():
+    """The PAM rule used to name "Saviynt Solution Overview" literally."""
+    pam = {"diagram_type": "flow", "title": "Acme — Privileged Access Management"}
+    pat = document_engine._placement_for(pam, {"pam": "CyberArk"})
+    assert pat.search("CyberArk Solution Overview")
+    assert not pat.search("Saviynt Solution Overview")
+    # Unknown owner: only the explicit heading matches, never any overview.
+    assert not document_engine._placement_for(pam).search("Okta Solution Overview")
+
+
+def test_one_overview_can_take_both_iga_and_pam_diagrams():
+    owners = {"iga": "Saviynt", "pam": "Saviynt"}
+    items = [{"diagram_type": "flow", "title": "Identity Governance"},
+             {"diagram_type": "flow", "title": "Privileged Access Management"}]
+    got = document_engine._claim_diagram(items, "Saviynt Solution Overview", set(), owners)
+    assert len(got) == 2
 
 
 def test_diagram_caption_carries_the_colour_key():
@@ -2032,3 +2052,25 @@ def test_a_400_drops_only_the_penalty_before_going_plain():
     plain = document_engine._draft_payload("m", "S", "u", include_frequency_penalty=False,
                                            include_extras=False)
     assert "reasoning" not in plain and plain["messages"][0]["content"] == "S"
+
+
+def test_facts_clause_forbids_restating_figures_and_inventing_systems():
+    """ESNAD 09-25: '5,000' x57 and 'Dev, Test' x63 (IV: 4 and 3); 'Azure AD'
+    appeared though the client never named it."""
+    c = document_engine._engagement_facts_clause(
+        {"discovery_answers": {"envs": "Dev, Test, Prod",
+                               "population_by_domain": "WIAM users: 5000"}})
+    assert "at most once" in c and "never as an opener" in c
+    assert "Never add one they do not" in c
+
+
+def test_executive_summary_is_fed_the_facts_it_must_name():
+    fields = document_engine._SECTION_DISCOVERY_FIELDS["executive_summary"]
+    for f in ("target_integrations", "regulations", "data_residency",
+              "deployment_model", "delivery_phases", "support_model"):
+        assert f in fields, f
+    import proposal_templates
+    spec = next(s for s in proposal_templates.get_template("implementation")
+                if s.id == "executive_summary")
+    instr = spec.subsections[0][1]
+    assert "Amlak" not in instr and "500-800 words" in instr

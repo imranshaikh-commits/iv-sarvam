@@ -1231,7 +1231,7 @@ _SAAS_PLATFORM = {"ping": "PingOne Advanced Identity Cloud",
 
 # (pattern on the vendor's scope, node label). Order is display order.
 _DOMAINS = (
-    ("wiam", r"access management|\bam\b|wiam|workforce|\bsso\b",
+    ("wiam", r"(?<!privileged )access management|\bam\b|wiam|workforce|\bsso\b",
      "Workforce access: SSO, adaptive MFA, federation"),
     ("ciam", r"ciam|customer", "Customer identity (CIAM): registration, login, consent"),
     ("iga", r"\biga\b|governance|lifecycle",
@@ -1242,15 +1242,9 @@ _DOMAINS = (
 
 
 def _vendor_scopes(iam_vendor: str, vendor_scope_map: Optional[dict]) -> list[tuple[str, str]]:
-    """[(vendor, scope)] from the scope map, else from 'X for A, Y for B'."""
-    if vendor_scope_map and len(vendor_scope_map) > 1:
-        return [(str(v), str(s)) for v, s in vendor_scope_map.items()]
-    out = []
-    for part in re.split(r",|;|\band\b(?=\s+[A-Z][a-z]+\s+for\b)", iam_vendor or ""):
-        m = re.match(r"\s*(.+?)\s+for\s+(.+?)\s*$", part)
-        if m:
-            out.append((m.group(1), m.group(2)))
-    return out or ([(iam_vendor.strip(), iam_vendor)] if (iam_vendor or "").strip() else [])
+    """[(vendor, scope)]; one definition, shared with the templates."""
+    from proposal_templates import vendor_scopes
+    return vendor_scopes(iam_vendor, vendor_scope_map)
 
 
 def _count(text: str, pattern: str) -> Optional[str]:

@@ -156,6 +156,109 @@ def split_vendors(iam_vendor: Optional[str]) -> list[str]:
     parts = [p for p in parts if p]
     return parts if len(parts) > 1 else [text]
 
+# --- Capability domains ------------------------------------------------------
+# Which IAM domains an engagement covers, and which vendor owns each. Drives
+# the scope and solution structure for ANY vendor mix: IV structures a
+# multi-domain proposal (ESNAD: WIAM+CIAM on one platform, IGA+PAM on another)
+# by domain and capability, and a single-domain one (Amlak: SailPoint IGA) by
+# the governance facets. Order is display order.
+DOMAIN_PATTERNS: tuple[tuple[str, str], ...] = (
+    # "Privileged Access Management" contains "access management"; it is PAM.
+    ("wiam", r"(?<!privileged )access management|\bam\b|wiam|workforce|\bsso\b|single sign"),
+    ("ciam", r"ciam|customer|consumer|citizen"),
+    ("iga", r"\biga\b|governance|lifecycle"),
+    ("pam", r"\bpam\b|privileged"),
+)
+
+# Capability areas a domain section should walk through, where the evidence
+# supports them. Generic IAM domain knowledge, not any one vendor's feature list.
+DOMAIN_CAPABILITIES: dict[str, str] = {
+    "wiam": ("single sign-on and federation protocols (SAML, OIDC, OAuth 2.0), "
+             "adaptive and risk-based MFA, passwordless and FIDO2, authentication "
+             "journeys and orchestration, protection of legacy applications through "
+             "a gateway or agent, directory integration and synchronisation, and "
+             "user self-service"),
+    "ciam": ("registration and progressive profiling, social or national identity "
+             "federation, consent and privacy management, profile management and "
+             "account recovery, fraud and bot protection, and web and mobile "
+             "channel support"),
+    "iga": ("authoritative identity sources, aggregation and correlation, "
+            "joiner-mover-leaver lifecycle automation, access request and approval "
+            "workflows, role-based access control, access certification campaigns, "
+            "segregation of duties, reconciliation and orphan accounts, and audit "
+            "reporting"),
+    "pam": ("privileged account discovery and onboarding, credential vaulting and "
+            "rotation, just-in-time and time-bound access, privileged session "
+            "management and recording (including keystroke logging), "
+            "credential-less access, third-party and remote administrator access, "
+            "approval workflows, and privileged audit and analytics"),
+}
+
+DOMAIN_NAMES: dict[str, str] = {
+    "wiam": "Workforce Identity and Access Management (WIAM)",
+    "ciam": "Customer Identity and Access Management (CIAM)",
+    "iga": "Identity Governance and Administration (IGA)",
+    "pam": "Privileged Access Management (PAM)",
+}
+
+
+def vendor_scopes(iam_vendor: str, vendor_scope_map: Optional[dict] = None) -> list[tuple[str, str]]:
+    """[(vendor, scope text)] from the scope map, else from the vendor answer:
+    "X for A, Y for B" or "X (A, B) and Y (C)". A bare "SailPoint" gives
+    [("SailPoint", "SailPoint")] -- no stated scope."""
+    if vendor_scope_map and len(vendor_scope_map) > 1:
+        return [(str(v), str(s)) for v, s in vendor_scope_map.items()]
+    out = []
+    for part in split_vendors(iam_vendor):
+        m = re.match(r"\s*(.+?)\s*\((.*)\)\s*$", part)
+        if m:
+            out.append((m.group(1), m.group(2)))
+    if out:
+        return out
+    for part in re.split(r",|;|\band\b(?=\s+[A-Z][a-z]+\s+for\b)", iam_vendor or ""):
+        m = re.match(r"\s*(.+?)\s+for\s+(.+?)\s*$", part)
+        if m:
+            out.append((m.group(1), m.group(2)))
+    return out or ([(iam_vendor.strip(), iam_vendor)] if (iam_vendor or "").strip() else [])
+
+
+def _domains_in(text: str) -> list[str]:
+    return [d for d, pat in DOMAIN_PATTERNS if re.search(pat, text or "", re.I)]
+
+
+def engagement_domains(iam_vendor: str, answers: Optional[dict] = None) -> dict:
+    """{"domains": [...], "domain_vendors": {domain: vendor},
+    "vendor_domains": {iam_vendors entry: [domains]}, "multi_domain": bool}.
+
+    Read from what each vendor is stated to own. When the vendor answer names
+    no capability (a bare "SailPoint"), the per-domain population answer
+    ("WIAM users: 5000; PAM privileged accounts: 50") is the fallback for a
+    single vendor; otherwise no domains are known and callers keep the
+    single-domain structure."""
+    answers = answers or {}
+    vendors = split_vendors(iam_vendor)
+    domain_vendors: dict[str, str] = {}
+    vendor_domains: dict[str, list[str]] = {}
+    for name, scope in vendor_scopes(iam_vendor, answers.get("vendor_scope_map")):
+        owned = _domains_in(scope)
+        key = next((v for v in vendors
+                    if v.lower().split()[0] == name.lower().split()[0]), name)
+        vendor_domains[key] = owned
+        for d in owned:
+            domain_vendors.setdefault(d, name)
+    if not domain_vendors and len(vendors) == 1:
+        pop = str(answers.get("population_by_domain") or "")
+        keys = " ".join(re.findall(r"([^:;,\n]+):", pop))
+        owned = _domains_in(keys)
+        if owned:
+            vendor_domains[vendors[0]] = owned
+            domain_vendors = {d: vendors[0] for d in owned}
+    domains = [d for d, _ in DOMAIN_PATTERNS if d in domain_vendors]
+    return {"domains": domains, "domain_vendors": domain_vendors,
+            "vendor_domains": vendor_domains, "multi_domain": len(domains) > 1,
+            "domain_capabilities": DOMAIN_CAPABILITIES, "domain_names": DOMAIN_NAMES}
+
+
 # Sentinel section id: this section is produced by the compliance-matrix
 # pipeline (run_compliance_matrix) rather than by free-form LLM drafting.
 COMPLIANCE_SECTION_ID = "compliance_matrix"
@@ -357,9 +460,19 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
         # A single unnamed subsection renders as continuous prose under the
         # section heading, which is what IV actually does.
         subsections=(
-            ("", "the engagement in one page: what Amlak is buying, why now, what "
-                 "changes for the business, and the shape of the delivery. "
-                 "Continuous prose, no sub-headings, no bullet lists."),
+            ("", "the engagement on one to two pages (roughly 500-800 words), "
+                 "continuous prose with no sub-headings. It is the section every "
+                 "evaluator reads, so it carries the substance, not slogans. "
+                 "Cover, from the client-supplied facts: what {{ client_name }} is "
+                 "buying and why now; each capability domain in scope with its "
+                 "population and the platform that delivers it; the named systems "
+                 "and applications to be integrated (name them); the deployment "
+                 "model and any data-residency requirement; the standards and "
+                 "authentication methods the solution supports; the regulations "
+                 "and national identity services it aligns with; the delivery "
+                 "model, duration and phase structure; and the support model after "
+                 "go-live. A short list of the platforms and the domains each owns "
+                 "is allowed; otherwise no bullet lists."),
         ),
     ),
     SectionSpec(
@@ -412,8 +525,67 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "the client's current identity estate, the incumbent platform being replaced, "
              "and the business drivers stated in discovery. Name actual systems and counts."),
             ("Identity and Access Management - {{ iam_vendor }}",
-             "what is IN scope, as a structured list: the capability areas, application "
-             "counts, identity types and environments supplied at discovery."),
+             "{% if not domains %}what is IN scope, as a structured list: the capability "
+             "areas, application counts, identity types and environments supplied at "
+             "discovery.{% endif %}"),
+            # Multi-domain engagements: IV restates scope domain by domain, the way
+            # the client's SOW is written, so an evaluator can tick each item off.
+            ("Discovery and IAM Assessment",
+             "{% if domains %}the assessment-first discovery phase: what is validated "
+             "before design (identity populations and licensing baseline, "
+             "authoritative sources, applications and how each authenticates today, "
+             "privileged accounts, integration dependencies, governance processes) "
+             "and how the findings finalise the target design. Use the discovery "
+             "duration where supplied.{% endif %}"),
+            ("Workforce Identity and Access Management (WIAM)",
+             "{% if 'wiam' in domains %}the in-scope workforce capability delivered "
+             "by {{ domain_vendors.wiam }}, as a bulleted list: the workforce "
+             "population, the applications it covers, and the capabilities among "
+             "{{ domain_capabilities.wiam }} that the client-supplied facts or "
+             "requirements call for.{% endif %}"),
+            ("Customer Identity and Access Management (CIAM)",
+             "{% if 'ciam' in domains %}the in-scope customer identity capability "
+             "delivered by {{ domain_vendors.ciam }}, as a bulleted list: the "
+             "customer population and the named customer-facing applications, and "
+             "the capabilities among {{ domain_capabilities.ciam }} that the "
+             "client-supplied facts or requirements call for.{% endif %}"),
+            ("Identity Governance and Administration (IGA)",
+             "{% if 'iga' in domains %}the in-scope governance capability delivered "
+             "by {{ domain_vendors.iga }}, as a bulleted list: the governed "
+             "population and systems, and the capabilities among "
+             "{{ domain_capabilities.iga }} that the client-supplied facts or "
+             "requirements call for.{% endif %}"),
+            ("Privileged Access Management (PAM)",
+             "{% if 'pam' in domains %}the in-scope privileged access capability "
+             "delivered by {{ domain_vendors.pam }}, as a bulleted list: the "
+             "privileged account count and target platforms, and the capabilities "
+             "among {{ domain_capabilities.pam }} that the client-supplied facts or "
+             "requirements call for.{% endif %}"),
+            ("Application and Platform Integration",
+             "{% if domains %}EVERY system and application named in the "
+             "client-supplied facts (target integrations, applications, directories, "
+             "identity sources), as a bulleted list, each with the integration it "
+             "needs: federation/SSO, provisioning, governance or privileged access. "
+             "Do not drop a named system and do not add one the facts do not name."
+             "{% endif %}"),
+            ("Identity Data Migration and Lifecycle Transition",
+             "{% if domains %}how existing identities, accounts and entitlements move "
+             "into the new platforms: source extraction, cleansing scope, "
+             "reconciliation, and cutover from current processes.{% endif %}"),
+            ("Testing and Production Deployment",
+             "{% if domains %}the test stages (functional, integration, UAT) and how "
+             "configuration is promoted through the environments named at discovery "
+             "into production.{% endif %}"),
+            ("Training, Knowledge Transfer and Documentation",
+             "{% if domains %}one short paragraph on what the client's teams receive: "
+             "training audiences, knowledge transfer and the documentation set.{% endif %}"),
+            ("Post-Implementation Support and Optimization",
+             "{% if domains %}one short paragraph on the support model after go-live, "
+             "as supplied at discovery.{% endif %}"),
+            ("Compliance and Regulatory Alignment",
+             "{% if domains %}each regulation, national identity service and "
+             "data-residency requirement named in the client-supplied facts, and how "
+             "the solution addresses it. Name only what the facts name.{% endif %}"),
             ("Out of Scope",
              "what is explicitly EXCLUDED. Render as a bulleted list, one exclusion per "
              "line, using the supplied out-of-scope items verbatim in substance. This "
@@ -431,23 +603,23 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "the case for this vendor over alternatives: analyst position, governance "
              "depth, connector coverage, and fit to the client's stated drivers."),
             ("Who Has Access Today",
-             "how the platform answers the visibility question: aggregation, correlation "
-             "and the single view of entitlement across connected systems."),
+             "{% if not multi_domain %}how the platform answers the visibility question: aggregation, correlation "
+             "and the single view of entitlement across connected systems.{% endif %}"),
             ("Who Should Have Access",
-             "role modelling, birthright access, policy and segregation-of-duties controls."),
+             "{% if not multi_domain %}role modelling, birthright access, policy and segregation-of-duties controls.{% endif %}"),
             ("Who Had Access",
-             "historical audit: what was granted, by whom, when, and revocation evidence."),
+             "{% if not multi_domain %}historical audit: what was granted, by whom, when, and revocation evidence.{% endif %}"),
             ("Access Certification",
-             "certification campaign types scoped to the reviewers named at discovery."),
+             "{% if not multi_domain %}certification campaign types scoped to the reviewers named at discovery.{% endif %}"),
             ("Provisioning and Lifecycle Management",
-             "automated joiner, mover and leaver flows and the connectors that fulfil them."),
+             "{% if not multi_domain %}automated joiner, mover and leaver flows and the connectors that fulfil them.{% endif %}"),
             ("Segregation of Duties",
-             "the SoD policy model, and detective versus preventive control points."),
+             "{% if not multi_domain %}the SoD policy model, and detective versus preventive control points.{% endif %}"),
             ("Reporting and Analytics",
-             "standard and custom reporting, dashboards and audit evidence production."),
+             "{% if not multi_domain %}standard and custom reporting, dashboards and audit evidence production.{% endif %}"),
             ("Connectors and Integrations",
-             "connector coverage for the systems named at discovery, and the approach "
-             "where no out-of-box connector exists."),
+             "{% if not multi_domain %}connector coverage for the systems named at discovery, and the approach "
+             "where no out-of-box connector exists.{% endif %}"),
             # IV's Solution Overview has THIRTEEN subsections; run 9 produced
             # nine. The four below are the gap, and they are precisely where IV
             # places its product screenshots -- the `product` asset kind we hold
@@ -465,14 +637,24 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "genuine, specific detail to write about -- do not invent a "
              "sub-heading with nothing under it. A reviewer scanning the "
              "headers alone, without reading the prose, should be able to "
-             "tell what the product does."),
+             "tell what the product does."
+             "{% set owned = vendor_domains.get(iam_vendor, []) if vendor_domains else [] %}"
+             "{% if multi_domain and owned %} In this engagement {{ iam_vendor }} "
+             "owns{% for d in owned %} {{ domain_names[d] }}{{ ',' if not loop.last }}"
+             "{% endfor %}. Use one '## ' header per owned domain and, under each, "
+             "'### ' headers for its capability areas that the evidence and the "
+             "client's requirements support, drawn from:{% for d in owned %} "
+             "{{ domain_names[d] }}: {{ domain_capabilities[d] }}.{% endfor %} For "
+             "each capability, say what it does and how it applies to this client's "
+             "named systems and users. Do not describe domains another vendor owns."
+             "{% endif %}"),
             ("Comprehensive Identity Governance Platform",
-             "the breadth of the governance platform across identity lifecycle, "
+             "{% if not multi_domain %}the breadth of the governance platform across identity lifecycle, "
              "access request, certification, policy and analytics - what a single "
-             "platform covers that point solutions do not."),
+             "platform covers that point solutions do not.{% endif %}"),
             ("Intuitive Administrative and End User Dashboards",
-             "what an administrator and an end user each see day to day: request "
-             "flows, approvals, self-service, and the administrative console."),
+             "{% if not multi_domain %}what an administrator and an end user each see day to day: request "
+             "flows, approvals, self-service, and the administrative console.{% endif %}"),
             ("{{ iam_vendor }} Extension Modules and Add-ons",
              "optional modules beyond the core platform and when each is worth "
              "adding. Note explicitly which are IN scope for this engagement and "
@@ -594,7 +776,7 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
             # IV splits RACI into a legend plus TWO matrices -- governance
             # activities, then delivery activities -- 33 rows in total. Run 9
             # produced a single 10-row table.
-            ("Stage 1 - Build Current State",
+            ("Discovery and Current-State Baseline",
              "the discovery and baseline stage: what is inventoried before any "
              "build begins - applications, identities, entitlements, existing "
              "integrations and data quality. Present the inventory as a markdown "
@@ -690,21 +872,23 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "tooling used to track it."),
             ("Tranche 1 - Foundation",
              "foundation scope as a markdown TABLE with columns Sr#, Category, "
-             "Milestone, Success Criteria. Cover licence delivery, kickoff, "
-             "consulting and design workshops, environment installation "
-             "(development, QA, production, DR), core configuration and "
+             "Milestone, Success Criteria, numbering rows M1.1, M1.2, .... "
+             "Cover licence delivery, kickoff, consulting and design workshops, "
+             "provisioning of the environments named at discovery (installation "
+             "only where the platform is self-managed), core configuration and "
              "authoritative source onboarding. Success Criteria states what "
              "evidence closes that milestone. At least 10 rows."),
             ("Tranche 2 - Lifecycle Management and Initial Applications",
              "lifecycle automation plus the first application batch, as a markdown "
              "TABLE with EXACTLY these columns: Sr#, Category, Milestone, "
-             "Success Criteria. Cover joiner/mover/leaver automation, birthright "
+             "Success Criteria, numbering rows M2.1, M2.2, .... Cover joiner/mover/leaver automation, birthright "
              "roles, the first application batch named at discovery, UAT and "
              "documentation. At least 6 rows."),
             ("Tranche 3 - Access Certification and Application Onboarding",
              "certification campaigns plus continued onboarding, as a markdown "
              "TABLE with EXACTLY these columns: Sr#, Category, Milestone, "
-             "Success Criteria, in the batch size named at discovery. "
+             "Success Criteria, numbering rows M3.1, M3.2, ..., in the batch size "
+             "named at discovery. "
              "At least 6 rows."),
         ),
     ),

@@ -1985,3 +1985,25 @@ def test_openrouter_response_cache_headers_are_sent_and_blank_retry_differs():
     finally:
         document_engine.draft_with_openrouter = orig
     assert prompts[0] != prompts[1], "blank retry would be served the cached empty answer"
+
+
+def test_a_400_drops_only_the_penalty_before_going_plain():
+    """Review finding: the 400 retry used to drop prompt caching and the
+    reasoning cap along with frequency_penalty, silently."""
+    sent = []
+
+    class _C:
+        async def post(self, url, headers=None, json=None, timeout=None):
+            sent.append(json)
+            code = 400 if len(sent) == 1 else 200
+            body = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+            return httpx.Response(code, json=body, request=httpx.Request("POST", url))
+
+    out = asyncio.run(document_engine._draft_across_models(_C(), "S" * 10, "u", max_tokens=100))
+    assert out == "ok"
+    first_retry = sent[1]
+    assert "frequency_penalty" not in first_retry
+    assert first_retry.get("reasoning") and isinstance(first_retry["messages"][0]["content"], list)
+    plain = document_engine._draft_payload("m", "S", "u", include_frequency_penalty=False,
+                                           include_extras=False)
+    assert "reasoning" not in plain and plain["messages"][0]["content"] == "S"

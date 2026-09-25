@@ -505,10 +505,9 @@ def build_stack_d2(spec: DiagramSpec) -> str:
     ids = []
     for i, g in enumerate(columns):
         ids.append(f"c{i}")
-        # One column up to ten applications: a taller, narrower page prints
-        # larger than a wide one (3140px wide printed the text at ~5pt).
-        cols = 2 if g in apps and len(members[g]) > 10 else 1
-        lines += container(f"c{i}", g, cols, "  ")
+        # One column (build_stack_spec caps applications at ten): a taller,
+        # narrower page prints larger than a wide one (3140px printed ~5pt).
+        lines += container(f"c{i}", g, 1, "  ")
     lines.append("}")
     for g in sources:
         lines += container("sources", g, max(1, len(members[g])), "")
@@ -521,6 +520,21 @@ def build_stack_d2(spec: DiagramSpec) -> str:
         lines += [f'main.{a} -> main.{b}: "{lab}" {{', "  style: {",
                   f'    stroke: "{IV_SLATE}"', "    stroke-width: 2",
                   f'    font-color: "{IV_SLATE}"', f"    font-size: {_STACK_FONT - 4}", "  }", "}"]
+    # Each platform to the sources band, dashed, as IV's "supporting
+    # integration" lines: the band otherwise floated with no connection.
+    if sources:
+        for cid, g in zip(ids, columns):
+            if g not in vendors:
+                continue
+            labs = [n.label.lower() for n in members[g]]
+            access = any(l.startswith(("workforce access", "customer identity")) for l in labs)
+            govern = any(l.startswith(("identity governance", "privileged access")) for l in labs)
+            lab = " · ".join(x for x, on in (("federation · directory", access),
+                                             ("HR feed · accounts · audit", govern)) if on)
+            lines += [f'main.{cid} <-> sources: "{lab}" {{', "  style: {",
+                      f'    stroke: "{IV_ASH}"', "    stroke-width: 2", "    stroke-dash: 5",
+                      f'    font-color: "{IV_SLATE}"', f"    font-size: {_STACK_FONT - 6}",
+                      "  }", "}"]
     return "\n".join(lines) + "\n"
 
 
@@ -704,7 +718,9 @@ def _render_with_d2(spec: DiagramSpec, fmt: str, timeout: float) -> Optional[byt
 
     aspect = _svg_aspect(svg)
     best_penalty = _aspect_penalty(aspect)
-    if best_penalty > 0:
+    # A grid (the solution stack) ignores direction and layout engine, so
+    # re-rendering it can only return the same picture.
+    if best_penalty > 0 and spec.diagram_type != "stack":
         # Try a small set of alternative layouts and KEEP THE BEST MEASURED one.
         # Flipping the axis is not reliably an improvement: an 8-zone chain goes
         # from 3.49 (sliver) to 0.09 (an 11:1 strip), which is worse. Scoring

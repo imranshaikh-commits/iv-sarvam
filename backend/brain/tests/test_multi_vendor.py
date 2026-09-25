@@ -2220,3 +2220,11 @@ def test_scale_judgement_and_requirement_extraction_use_the_cheap_tier():
 def test_structured_client_sends_response_cache_headers():
     import inspect
     assert "default_headers=openrouter_cache_headers()" in inspect.getsource(app.instructor_client)
+
+
+def test_chat_turn_calls_bypass_the_response_cache():
+    """A re-pasted reply must be re-read, not served the cached extraction."""
+    import inspect
+    assert "extra_headers=_NO_RESPONSE_CACHE" in inspect.getsource(app.classify_intent_llm)
+    assert "extra_headers=_NO_RESPONSE_CACHE" in inspect.getsource(app.extract_bucket_answers)
+    assert app._NO_RESPONSE_CACHE == {"X-OpenRouter-Cache": "false"}

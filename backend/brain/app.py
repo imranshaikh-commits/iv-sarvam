@@ -82,6 +82,9 @@ TOP_K = int(os.environ.get("TOP_K", "8"))
 COMPLIANCE_EVIDENCE_CHUNKS = int(os.environ.get("SHILPI_COMPLIANCE_EVIDENCE_CHUNKS", "12"))
 COMPLIANCE_MAX_TOKENS = int(os.environ.get("SHILPI_COMPLIANCE_MAX_TOKENS", "2000"))
 STRUCTURED_REASONING_EFFORT = os.environ.get("SHILPI_STRUCTURED_REASONING_EFFORT", "low").strip()
+# Chat-turn calls must always be fresh: a consultant re-pasting the same reply
+# after an incomplete extraction would otherwise get the same cached reading.
+_NO_RESPONSE_CACHE = {"X-OpenRouter-Cache": "false"}
 # Compliance classification is 56 small structured calls per ESNAD run: pick
 # covered/partial/missing and quote evidence. A classification task, so it runs
 # on a cheap model first (GPT-6 Luna, $0.10/$0.50 per M) and falls back to the
@@ -604,6 +607,7 @@ async def classify_intent_llm(text: str) -> tuple[Optional[str], str]:
         res: _IntentResult = await asyncio.wait_for(
             _structured_with_fallback(
                 _IntentResult,
+                extra_headers=_NO_RESPONSE_CACHE,
                 messages=[{"role": "system", "content": _INTENT_PROMPT},
                           {"role": "user", "content": text[:1000]}],
                 temperature=0,
@@ -997,6 +1001,7 @@ async def extract_bucket_answers(bucket: dict, reply_text: str,
         resp: _ExtractedAnswers = await asyncio.wait_for(
             _structured_with_fallback(
                 _ExtractedAnswers,
+                extra_headers=_NO_RESPONSE_CACHE,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": (
@@ -2140,7 +2145,7 @@ async def _classify_coverage_once(req: Requirement, chunks: list[dict],
     entry: CoverageEntry = await _structured_with_fallback(
         CoverageEntry,
         models=COMPLIANCE_LLM_MODELS,
-        extra_body={"reasoning": {"effort": "low"}},
+        extra_body={"reasoning": {"effort": STRUCTURED_REASONING_EFFORT or "low"}},
         messages=[
             {"role": "system", "content": _CLASSIFY_PROMPT},
             {"role": "user", "content": f"REQUIREMENT {req.id}:\n{req.text}\n\n=== EVIDENCE (from IV's past proposals) ===\n{build_evidence_block(chunks)}"},

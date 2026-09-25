@@ -931,3 +931,11 @@ def test_every_diagram_form_actually_compiles_with_d2():
             diagram_type=dtype, title="t", nodes=shapes, edges=edges))
         assert diagram_engine._d2_run(diagram_engine.build_d2(spec), 25), dtype
     assert diagram_engine._d2_run(diagram_engine.build_d2(_esnad_stack()), 25), "stack"
+
+
+def test_stack_links_each_platform_to_the_sources_band():
+    """Review finding: the sources band floated with no connection."""
+    d2 = diagram_engine.build_d2(_esnad_stack())
+    assert d2.count("<-> sources") == 2 and "HR feed · accounts · audit" in d2
+    if diagram_engine.d2_available():
+        assert diagram_engine._d2_run(d2, 25)

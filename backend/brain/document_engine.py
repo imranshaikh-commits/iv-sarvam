@@ -493,12 +493,16 @@ def discovery_context_for(section_id: str, answers: Optional[dict],
 
 def _draft_payload(model: str, system_prompt: str, user_prompt: str,
                    include_frequency_penalty: bool = True,
-                   max_tokens: int = MAX_DRAFT_TOKENS) -> dict:
+                   max_tokens: int = MAX_DRAFT_TOKENS,
+                   include_extras: Optional[bool] = None) -> dict:
+    # Prompt caching and the reasoning cap follow frequency_penalty unless the
+    # caller says otherwise (the 400 path keeps them while dropping the penalty).
+    extras = include_frequency_penalty if include_extras is None else include_extras
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": _cacheable(system_prompt)
-             if include_frequency_penalty and DRAFT_PROMPT_CACHE else system_prompt},
+             if extras and DRAFT_PROMPT_CACHE else system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         "stream": False,
@@ -508,7 +512,7 @@ def _draft_payload(model: str, system_prompt: str, user_prompt: str,
         # Clamp to the hard ceiling so a bad depth config can never inflate a call.
         "max_tokens": min(int(max_tokens), MAX_DRAFT_TOKENS),
     }
-    if include_frequency_penalty and DRAFT_REASONING_EFFORT:
+    if extras and DRAFT_REASONING_EFFORT:
         # Hidden reasoning counts against max_tokens: Gemini 3.8 Flash spent
         # ~860 of every 900 tokens on it in ESNAD 09-24, so 19 drafts needed
         # a retry. Dropped with the other optional params on a 400.
@@ -692,15 +696,21 @@ async def _draft_across_models(client, system_prompt: str, user_prompt: str, *,
             # A 400 may be an unsupported-param error (e.g. frequency_penalty).
             # Retry the SAME model once without it before falling back.
             if e.response is not None and e.response.status_code == 400:
-                try:
-                    content = await _post_draft(
-                        client, _draft_payload(model, system_prompt, user_prompt,
-                                               include_frequency_penalty=False,
-                                               max_tokens=max_tokens))
-                    log.info("OpenRouter draft model=%s (no frequency_penalty)", model)
-                    return content
-                except (httpx.HTTPStatusError, httpx.RequestError) as e2:
-                    last_exc = e2
+                # Drop ONLY frequency_penalty first: dropping everything lost
+                # prompt caching and the reasoning cap silently on any model
+                # that rejects that one parameter. Plain request as last resort.
+                for extras, note in ((True, "no frequency_penalty"),
+                                     (False, "plain: no penalty, reasoning or cache_control")):
+                    try:
+                        payload = _draft_payload(model, system_prompt, user_prompt,
+                                                 include_frequency_penalty=False,
+                                                 max_tokens=max_tokens,
+                                                 include_extras=extras)
+                        content = await _post_draft(client, payload)
+                        log.warning("OpenRouter draft model=%s (%s)", model, note)
+                        return content
+                    except (httpx.HTTPStatusError, httpx.RequestError) as e2:
+                        last_exc = e2
             if model == FALLBACK_LLM_MODEL:
                 raise
             log.warning("draft failed on primary %s (%s); falling back to %s",

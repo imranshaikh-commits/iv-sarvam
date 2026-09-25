@@ -46,7 +46,7 @@ _BUCKETS: list[dict] = [
         "title": "Client",
         "questions": [
             _q("client_name", "Client / organisation name", "text", required=True),
-            _q("industry", "Industry / sector", "text", required=True),
+            _q("industry", "Industry / sector of the client organisation (e.g. mining, banking, government); often implied by the client's name or business", "text", required=True),
             _q("country", "Country / region", "text"),
         ],
     },

@@ -873,3 +873,42 @@ def test_diagram_regenerate_bypasses_the_response_cache():
 
     asyncio.run(diagram_engine.generate_diagram_spec(fake, title="t"))
     assert seen["extra_headers"] == {"X-OpenRouter-Cache": "false"}
+
+
+def test_stack_parses_comma_separated_systems_and_finds_active_directory():
+    """ESNAD 09-25: commas (some inside parentheses) and 'Active Directory /
+    LDAP' in a separate field gave one truncated box and no AD node."""
+    ti = ("Nafath, Taadeen Platform, Bravo/ inspection platform, ESM / ITSM Platform, "
+          "Bidding platform, GIS (Esri Geoportal, Admin, Maps), PowerBi/ reporting tools, "
+          "Bytebase, Grafana & OutSystem, Complex Management")
+    assert "GIS (Esri Geoportal, Admin, Maps)" in diagram_engine._system_names(ti)
+    spec = diagram_engine.build_stack_spec(
+        title="t", client_name="ESNAD", is_saas=True,
+        iam_vendor="Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM",
+        target_integrations=ti,
+        context="Active Directory / LDAP (Workforce directory & legacy authentication)")
+    labels = [n.label for n in spec.nodes]
+    groups = {n.group for n in spec.nodes}
+    assert "ESNAD applications" in groups and "Taadeen Platform" in labels
+    assert "Nafath (national login)" in labels
+    assert "Active Directory / LDAP" in labels
+    apps = [n.label for n in spec.nodes if n.group == "ESNAD applications"]
+    assert len(apps) == 9 and "GIS (Esri Geoportal, Admin, Maps)" in apps, apps
+
+
+def test_a_too_wide_architecture_diagram_is_retried_top_to_bottom():
+    tried = []
+
+    def fake_run(source, timeout, layout=None):
+        tried.append(source.splitlines()[0])
+        return b'<svg width="1000" height="200"></svg>'
+
+    orig = diagram_engine._d2_run
+    diagram_engine._d2_run = fake_run
+    try:
+        spec = diagram_engine.DiagramSpec(diagram_type="architecture", title="t", nodes=[
+            diagram_engine.DiagramNode(id="a", label="A")], edges=[])
+        diagram_engine._render_with_d2(spec, "svg", 5)
+    finally:
+        diagram_engine._d2_run = orig
+    assert "direction: down" in tried, tried

@@ -477,7 +477,10 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "optional modules beyond the core platform and when each is worth "
              "adding. Note explicitly which are IN scope for this engagement and "
              "which are not. A capability the client-supplied scope names is IN "
-             "scope; never describe it as an excluded or future add-on."),
+             "scope; never describe it as an excluded or future add-on. A separately "
+             "licensed module is IN scope only when the client-supplied facts or "
+             "requirements name it or it is the vendor's stated scope; otherwise "
+             "list it as optional."),
         ),
     ),
     SectionSpec(

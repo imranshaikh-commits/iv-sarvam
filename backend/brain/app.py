@@ -1426,6 +1426,15 @@ def _diagram_facts(answers: dict) -> str:
            "is_saas": document_engine._looks_like_saas(answers.get("deployment_model"))}
     facts = (document_engine._vendor_scope_clause(ctx)
              + document_engine._engagement_facts_clause(ctx)).strip()
+    # Roles, stated once: ESNAD 09-25's model-drawn diagrams had the HR feed
+    # coming from AD, the joiner event inside the ITSM platform, Grafana as the
+    # SIEM and the access platform provisioning applications.
+    facts += ("\n\nROLES: identity data originates in the HR/ERP authoritative "
+              "source; the governance (IGA) platform provisions accounts into "
+              "directories and applications; the access platform authenticates, "
+              "federates and issues tokens; privileged access goes through the PAM "
+              "vault; audit events go to the SIEM. Place every node in the zone of "
+              "the system that actually performs it.")
     names = diagram_engine._system_names(str(answers.get("target_integrations") or ""))
     if names:
         facts += ("\n\nCLIENT SYSTEMS (use these names for application nodes): "

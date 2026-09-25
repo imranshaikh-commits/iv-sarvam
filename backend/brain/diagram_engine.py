@@ -626,7 +626,11 @@ def _render_with_d2(spec: DiagramSpec, fmt: str, timeout: float) -> Optional[byt
         # from 3.49 (sliver) to 0.09 (an 11:1 strip), which is worse. Scoring
         # every candidate against the band and keeping the winner means a
         # candidate that does not help is simply discarded.
-        for alt_dir, alt_layout in (("right", None), (None, "dagre"), ("right", "dagre")):
+        # Try the OTHER axis: structural views default to left-to-right, and
+        # the old list only ever tried "right", so a too-wide architecture
+        # diagram (ESNAD 09-25: aspect 0.23-0.29) could never flip.
+        flip = "down" if spec.diagram_type in _WIDE_TYPES else "right"
+        for alt_dir, alt_layout in ((flip, None), (None, "dagre"), (flip, "dagre")):
             alt = _d2_run(build_d2(spec, direction=alt_dir), timeout, layout=alt_layout)
             if alt is None:
                 continue
@@ -1141,12 +1145,20 @@ def _count(text: str, pattern: str) -> Optional[str]:
 
 
 def _system_names(target_integrations: str) -> list[str]:
+    """System names from the target_integrations answer. ESNAD's 09-25
+    extraction separated them with commas, some inside parentheses ("GIS (Esri
+    Geoportal, Admin, Maps)"), and the stack drew one truncated box."""
+    text = target_integrations or ""
+    described = bool(re.search(r";|\n", text))  # "Name (what it does); ..."
+    sep = r";|\n" if described else r",(?![^()]*\))"
     names = []
-    for item in re.split(r";|\n", target_integrations or ""):
+    for item in re.split(sep, text):
         item = item.strip(" .-")
         if not item or item.lower() in ("skip", "none", "n/a"):
             continue
-        m = re.match(r"^(.*?)\s*\([^()]*\)\s*$", item)
+        # Only the described format carries a trailing "(description)"; in a
+        # plain comma list a parenthetical is part of the name.
+        m = re.match(r"^(.*?)\s*\([^()]*\)\s*$", item) if described else None
         names.append(" ".join((m.group(1) if m and m.group(1) else item).split()))
     return names
 
@@ -1194,10 +1206,10 @@ def build_stack_spec(*, title: str, client_name: str, iam_vendor: str,
         nodes.append(DiagramNode(id=f"app_{i}", label=name, group=apps_group))
 
     blob = " ".join([target_integrations or "", context or ""])
-    if re.search(r"active directory|\bldap\b|\bAD\b", blob):
+    if re.search(r"(?i:active directory|\bldap\b)|\bAD\b", blob):
         nodes.append(DiagramNode(id="src_ad", label="Active Directory / LDAP",
                                  group=sources, shape="datastore"))
-    if re.search(r"\bHRMS?\b|\bERP\b|human resources", blob):
+    if re.search(r"\bHRMS?\b|\bERP\b|(?i:human resources)", blob):
         nodes.append(DiagramNode(id="src_hr", label="HR / ERP (authoritative source)",
                                  group=sources, shape="datastore"))
     if nafath:

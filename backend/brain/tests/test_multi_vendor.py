@@ -2233,3 +2233,44 @@ def test_chat_turn_calls_bypass_the_response_cache():
 def test_stack_context_includes_extracted_requirements():
     import inspect
     assert '"extracted_requirements"' in inspect.getsource(app._stack_spec)
+
+
+def _assert_strict(schema: dict, where: str = "root"):
+    """OpenAI strict json_schema: every object forbids extra properties and
+    lists every property as required, recursively (incl. $defs)."""
+    if schema.get("type") == "object" or "properties" in schema:
+        props = schema.get("properties", {})
+        assert schema.get("additionalProperties") is False, f"{where}: additionalProperties"
+        assert sorted(schema.get("required", [])) == sorted(props), f"{where}: required"
+        for k, v in props.items():
+            _assert_strict(v, f"{where}.{k}")
+    for key in ("items",):
+        if isinstance(schema.get(key), dict):
+            _assert_strict(schema[key], f"{where}[]")
+    for k, v in (schema.get("$defs") or {}).items():
+        _assert_strict(v, f"$defs.{k}")
+
+
+def test_cheap_tier_schemas_are_openai_strict_compatible():
+    """ESNAD 09-25: every call to openai/gpt-6-luna 400'd on schema shape
+    (missing 'required', no additionalProperties:false) and fell back."""
+    for model in (app._ScaleResult, app._CoverageLLM, app._ExtractedRequirementsLLM):
+        _assert_strict(model.model_json_schema(), model.__name__)
+
+
+def test_classification_maps_the_strict_reply_back_to_a_coverage_entry():
+    import asyncio
+
+    async def fake(response_model, messages, models=None, **kw):
+        assert response_model is app._CoverageLLM
+        return app._CoverageLLM(status="partial", evidence_refs=[
+            app._EvidenceRefLLM(evidence_id=1, quote="q", rationale="r")],
+            summary="s", recommendation="r")
+
+    orig = app._structured_with_fallback
+    app._structured_with_fallback = fake
+    try:
+        e = asyncio.run(app._classify_coverage_once(app.Requirement(id="AM-01", text="SSO"), [], 100))
+    finally:
+        app._structured_with_fallback = orig
+    assert isinstance(e, app.CoverageEntry) and e.requirement_id == "AM-01" and e.requirement_text == "SSO"

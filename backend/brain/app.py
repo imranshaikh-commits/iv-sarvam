@@ -34,7 +34,7 @@ import instructor
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from openai import AsyncOpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Sprint 5 document-production engine. Safe top-level import: document_engine
 # does NOT import app (it receives the brain helpers as parameters), so there
@@ -482,8 +482,12 @@ _INTENT_APPROVE_MIN_CONFIDENCE = 0.8
 # production being in scope. Judging that needs reading, so it is judged by a
 # model once per proposal and cached on the session.
 class _ScaleResult(BaseModel):
+    # Strict-schema shape (every field required, no extra properties): OpenAI
+    # models behind the cheap tier reject anything else with a 400 before
+    # billing, so the call always fell through to the fallback model.
+    model_config = ConfigDict(extra="forbid")
     scale: str = Field(description="compact or full")
-    reason: str = Field(default="")
+    reason: str = Field(description="one short sentence")
 
 
 _SCALE_PROMPT = """Judge the SIZE of an IAM engagement from its discovery answers.
@@ -1965,6 +1969,37 @@ class CoverageEntry(BaseModel):
     recommendation: str = Field(..., description="Concrete next step: reuse a cited approach, draft a new section, or escalate to SME. Max ~30 words.")
 
 
+class _EvidenceRefLLM(BaseModel):
+    """Strict-schema twin of EvidenceRef for the model call (see _ScaleResult)."""
+    model_config = ConfigDict(extra="forbid")
+    evidence_id: int = Field(..., description="The [N] evidence number from the provided EVIDENCE block (1-based).")
+    quote: str = Field(..., description="Short verbatim quote from that evidence chunk supporting the assessment.")
+    rationale: str = Field(..., description="Why this evidence is relevant to the requirement. Max ~25 words.")
+
+
+class _CoverageLLM(BaseModel):
+    """What the model returns for one requirement, in strict-schema shape.
+    ESNAD 09-25: all 56 compliance calls 400'd on openai/gpt-6-luna
+    ('additionalProperties is required to be supplied and to be false')."""
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["covered", "partial", "missing", "needs-human"]
+    evidence_refs: list[_EvidenceRefLLM] = Field(..., description="Supporting evidence; empty list if none.")
+    summary: str = Field(..., description="How IV's proposal corpus addresses this requirement, grounded in evidence. Keep it to 2-3 sentences (~80 words max). Never repeat phrases.")
+    recommendation: str = Field(..., description="Concrete next step: reuse a cited approach, draft a new section, or escalate to SME. Max ~30 words.")
+
+
+class _RequirementLLM(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(..., description="Requirement identifier, e.g. REQ-001. Preserve RFP numbering if present.")
+    text: str = Field(..., description="The requirement statement, lightly cleaned, single testable claim.")
+    category: str | None = Field(..., description="Category (Security, Integration, Compliance, Performance, Support) or null.")
+
+
+class _ExtractedRequirementsLLM(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    requirements: list[_RequirementLLM]
+
+
 class ComplianceMatrix(BaseModel):
     entries: list[CoverageEntry]
     overall_notes: str
@@ -2094,8 +2129,8 @@ async def _structured_across_models(response_model, messages: list[dict],
 
 
 async def extract_requirements(rfp_text: str) -> list[Requirement]:
-    resp: ExtractedRequirements = await _structured_with_fallback(
-        ExtractedRequirements,
+    resp: _ExtractedRequirementsLLM = await _structured_with_fallback(
+        _ExtractedRequirementsLLM,
         models=COMPLIANCE_LLM_MODELS,  # extraction, not writing: cheap tier
         max_tokens=COMPLIANCE_MAX_TOKENS * 2,
         messages=[
@@ -2105,7 +2140,7 @@ async def extract_requirements(rfp_text: str) -> list[Requirement]:
         temperature=0,
         max_retries=1,
     )
-    return resp.requirements
+    return [Requirement(**r.model_dump()) for r in resp.requirements]
 
 
 def build_evidence_block(chunks: list[dict]) -> str:
@@ -2145,8 +2180,8 @@ async def classify_coverage(req: Requirement, chunks: list[dict]) -> CoverageEnt
 
 async def _classify_coverage_once(req: Requirement, chunks: list[dict],
                                   max_tokens: int) -> CoverageEntry:
-    entry: CoverageEntry = await _structured_with_fallback(
-        CoverageEntry,
+    raw: _CoverageLLM = await _structured_with_fallback(
+        _CoverageLLM,
         models=COMPLIANCE_LLM_MODELS,
         extra_body={"reasoning": {"effort": STRUCTURED_REASONING_EFFORT or "low"}},
         messages=[
@@ -2168,8 +2203,10 @@ async def _classify_coverage_once(req: Requirement, chunks: list[dict],
         frequency_penalty=0.2,
         max_retries=1,
     )
-    entry.requirement_id = req.id
-    entry.requirement_text = req.text
+    entry = CoverageEntry(
+        requirement_id=req.id, requirement_text=req.text, status=raw.status,
+        evidence_refs=[EvidenceRef(**r.model_dump()) for r in raw.evidence_refs],
+        summary=raw.summary, recommendation=raw.recommendation)
     return validate_coverage(entry, chunks)
 
 

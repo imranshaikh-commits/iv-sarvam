@@ -103,3 +103,6 @@ deploy/*.docx
 deploy/*.pdf
 *.docx
 *.pdf
+# Image kit files (uploaded to storage, never committed)
+asset_kit/
+asset_kit.tar.gz

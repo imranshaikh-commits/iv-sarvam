@@ -178,6 +178,12 @@ def select_assets(assets: list[dict], section_id: str,
                     and _is_proposed_vendor(a["vendor"], vendors_for_check):
                 scored.append((1, a))
             continue
+        if a.get("asset_kind") == "product":
+            # IV-library product images carry no reliable vendor: ESNAD 09-25
+            # got an IBM screenshot and a ForgeRock Open Banking demo in a
+            # Saviynt/Ping proposal. Product imagery comes from the vendor-tagged
+            # partner library and the kit only.
+            continue
         desc = f"{a.get('vision_description') or ''} {a.get('ocr_text') or ''}"
         if not rx.search(desc):
             continue
@@ -224,3 +230,99 @@ def asset_summary(placed: dict[str, list[dict]]) -> str:
             desc = re.sub(r"^\[[^\]]*\]\s*", "", desc)[:90]
             lines.append(f"  {n}. [{a.get('asset_kind')}] {section_id}: {desc}")
     return "\n".join(lines)
+
+
+# --- The kit: fixed images IV places in every proposal -------------------------
+# Keyword-matching vision descriptions (above) placed an IBM screenshot, an
+# Open Banking "ForgeBank" diagram and an on-prem data-centre drawing in a SaaS
+# Saviynt/Ping proposal (ESNAD 09-25), and still left IV's own house slides out.
+# IV does not choose these images per deal: its company slides, methodology,
+# KT and support slides go in every proposal, and each vendor's analyst views,
+# product slides and reference architectures go in every proposal for that
+# vendor. So the kit is a fixed manifest, not a search.
+#
+# Images live in the asset bucket under kit/ (scripts/upload_asset_kit.py).
+# A kit image not uploaded yet is skipped at download time, so this manifest can
+# ship before the images do.
+#
+# heading: regex for the subsection heading the image sits under ({vendor} is
+#   the proposed vendor's first word); None = directly under the section title.
+# vendor: placed only when a proposed vendor's name contains this.
+# domains: placed only when ALL are in scope (and scope is known).
+# deployment: "saas" / "self" -- placed only for that deployment model.
+KIT: tuple[dict, ...] = (
+    # IV house slides
+    {"file": "iv_at_a_glance.png", "section": "company_profile", "heading": r"^Inspirit Vision$"},
+    {"file": "iv_services.png", "section": "company_profile", "heading": r"^Inspirit Vision$"},
+    {"file": "iv_expertise.png", "section": "company_profile", "heading": r"^Inspirit Vision$"},
+    {"file": "iv_global_reach.png", "section": "company_profile", "heading": r"^Branch"},
+    {"file": "iv_skill_matrix.png", "section": "company_profile", "heading": r"^Workforce"},
+    {"file": "iv_why_trust_us.png", "section": "company_profile", "heading": r"^Workforce"},
+    {"file": "iv_client_logos.png", "section": "similar_experience", "heading": r"^Client References"},
+    {"file": "iv_engagement_approach.png", "section": "implementation_approach", "heading": r"Maturity Journey|Methodology"},
+    {"file": "iv_hybrid_approach.png", "section": "implementation_approach", "heading": r"Maturity Journey|Methodology"},
+    {"file": "iv_agile_methodology.png", "section": "implementation_approach", "heading": r"Maturity Journey|Methodology"},
+    {"file": "iv_capability_building.png", "section": "knowledge_transfer", "heading": r"^Knowledge Transfer Objectives"},
+    {"file": "iv_kt_process.png", "section": "knowledge_transfer", "heading": r"^Knowledge Transfer Plan"},
+    {"file": "iv_training.png", "section": "knowledge_transfer", "heading": r"^Training"},
+    {"file": "iv_managed_services_approach.png", "section": "post_production_support", "heading": r"^Post-Implementation Support"},
+    {"file": "iv_support_model.png", "section": "post_production_support", "heading": r"^Post-Implementation Support"},
+    # Ping Identity
+    {"file": "ping_market_leadership.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "ping"},
+    {"file": "ping_ciam_customers.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "ping", "domains": ("ciam",)},
+    {"file": "ping_case_study_1.png", "section": "similar_experience", "heading": r"^Relevant Engagements", "vendor": "ping"},
+    {"file": "ping_case_study_2.png", "section": "similar_experience", "heading": r"^Relevant Engagements", "vendor": "ping"},
+    {"file": "ping_case_study_3.png", "section": "similar_experience", "heading": r"^Relevant Engagements", "vendor": "ping"},
+    {"file": "ping_workforce_challenges.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "domains": ("wiam",)},
+    {"file": "ping_aic_multitenant.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "deployment": "saas"},
+    {"file": "ping_aic_tenant_isolation.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "deployment": "saas"},
+    {"file": "ping_advanced_identity_software.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "deployment": "self"},
+    {"file": "ping_orchestration.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping"},
+    {"file": "ping_gateway.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping"},
+    {"file": "ping_app_integration.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping"},
+    {"file": "ping_adaptive_risk.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping"},
+    {"file": "ping_pingid_app.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping"},
+    # Saviynt
+    {"file": "saviynt_kuppingercole_iga.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "saviynt", "domains": ("iga",)},
+    {"file": "saviynt_frost_radar.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "saviynt"},
+    {"file": "saviynt_gartner_pam.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "saviynt", "domains": ("pam",)},
+    {"file": "saviynt_cloud_platform.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "deployment": "saas"},
+    {"file": "saviynt_eic_logical.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga",)},
+    {"file": "saviynt_jml_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga",)},
+    {"file": "saviynt_jml_iga_pam.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga", "pam")},
+    {"file": "saviynt_pam_hla.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",)},
+    {"file": "saviynt_pam_architecture.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",)},
+    {"file": "saviynt_pam_e2e_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",)},
+    {"file": "saviynt_pam_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",)},
+    {"file": "saviynt_identity_to_privileged_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga", "pam")},
+)
+KIT_PREFIX = "kit/"
+
+
+def kit_for(section_id: str, context: dict) -> list[dict]:
+    """Kit images for this section in this engagement, in manifest order:
+    [{"id", "storage_path", "heading": compiled regex or None}]."""
+    vendors = [v for v in (context.get("iam_vendors") or [context.get("iam_vendor")]) if v]
+    domains = set(context.get("domains") or ())
+    saas = bool(context.get("is_saas"))
+    out = []
+    for item in KIT:
+        if item["section"] != section_id:
+            continue
+        name = None
+        if item.get("vendor"):
+            name = next((v for v in vendors if item["vendor"] in v.lower()), None)
+            if not name:
+                continue
+        if item.get("domains") and not set(item["domains"]) <= domains:
+            continue
+        dep = item.get("deployment")
+        if dep and (dep == "saas") != saas:
+            continue
+        heading = item.get("heading")
+        if heading and name:
+            heading = heading.replace("{vendor}", re.escape(name.split()[0]))
+        out.append({"id": f"kit:{item['file']}",
+                    "storage_path": KIT_PREFIX + item["file"],
+                    "heading": re.compile(heading, re.I) if heading else None})
+    return out

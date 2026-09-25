@@ -960,8 +960,7 @@ def test_attach_assets_places_each_image_once():
     """The same picture twice in one document reads as a mistake."""
     lib = [{"id": "a1", "storage_path": "p/1.png", "asset_kind": "corporate",
             "approved": True, "occurrences": 9,
-            "vision_description": "Inspirit Vision certified resources workforce "
-                                  "skill matrix and delivery model"}]
+            "vision_description": "phased migration timeline with milestones"}]
 
     async def library(_c):
         return lib
@@ -969,13 +968,52 @@ def test_attach_assets_places_each_image_once():
     async def download(_c, _p, _b=None):
         return io.BytesIO(_png_bytes())
 
-    sections = [{"id": "company_profile", "title": "Company Profile"},
-                {"id": "implementation_approach", "title": "Implementation Approach"}]
+    # Two sections the kit does not cover, both suiting the same image.
+    sections = [{"id": "project_timeline", "title": "Timeline"},
+                {"id": "migration_strategy", "title": "Migration Strategy"}]
     asyncio.run(document_engine._attach_assets(
         None, sections, {"iam_vendor": "SailPoint"},
         {"library": library, "download": download}))
-    total = sum(len(s.get("assets") or []) for s in sections)
+    total = sum(1 for s in sections for a in (s.get("assets") or [])
+                if not a["id"].startswith("kit:"))
     assert total == 1, f"the same asset was placed {total} times"
+
+
+def test_a_kit_covered_section_takes_no_keyword_matched_library_images():
+    """ESNAD 09-25 put two near-identical Engagement Approach slides in one
+    section: one from keyword matching, then another."""
+    lib = [{"id": "a1", "storage_path": "p/1.png", "asset_kind": "corporate",
+            "approved": True, "vision_description": "Inspirit Vision skill matrix workforce"}]
+
+    async def library(_c):
+        return lib
+
+    async def download(_c, _p, _b=None):
+        return io.BytesIO(_png_bytes())
+
+    sections = [{"id": "company_profile", "title": "Company Profile"}]
+    asyncio.run(document_engine._attach_assets(
+        None, sections, {"iam_vendor": "SailPoint"},
+        {"library": library, "download": download}))
+    ids = [a["id"] for a in sections[0]["assets"]]
+    assert "a1" not in ids and any(i.startswith("kit:") for i in ids)
+
+
+def test_kit_image_renders_under_its_subsection_heading():
+    from docx import Document as _Doc
+    import re as _re
+    sec = {"id": "company_profile", "title": "Company Profile",
+           "subsections": [{"title": "Inspirit Vision", "content": "About us."},
+                           {"title": "Workforce and Capabilities", "content": "Team."}],
+           "assets": [{"id": "kit:x", "stream": io.BytesIO(_png_bytes()),
+                       "heading": _re.compile("^Workforce")}]}
+    doc = _Doc(io.BytesIO(document_engine.assemble_docx(
+        {"client_name": "C", "proposal_type": "implementation"}, [sec])))
+    body = [p for p in doc.paragraphs]
+    first = next(i for i, p in enumerate(body) if p.text == "Inspirit Vision")
+    wf = next(i for i, p in enumerate(body) if p.text == "Workforce and Capabilities")
+    imgs = [i for i, p in enumerate(body) if p._p.xpath(".//a:blip") and i > first]
+    assert imgs and all(i > wf for i in imgs), "kit image must sit under its own subsection"
 
 
 def test_attach_assets_gives_a_later_section_the_next_images_with_their_bucket():
@@ -998,9 +1036,10 @@ def test_attach_assets_gives_a_later_section_the_next_images_with_their_bucket()
     asyncio.run(document_engine._attach_assets(
         None, sections, {"iam_vendor": "Ping Identity"},
         {"library": library, "download": download}))
-    per = [len(s.get("assets") or []) for s in sections]
+    per = [sum(1 for a in (s.get("assets") or []) if not a["id"].startswith("kit:"))
+           for s in sections]
     assert per == [2, 2], per
-    assert set(buckets) == {"partner-product-assets"}
+    assert "partner-product-assets" in set(buckets)
 
 
 def test_attach_assets_survives_an_unavailable_library():

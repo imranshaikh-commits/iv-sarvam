@@ -1970,9 +1970,7 @@ async def _attach_assets(client, sections: list[dict], context: dict,
     being proposed. `architecture` assets are excluded upstream because they
     depict a single client's estate.
     """
-    library = await asset_fns["library"](client)
-    if not library:
-        return
+    library = await asset_fns["library"](client) or []
 
     vendor = context.get("iam_vendor")
     vendors = context.get("iam_vendors")
@@ -1982,20 +1980,28 @@ async def _attach_assets(client, sections: list[dict], context: dict,
         return f"{a.get('bucket') or ''}/{a['storage_path']}"
 
     for sec in sections:
+        sid = sec.get("id") or ""
+        # The fixed kit first: IV's own slides and the proposed vendors'.
+        kit = asset_selection.kit_for(sid, context)
         # One image appears once per document, however many sections it suits
         # -- the same picture twice reads as a mistake. Filter BEFORE selecting,
         # so a later section gets the next-best images instead of re-picking
-        # the ones already placed and ending up with none.
-        chosen = asset_selection.select_assets(
-            [a for a in library if key(a) not in used], sec.get("id") or "",
-            vendor, iam_vendors=vendors, limit=_ASSETS_PER_SECTION)
+        # the ones already placed and ending up with none. A section the kit
+        # covers takes no keyword-matched IV-library images on top: that is how
+        # two near-identical "Engagement Approach" slides landed in one section.
+        pool = [a for a in library if key(a) not in used
+                and not (kit and not a.get("vendor"))]
+        chosen = kit + asset_selection.select_assets(
+            pool, sid, vendor, iam_vendors=vendors, limit=_ASSETS_PER_SECTION)
         attached = []
         for a in chosen:
+            if key(a) in used:
+                continue
             stream = await asset_fns["download"](client, a["storage_path"], a.get("bucket"))
             if stream is None:
                 continue
             used.add(key(a))
-            attached.append({"id": a["id"], "stream": stream})
+            attached.append({"id": a["id"], "stream": stream, "heading": a.get("heading")})
         if attached:
             sec["assets"] = attached
             placed += len(attached)
@@ -2089,14 +2095,24 @@ def _render_section_assets(document: Document, sec: dict) -> None:
     another client's project name into run 8.
     """
     for asset in sec.get("assets") or []:
-        stream = asset.get("stream")
-        if not stream:
-            continue
-        try:
-            _add_picture_fitted(document, stream,
-                                max_w=_IMAGE_MAX_W, max_h=_IMAGE_MAX_H)
-        except Exception as e:  # noqa: BLE001 - a bad image must not sink a section
-            log.warning("could not embed asset %s: %s", asset.get("id"), e)
+        if asset.get("heading") is not None:
+            continue  # placed under its subsection heading instead
+        _embed_asset(document, asset)
+
+
+def _embed_asset(document: Document, asset: dict) -> None:
+    stream = asset.get("stream")
+    if not stream:
+        return
+    # Kit images are full slides and architecture diagrams: page width, like
+    # IV's. Library images are supporting pictures and stay smaller.
+    kit = str(asset.get("id") or "").startswith("kit:")
+    try:
+        _add_picture_fitted(document, stream,
+                            max_w=_DIAGRAM_MAX_W if kit else _IMAGE_MAX_W,
+                            max_h=_DIAGRAM_MAX_H if kit else _IMAGE_MAX_H)
+    except Exception as e:  # noqa: BLE001 - a bad image must not sink a section
+        log.warning("could not embed asset %s: %s", asset.get("id"), e)
 
 
 def assemble_docx(
@@ -2192,6 +2208,7 @@ def assemble_docx(
     # an unmatched diagram is never silently dropped.
     _inline_diagrams = _embeddable_diagrams(diagrams)
     _placed_diagrams: set = set()
+    _placed_assets: set = set()
 
     aggregated_assumptions: list[str] = []
     for sec in sections:
@@ -2230,11 +2247,21 @@ def assemble_docx(
                 for claimed in _claim_diagram(_inline_diagrams, title,
                                               _placed_diagrams, _owners):
                     _embed_diagram(document, claimed)
+                # Kit images belonging to this subsection, after its diagram.
+                for asset in sec.get("assets") or []:
+                    if asset.get("heading") is not None and id(asset) not in _placed_assets \
+                            and asset["heading"].search(title):
+                        _placed_assets.add(id(asset))
+                        _embed_asset(document, asset)
         else:
             _add_body_paragraphs(document, sec.get("content", ""))
 
-        # Assets are rendered directly under the SECTION heading (above), not
-        # here. See _render_section_assets.
+        # A kit image whose subsection this engagement does not have (a
+        # different template, a dropped subsection) still lands in its section.
+        for asset in sec.get("assets") or []:
+            if asset.get("heading") is not None and id(asset) not in _placed_assets:
+                _placed_assets.add(id(asset))
+                _embed_asset(document, asset)
 
         # Opportunistically collect assumption-ish lines for the aggregate section.
         if "assumption" not in (sec.get("id") or "").lower():

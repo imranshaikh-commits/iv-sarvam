@@ -53,10 +53,42 @@ def test_another_vendors_screenshot_is_not_shown():
         assert "forgerock" not in a["vision_description"].lower()
 
 
-def test_the_right_vendors_asset_is_shown():
-    chosen = A.select_assets(LIB, "solution_overview", "SailPoint")
-    assert chosen, "no asset selected for the proposed vendor"
-    assert "sailpoint" in chosen[0]["vision_description"].lower()
+def test_untagged_library_product_images_are_never_placed():
+    """ESNAD 09-25: an IBM screenshot and a ForgeRock Open Banking demo reached
+    a Saviynt/Ping proposal through description matching. Product imagery now
+    comes only from vendor-tagged partner assets and the kit."""
+    assert not A.select_assets(LIB, "solution_overview", "SailPoint")
+
+
+def _kit(section, **ctx):
+    base = {"iam_vendors": [], "domains": [], "is_saas": False}
+    return [k["storage_path"] for k in A.kit_for(section, {**base, **ctx})]
+
+
+def test_house_kit_goes_in_every_proposal_under_its_heading():
+    got = A.kit_for("company_profile", {"iam_vendors": ["Okta"]})
+    assert "kit/iv_at_a_glance.png" in [k["storage_path"] for k in got]
+    head = next(k for k in got if k["storage_path"] == "kit/iv_skill_matrix.png")["heading"]
+    assert head.search("Workforce and Capabilities")
+
+
+def test_vendor_kit_follows_vendor_domains_and_deployment():
+    saas = _kit("solution_overview", iam_vendors=["Ping Identity", "Saviynt"],
+                domains=["wiam", "ciam", "iga", "pam"], is_saas=True)
+    assert "kit/ping_aic_multitenant.png" in saas
+    assert "kit/ping_advanced_identity_software.png" not in saas   # self-managed product
+    assert "kit/saviynt_pam_hla.png" in saas
+    iga_only = _kit("solution_overview", iam_vendors=["Saviynt"], domains=["iga"])
+    assert "kit/saviynt_jml_flow.png" in iga_only
+    assert "kit/saviynt_pam_hla.png" not in iga_only               # PAM not in scope
+    assert not any("ping_" in p for p in iga_only)                  # vendor not proposed
+    assert not _kit("solution_overview", iam_vendors=["Okta"], domains=["wiam"])
+
+
+def test_vendor_heading_is_filled_with_the_proposed_vendor():
+    k = next(x for x in A.kit_for("solution_overview", {"iam_vendors": ["Ping Identity"]})
+             if x["storage_path"] == "kit/ping_market_leadership.png")
+    assert k["heading"].search("Why Ping Identity") and not k["heading"].search("Why Saviynt")
 
 
 def test_section_gets_material_that_suits_it():

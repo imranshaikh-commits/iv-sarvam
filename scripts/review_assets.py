@@ -75,7 +75,7 @@ def fetch_assets() -> list[dict]:
     select = ("id,storage_path,asset_kind,vision_description,"
               "width,height,size_bytes,approved")
     if PARTNER:
-        select += ",ocr_text,partner_products(vendor,name)"
+        select += ",ocr_text,partner_products(vendor,product_name)"
     while True:
         resp = requests.get(
             f"{SUPABASE_URL}/rest/v1/{TABLE}",
@@ -122,7 +122,7 @@ def clean_desc(text: str | None) -> str:
 def partner_desc(a: dict) -> str:
     p = a.get("partner_products") or {}
     text = a.get("vision_description") or a.get("ocr_text") or ""
-    return f"{p.get('vendor', '?')} | {p.get('name', '')} | " + clean_desc(text)
+    return f"{p.get('vendor', '?')} | {p.get('product_name', '')} | " + clean_desc(text)
 
 
 def build_html(cards: list[dict], out_path: str) -> None:

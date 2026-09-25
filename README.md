@@ -17,7 +17,7 @@
 
 ## Progress Dashboard
 
-> Quick-glance project status. Last updated: 2026-09-25 (IST), against commit `22ee9b4` and the live Supabase project. **Production plan: [`docs/11_PRODUCTION_PLAN.md`](docs/11_PRODUCTION_PLAN.md), go-live target 22 October 2026.**
+> Quick-glance project status. Last updated: 2026-09-25 (IST), against commit `22ee9b4` and the live Supabase project. **Production plan: [`docs/11_PRODUCTION_PLAN.md`](docs/11_PRODUCTION_PLAN.md), go-live target 2 October 2026.**
 
 **Overall build completion: 84%**
 `█████████████████░░░`
@@ -27,7 +27,7 @@ Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 85, 1
 | | Status |
 |---|---|
 | **Can IV use this on a live deal?** | **Yes, as a first-draft tool.** Three full ESNAD runs between 2026-09-23 and 09-25 went end to end: scanned RFP, intake, diagram plan, drafting, DOCX. The latest content review against IV's real ESNAD proposal found no factual errors, apart from one over-broad data-cleansing assumption for the reviewer to edit. Diagrams name the right products and client systems and sit inline under the section that explains them. A run now costs about **$0.45–0.55**, down from $6.15 on Sonnet 5. The six-sprint fix set from the 09-25 review (structure by capability domain, image kit, Gantt, fact discipline) is deployed and the kit is uploaded; **a rerun to measure it is in progress.** |
-| **Is it production-ready?** | **No. Pilot-ready for one internal user.** The release gate (security, 3-deal golden set, CI, off-host backups, rollback, alerting, runbook) and a 4-week sprint plan to reach it are in [`docs/11_PRODUCTION_PLAN.md`](docs/11_PRODUCTION_PLAN.md). |
+| **Is it production-ready?** | **No. Pilot-ready for one internal user.** The release gate (security, 3-deal golden set, CI, off-host backups, rollback, alerting, runbook) and a one-week sprint plan to reach it are in [`docs/11_PRODUCTION_PLAN.md`](docs/11_PRODUCTION_PLAN.md). |
 | **Would a senior IAM architect sign the output?** | **Unknown. Nobody other than the builder has read a draft.** The structural gap to IV's ESNAD submission is closed: heading depth to H5, per-vendor workstreams, RACI and BOQ per vendor, house sections, and partner product depth drawn from 323 chunks of vendor documentation. Imagery now comes from a fixed kit (41 IV/Ping/Saviynt images) plus 51 approved partner images; the count against IV's 66 is not yet measured. Still open: a human verdict, and every fix since 09-21 was driven by one RFP. Sprint 2 of the production plan runs two structurally different deals (Amlak, BTPN). |
 
 ### Phase completion
@@ -63,18 +63,18 @@ Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 85, 1
 
 ### What's next
 
-Four one-week sprints to production, detailed with acceptance criteria in
+Five sprints in one week to production, detailed with acceptance criteria in
 [`docs/11_PRODUCTION_PLAN.md`](docs/11_PRODUCTION_PLAN.md). One tester (Imran),
 so an automated proposal scorecard does the regression checking and paid runs
 are budgeted per sprint.
 
 | Sprint | Dates | Goal | Paid runs |
 |---|---|---|---|
-| 0 Baseline | 25–28 Sep | Score the ESNAD rerun; `score_proposal.py` scorecard as code | 1 |
-| 1 Lock it down | 29 Sep–2 Oct | Private repo, RLS on `visual_assets`, `sarvam_018`, TLS or tunnel, spend cap, key rotation, off-host backups | 0 |
-| 2 Prove it generalises | 5–9 Oct | Amlak (SailPoint) and BTPN (migration) pass the scorecard; first MSS run; SailPoint kit | 5–6 |
-| 3 Run it like a service | 12–16 Oct | CI, deploy/rollback, health alerts, cost per proposal, per-user identity, runbook, user guide | 1 |
-| 4 Release | 19–22 Oct | Golden-set regression, human read, release gate, `v1.0.0` | 3 |
+| 0 Baseline | Fri 25 Sep | Score the ESNAD rerun; `score_proposal.py` scorecard as code | 1 |
+| 1 Lock it down | Sat 26–Sun 27 Sep | Private repo, RLS on `visual_assets`, `sarvam_018`, TLS or tunnel, spend cap, key rotation, off-host backups | 0 |
+| 2 Prove it generalises | Mon 28–Tue 29 Sep | Amlak (SailPoint) and BTPN (migration) pass the scorecard; first MSS run; SailPoint kit | 5–6 |
+| 3 Run it like a service | Wed 30 Sep | CI, deploy/rollback, health alerts, cost per proposal, per-user identity, runbook, user guide | 1 |
+| 4 Release | Thu 1–Fri 2 Oct | Golden-set regression, human read, release gate, `v1.0.0` | 3 |
 
 Decisions needed from Imran before Sprint 1 are listed at the end of the plan.
 

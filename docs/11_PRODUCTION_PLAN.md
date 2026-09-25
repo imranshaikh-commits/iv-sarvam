@@ -59,9 +59,9 @@ test. Here:
 - **Sev-1** = a client could see something wrong or unsafe (another client's
   name, an invented commitment, a security exposure). It interrupts the sprint.
 
-## Sprints (4 weeks; go-live target Thursday 22 October 2026)
+## Sprints (1 week; go-live target Friday 2 October 2026)
 
-### Sprint 0: Baseline (Fri 25 – Mon 28 Sep)
+### Sprint 0: Baseline (Fri 25 Sep)
 
 Goal: a measured starting point.
 
@@ -73,7 +73,7 @@ Goal: a measured starting point.
 
 Run budget: 1 (ESNAD, already running).
 
-### Sprint 1: Lock it down (Tue 29 Sep – Fri 2 Oct)
+### Sprint 1: Lock it down (Sat 26 – Sun 27 Sep)
 
 Goal: every security gate closed.
 
@@ -89,7 +89,7 @@ Goal: every security gate closed.
 
 Run budget: 0. Security work needs no paid runs.
 
-### Sprint 2: Prove it generalises (Mon 5 – Fri 9 Oct)
+### Sprint 2: Prove it generalises (Mon 28 – Tue 29 Sep)
 
 Goal: the golden set passes; the 09-25 fixes are shown to be generic, not ESNAD-fitted.
 
@@ -103,7 +103,7 @@ Goal: the golden set passes; the 09-25 fixes are shown to be generic, not ESNAD-
 
 Run budget: 5 to 6.
 
-### Sprint 3: Run it like a service (Mon 12 – Fri 16 Oct)
+### Sprint 3: Run it like a service (Wed 30 Sep)
 
 Goal: it can be operated and recovered by someone other than Claude.
 
@@ -118,7 +118,7 @@ Goal: it can be operated and recovered by someone other than Claude.
 
 Run budget: 1 (regression run after 3.5).
 
-### Sprint 4: Release (Mon 19 – Thu 22 Oct)
+### Sprint 4: Release (Thu 1 – Fri 2 Oct)
 
 Goal: go-live.
 

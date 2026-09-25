@@ -2215,3 +2215,8 @@ def test_scale_judgement_and_requirement_extraction_use_the_cheap_tier():
     import inspect
     assert "models=COMPLIANCE_LLM_MODELS" in inspect.getsource(app.judge_engagement_scale)
     assert "models=COMPLIANCE_LLM_MODELS" in inspect.getsource(app.extract_requirements)
+
+
+def test_structured_client_sends_response_cache_headers():
+    import inspect
+    assert "default_headers=openrouter_cache_headers()" in inspect.getsource(app.instructor_client)

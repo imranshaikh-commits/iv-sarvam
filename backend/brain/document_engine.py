@@ -273,6 +273,23 @@ DRAFT_REASONING_EFFORT = os.environ.get("SHILPI_DRAFT_REASONING_EFFORT", "low").
 # the run's $6.15 spent re-reading those identical blocks. Marked cacheable,
 # repeats bill at ~10% (Anthropic) / ~25% (Gemini). Sent as a text part with
 # cache_control; dropped with the other optional params on a 400.
+# OpenRouter response caching: a request byte-identical to one made within the
+# TTL is answered from cache at zero cost. Test runs repeat most of a run
+# unchanged (every compliance call, every RFP page, every section whose prompt a
+# fix did not touch), and each ESNAD run cost $2-6. Only successful responses
+# are reused, and every deliberate retry changes the request body (length retry
+# raises max_tokens, degenerate re-draft appends an instruction, blank retry
+# appends a newline). SHILPI_RESPONSE_CACHE_TTL=0 disables.
+RESPONSE_CACHE_TTL = int(os.environ.get("SHILPI_RESPONSE_CACHE_TTL", "86400"))
+
+
+def openrouter_cache_headers() -> dict:
+    if RESPONSE_CACHE_TTL <= 0:
+        return {}
+    return {"X-OpenRouter-Cache": "true",
+            "X-OpenRouter-Cache-TTL": str(min(RESPONSE_CACHE_TTL, 86400))}
+
+
 DRAFT_PROMPT_CACHE = os.environ.get("SHILPI_DRAFT_PROMPT_CACHE", "1").strip() not in ("0", "", "false")
 
 
@@ -511,6 +528,7 @@ async def _post_once(client: httpx.AsyncClient, payload: dict) -> dict:
         headers={
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
+            **openrouter_cache_headers(),
         },
         json=payload,
         timeout=180,
@@ -942,7 +960,10 @@ async def _draft_with_retry(
     content = await draft_with_openrouter(client, system_prompt, user_prompt, max_tokens=max_tokens)
     if _is_blank(content):
         log.warning("draft returned null/empty content; retrying once")
-        content = await draft_with_openrouter(client, system_prompt, user_prompt, max_tokens=max_tokens)
+        # The trailing newline changes the request, so a response cache cannot
+        # hand back the same empty answer.
+        content = await draft_with_openrouter(client, system_prompt, user_prompt + "\n",
+                                              max_tokens=max_tokens)
     if _is_blank(content):
         return None
 

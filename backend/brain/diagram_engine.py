@@ -1023,6 +1023,8 @@ async def generate_diagram_spec(
             temperature=0.2,
             frequency_penalty=0.2,
             max_retries=1,
+            # "Regenerate" must produce a new diagram, not the cached one.
+            extra_headers={"X-OpenRouter-Cache": "false"},
             **({"extra_body": {"reasoning": {"effort": DIAGRAM_REASONING_EFFORT}}}
                if DIAGRAM_REASONING_EFFORT else {}),
         )

@@ -1990,7 +1990,9 @@ def instructor_client():
     (more reliable than generic JSON mode; OpenRouter handles model translation)."""
     global _instructor_client
     if _instructor_client is None:
-        oa = AsyncOpenAI(base_url=OPENROUTER_BASE, api_key=OPENROUTER_API_KEY)
+        from document_engine import openrouter_cache_headers
+        oa = AsyncOpenAI(base_url=OPENROUTER_BASE, api_key=OPENROUTER_API_KEY,
+                         default_headers=openrouter_cache_headers())
         _instructor_client = instructor.from_openai(oa, mode=instructor.Mode.OPENROUTER_STRUCTURED_OUTPUTS)
     return _instructor_client
 

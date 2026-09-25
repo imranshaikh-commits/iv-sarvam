@@ -1955,3 +1955,33 @@ def test_drafting_system_prompt_is_marked_cacheable():
     # The 400 fallback sends a plain string, for providers that reject parts.
     plain = document_engine._draft_payload("m", "S", "u", include_frequency_penalty=False)
     assert plain["messages"][0]["content"] == "S"
+
+
+def test_openrouter_response_cache_headers_are_sent_and_blank_retry_differs():
+    """Identical repeat requests are free with X-OpenRouter-Cache; a retry that
+    must get a NEW answer has to change the request body."""
+    seen = {}
+
+    class _Hdr:
+        async def post(self, url, headers=None, json=None, timeout=None):
+            seen["h"] = headers
+            body = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+            return httpx.Response(200, json=body, request=httpx.Request("POST", url))
+
+    asyncio.run(document_engine._post_draft(_Hdr(), {"model": "m", "max_tokens": 10}))
+    assert seen["h"].get("X-OpenRouter-Cache") == "true"
+    assert int(seen["h"]["X-OpenRouter-Cache-TTL"]) <= 86400
+
+    prompts = []
+
+    async def fake(client, s, u, max_tokens=0):
+        prompts.append(u)
+        return "" if len(prompts) == 1 else "Real content."
+
+    orig = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = fake
+    try:
+        asyncio.run(document_engine._draft_with_retry(None, "s", "u", 100))
+    finally:
+        document_engine.draft_with_openrouter = orig
+    assert prompts[0] != prompts[1], "blank retry would be served the cached empty answer"

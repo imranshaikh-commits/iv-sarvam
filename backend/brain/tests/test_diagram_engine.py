@@ -859,3 +859,17 @@ def test_engagement_facts_reach_the_spec_prompt_untruncated():
     asyncio.run(diagram_engine.generate_diagram_spec(
         fake, title="t", context_text="x" * 20000, facts=facts))
     assert facts in seen["prompt"]
+
+
+def test_diagram_regenerate_bypasses_the_response_cache():
+    seen = {}
+
+    async def fake(model, messages, **kw):
+        seen.update(kw)
+        return diagram_engine.DiagramSpec(title="x", nodes=[
+            diagram_engine.DiagramNode(id="a", label="A"),
+            diagram_engine.DiagramNode(id="b", label="B")],
+            edges=[diagram_engine.DiagramEdge(source="a", target="b")])
+
+    asyncio.run(diagram_engine.generate_diagram_spec(fake, title="t"))
+    assert seen["extra_headers"] == {"X-OpenRouter-Cache": "false"}

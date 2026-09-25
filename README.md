@@ -9,7 +9,7 @@
 ![Retrieval](https://img.shields.io/badge/retrieval-Supabase%20pgvector-3ECF8E)
 ![Frontend](https://img.shields.io/badge/frontend-Open%20WebUI-9333EA)
 ![Infra](https://img.shields.io/badge/infra-AWS%20EC2%20(Mumbai)-FF9900)
-![Tests](https://img.shields.io/badge/tests-665%20passing%20(manual)-555555)
+![Tests](https://img.shields.io/badge/tests-670%20passing%20(manual)-555555)
 
 > **Internal use only.** Proprietary to Inspirit Vision. This repository is public for collaboration; no client content, credentials, or infrastructure secrets are committed. **It should be made private before a second person clones it** (see [Known gaps](#known-gaps)). See [Security posture](#security-posture).
 
@@ -17,17 +17,18 @@
 
 ## Progress Dashboard
 
-> Quick-glance project status. Last updated: 2026-09-25 (IST), against commit `0bb45d7` and the live Supabase project.
+> Quick-glance project status. Last updated: 2026-09-25 (IST), against commit `22ee9b4` and the live Supabase project. **Production plan: [`docs/11_PRODUCTION_PLAN.md`](docs/11_PRODUCTION_PLAN.md), go-live target 22 October 2026.**
 
 **Overall build completion: 84%**
 `█████████████████░░░`
 
-Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 85, 10). Recompute it when a row changes; never adjust it by feel. It measures **build progress against the plan**, not readiness. The two questions that gate real use are next, and neither of them is a percentage.
+Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 85, 15). Recompute it when a row changes; never adjust it by feel. It measures **build progress against the plan**, not readiness. The two questions that gate real use are next, and neither of them is a percentage.
 
 | | Status |
 |---|---|
-| **Can IV use this on a live deal?** | **Yes, as a first-draft tool.** Three full ESNAD runs between 2026-09-23 and 09-25 went end to end: scanned RFP, intake, diagram plan, drafting, DOCX. The latest content review against IV's real ESNAD proposal found no factual errors, apart from one over-broad data-cleansing assumption for the reviewer to edit. Diagrams name the right products and client systems and sit inline under the section that explains them. A run now costs about **$0.45–0.55**, down from $6.15 on Sonnet 5. **Make the repository private before a second person clones it.** This is still outstanding. |
-| **Would a senior IAM architect sign the output?** | **Unknown. Nobody other than the builder has read a draft.** The structural gap to IV's ESNAD submission is closed: heading depth to H5, per-vendor workstreams, RACI and BOQ per vendor, house sections, and partner product depth drawn from 323 chunks of vendor documentation. Two gaps are still open: imagery (IV used 66 images, and partner product images are extracted but none are approved or placed) and a human verdict. All tuning since 09-21 has been against one RFP. A second, different RFP is the next test. |
+| **Can IV use this on a live deal?** | **Yes, as a first-draft tool.** Three full ESNAD runs between 2026-09-23 and 09-25 went end to end: scanned RFP, intake, diagram plan, drafting, DOCX. The latest content review against IV's real ESNAD proposal found no factual errors, apart from one over-broad data-cleansing assumption for the reviewer to edit. Diagrams name the right products and client systems and sit inline under the section that explains them. A run now costs about **$0.45–0.55**, down from $6.15 on Sonnet 5. The six-sprint fix set from the 09-25 review (structure by capability domain, image kit, Gantt, fact discipline) is deployed and the kit is uploaded; **a rerun to measure it is in progress.** |
+| **Is it production-ready?** | **No. Pilot-ready for one internal user.** The release gate (security, 3-deal golden set, CI, off-host backups, rollback, alerting, runbook) and a 4-week sprint plan to reach it are in [`docs/11_PRODUCTION_PLAN.md`](docs/11_PRODUCTION_PLAN.md). |
+| **Would a senior IAM architect sign the output?** | **Unknown. Nobody other than the builder has read a draft.** The structural gap to IV's ESNAD submission is closed: heading depth to H5, per-vendor workstreams, RACI and BOQ per vendor, house sections, and partner product depth drawn from 323 chunks of vendor documentation. Imagery now comes from a fixed kit (41 IV/Ping/Saviynt images) plus 51 approved partner images; the count against IV's 66 is not yet measured. Still open: a human verdict, and every fix since 09-21 was driven by one RFP. Sprint 2 of the production plan runs two structurally different deals (Amlak, BTPN). |
 
 ### Phase completion
 
@@ -40,7 +41,7 @@ Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 85, 1
 | 4 — Conversational frontend + auth | Partial | `███████████████░░░░░` 75% — full pipeline validated end to end in chat (router, RFP upload or 22-area discovery, diagram plan, per-diagram approval, drafting, DOCX/PDF). Auth and multi-tenancy are not wired |
 | 5 — Architecture approval gate + compression/export | Done (gate enforced in chat) | `████████████████████` 98% — the durable spec-template store is deferred |
 | 6 — Validation | In progress | `█████████████████░░░` 85% — 6.0 recreation, 6.1 corpus, 6.3 eval harness and 6.4 cost measurement are done. 6.2 scored pilot is partial: one real RFP scored in depth and no human reviewer yet |
-| 7 — Pilot + hardening + rollout | Started | `██░░░░░░░░░░░░░░░░░░` 10% — live pilot runs on a real RFP are under way. Hardening is 0 of 5: private repo, TLS, auth, backups, CI |
+| 7 — Pilot + hardening + rollout | Started | `███░░░░░░░░░░░░░░░░░` 15% — live pilot runs on a real RFP under way; host pulls through a read-only deploy key; nightly table backups on the host. Still open: private repo, TLS, RLS on `visual_assets`, off-host backups, CI, auth. Planned in Sprints 1 and 3 of the production plan |
 
 ### Workstream progress since the ESNAD comparison (2026-09-21)
 
@@ -62,11 +63,20 @@ Arithmetic mean of the eight phase rows below (100, 100, 100, 100, 75, 98, 85, 1
 
 ### What's next
 
-1. **Finish the current ESNAD run review.** Confirm zero Luna schema failures, record the cost, and check the stack diagram cosmetics.
-2. **Run a second, different RFP**, ideally a SailPoint deal where IV's real proposal exists for comparison. Every fix since 09-21 was driven by ESNAD, so a second deal is the only way to find out what was overfitted.
-3. **Clear the runway:** make the repo private, decide the `visual_assets` RLS policy, and put TLS in front of port 8080.
-4. **Get a verdict:** Ashish reads a draft against "would you sign this", and the commercial owner reads the commercial section. Also do the first **MSS** run.
-5. **Imagery:** approve partner product images with `review_assets.py --partner` (placement is built) and confirm `SHILPI_ASSETS_ENABLED=1` on the host.
+Four one-week sprints to production, detailed with acceptance criteria in
+[`docs/11_PRODUCTION_PLAN.md`](docs/11_PRODUCTION_PLAN.md). One tester (Imran),
+so an automated proposal scorecard does the regression checking and paid runs
+are budgeted per sprint.
+
+| Sprint | Dates | Goal | Paid runs |
+|---|---|---|---|
+| 0 Baseline | 25–28 Sep | Score the ESNAD rerun; `score_proposal.py` scorecard as code | 1 |
+| 1 Lock it down | 29 Sep–2 Oct | Private repo, RLS on `visual_assets`, `sarvam_018`, TLS or tunnel, spend cap, key rotation, off-host backups | 0 |
+| 2 Prove it generalises | 5–9 Oct | Amlak (SailPoint) and BTPN (migration) pass the scorecard; first MSS run; SailPoint kit | 5–6 |
+| 3 Run it like a service | 12–16 Oct | CI, deploy/rollback, health alerts, cost per proposal, per-user identity, runbook, user guide | 1 |
+| 4 Release | 19–22 Oct | Golden-set regression, human read, release gate, `v1.0.0` | 3 |
+
+Decisions needed from Imran before Sprint 1 are listed at the end of the plan.
 
 Eval fixtures live in `docs/evals/` and are **not committed**. They contain client-confidential proposal content and this repository is public. See [`docs/evals/README.md`](docs/evals/README.md).
 
@@ -76,10 +86,10 @@ Checked against the code and the live database on 2026-09-25. Items fixed since 
 
 **Security and access**
 - **The repository is public.** Client review artefacts were published from it once already (see [Incidents](#incidents)). Make it private before anyone else clones it.
-- **`visual_assets` has Row Level Security disabled.** This was re-verified on 2026-09-25 and it is the only public table with RLS off. The Supabase anon key can read or write all 939 rows. Fixing it needs an access-policy decision first: `ENABLE ROW LEVEL SECURITY` with no policies blocks all access rather than securing it. Imran must decide the policy before anyone implements it.
+- **`visual_assets` has Row Level Security disabled.** This was re-verified on 2026-09-25 and it is the only public table with RLS off. The Supabase anon key can read or write all 939 rows. Every reader and writer (brain, scripts) uses the service-role key, which bypasses RLS, so enabling RLS with no policies closes the exposure without breaking anything. Waiting on Imran's yes (production plan item 1.2).
 - **Port 8080 is plain HTTP**, with the whole proposal bank behind it. It has been open since the first session.
 - **RLS is present but not load-bearing.** `auth.users` and `org_members` are both empty, so every `is_org_member()` policy is false for everyone and the brain works only through the service-role key. Tested on 2026-09-25 as the `anon` role: every public table returns 0 rows except `visual_assets` (939). Storage buckets are all private. `sarvam_018` (written, awaiting approval to apply) removes anon execute on the two SECURITY DEFINER functions and pins `search_path` on the retrieval RPCs, which clears three Supabase advisor warnings. Making RLS load-bearing needs real users (Supabase Auth, Phase 7.2). `approved_by` on diagrams stays NULL until then.
-- **Backups are table-level only, and on the same host.** `scripts/backup_tables.py` dumps every irreplaceable table nightly through PostgREST (gzip JSONL, 14 kept) and can restore by upsert. The 173 MB `proposal_chunks` table is a weekly `--with-proposal-chunks` run. Storage buckets (rendered diagrams, generated DOCX) are not covered, and there is no off-host copy yet. The cron must be installed on the host.
+- **Backups are table-level only, and on the same host.** `scripts/backup_tables.py` dumps every irreplaceable table nightly through PostgREST (gzip JSONL, 14 kept) and can restore by upsert. The 173 MB `proposal_chunks` table is a weekly `--with-proposal-chunks` run. Storage buckets (rendered diagrams, generated DOCX) are not covered, and there is no off-host copy yet. Cron installed on the host 2026-09-25 (nightly, plus weekly with chunks); the first backup matched live row counts.
 
 **Validation**
 - **No verdict from a reviewer other than the builder.** Every quality judgement here rests on one reader.
@@ -97,12 +107,42 @@ Checked against the code and the live database on 2026-09-25. Items fixed since 
 - **Diagram visual parity.** D2 output is accurate and legible but visibly machine-laid-out next to IV's hand-drawn decks. Closing that needs editable export (`.drawio`/`.pptx`) or a designer template set. The durable per-vendor spec-template store is also deferred.
 
 **Engineering**
-- **No CI.** 665 tests across 13 files run only by hand.
+- **No CI.** 670 tests (665 brain, 5 backup-script) run only by hand. Production plan item 3.1.
 - **Cost is not recorded per proposal.** Cost is measured from the OpenRouter activity CSV after the fact, and nothing is stored with the generated proposal.
 - **Reranking is built, off, and unmeasured.** The retrieval harness talks to the database directly, so the brain's post-retrieval steps have never been scored.
-- **Canonical status is split.** `docs/03_CURRENT_STATE.md`, `docs/PHASES.md`, `docs/09_NEAR_TERM_SPRINTS.md` and this dashboard overlap, with no stated precedence between them.
+- **Canonical status settled.** The README dashboard is canonical for status and `docs/11_PRODUCTION_PLAN.md` for the plan; `03_CURRENT_STATE.md`, `PHASES.md` and `09_NEAR_TERM_SPRINTS.md` are history.
 
 **Fixed since the previous README (2026-09-21):** partner product corpus populated (it had zero rows); migration drift closed (`sarvam_015`–`017` committed); the intake parser now captures everything (96/96); output is sized to the engagement; dropped sections are named in the document; the Appendix F top-level heading and the duplicate diagram gallery are fixed; diagrams now use node shapes and the solution stack; cost per run is measured; model defaults in code now match production (Gemini 3.8 Flash, diagram chain Gemini then Sonnet 4.6), defined once in `document_engine.py`.
+
+### Recently shipped — ESNAD 09-25 review, six generic sprints (2026-09-25)
+
+A line-by-line comparison of run 083717 against IV V3.0 found the remaining gap
+was structural, not model quality. All fixes are in the shared engine and apply
+to any vendor mix:
+
+- **Structure by capability domain.** `engagement_domains` reads which of WIAM,
+  CIAM, IGA and PAM are in scope and which vendor owns each. Multi-domain deals
+  get SOW-shaped scope (one subsection per domain naming its owner, plus
+  integration, migration, testing, training, support, compliance) and per-vendor
+  overviews organised by owned domain. Single-domain deals keep the governance facets.
+- **Executive summary** asks for 500-800 words of facts. The hidden cause of the
+  185-word summaries was a 220-word cap on every prose subsection, now overridden
+  by a stated length.
+- **Fact discipline.** Populations and environments are stated at most once
+  where relevant ("5,000" had appeared 57 times); no systems the client never named.
+- **Workstream timeline + Gantt.** A week-by-week plan per domain; any plan table
+  with week columns gets a chart drawn under it.
+- **Image kit.** 41 fixed images (IV house slides, Ping and Saviynt analyst
+  views, product slides and reference architectures) placed under the heading
+  they explain, gated by vendor, domain and SaaS/self-managed. Keyword-matched
+  library product images (which placed IBM, ForgeBank and on-prem pictures) are
+  gone. Kit uploaded to `visual-assets/kit/`.
+- **Diagrams** follow the domain owner (the PAM rule named "Saviynt" literally),
+  several per subsection, and the plan adds a flow per domain in scope.
+- **Commercial.** Vendor-quote SKUs feed the BoQ; an IP clause is drafted from
+  IV's own text (in 55 corpus proposals).
+
+Measured effect: pending the rerun in progress.
 
 ### Recently shipped — cost, diagrams and the ESNAD reruns (2026-09-22 → 25)
 
@@ -630,6 +670,7 @@ iv-sarvam/
 │   ├── extract_partner_product_images.py  # partner images, heuristic classification
 │   ├── eval_retrieval.py             # 20-probe retrieval scorecard
 │   ├── backup_tables.py              # nightly table backup + upsert restore (stdlib only)
+│   ├── upload_asset_kit.py           # upload the image kit (asset_selection.KIT) to storage
 │   └── test_*.py                     # tests for the ingestion scripts
 ├── docs/                             # project, persona, sprint docs
 ├── data/                             # raw (gitignored) + tagging templates

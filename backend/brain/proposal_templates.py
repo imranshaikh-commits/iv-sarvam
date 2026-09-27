@@ -499,20 +499,22 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
         static_from_corpus=True,
         subsections=(
             ("Relevant Engagements",
-             "engagements comparable to this one by vendor, sector and scope. Naming "
-             "past clients is permitted and expected - IV's own proposals do it. State "
-             "the client, sector, vendor and the nature of the work. Never state an "
-             "outcome metric the evidence does not support. Cite only work IV "
-             "DELIVERED: a past proposal is not a reference, and a client is not "
-             "a reference for a product the evidence does not show IV delivering "
-             "there."),
+             "the engagements from the DELIVERED ENGAGEMENTS list most comparable "
+             "to this one: same vendor first, then sector, region and scope. For "
+             "each, give the client exactly as the list gives it (name only where "
+             "marked named, otherwise its description), the product and the kind "
+             "of engagement. Nothing outside the list is described as delivered; "
+             "never add scope, figures or outcomes the list does not give. For a "
+             "proposed vendor with no entry in the list, describe IV's partner "
+             "status and certified resources for it instead. If there is no list, "
+             "write the review marker rather than naming any engagement."),
             # IV's own reference section is a sector/client table, not case
             # studies: the corpus holds client lists but no outcomes, so a
             # "problem, delivered, outcome" facet could only be invented.
             ("Client References by Sector",
-             "a markdown TABLE with columns Client Sector, Client List. Use ONLY "
-             "client names and sectors that appear in the EVIDENCE; never add a "
-             "client, sector or outcome the evidence does not name."),
+             "a markdown TABLE with columns Client Sector, Client List, listing "
+             "ONLY clients marked named in the DELIVERED ENGAGEMENTS list, grouped "
+             "by sector. Never add a client the list does not mark named."),
         ),
     ),
     SectionSpec(

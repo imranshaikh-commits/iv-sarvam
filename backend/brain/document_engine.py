@@ -231,10 +231,92 @@ def _engagement_facts_clause(context: dict) -> str:
                 "Elsewhere refer to 'the "
                 "workforce', 'each environment', 'the SaaS tenants'.")
     if answers:
+        out += ("\n\nOTHER ORGANISATIONS: name no organisation other than the "
+                "client, the proposed vendors and Inspirit Vision. Past clients "
+                "appear only in the Similar Experience section, from its list.")
         out += ("\n\nSYSTEMS: name only systems, directories and products that the "
                 "client-supplied facts or requirements name. Never add one they do "
                 "not (for example a cloud directory the client never mentioned).")
     return out
+
+
+# --- Delivered engagements (Similar Experience) ------------------------------
+# ESNAD 09-27 wrote "Inspirit Vision partnered to deploy Saviynt EIC" for a
+# client whose only corpus record was a proposal. The rule, from Imran
+# (2026-09-27): claim delivery only for WON engagements, and NAME a client only
+# when IV already cites that client as a reference in its own past proposals;
+# describe every other client without its name.
+
+_SHORT_ALIAS = 5  # aliases this short (ANB, SNB, STC) must match case-exactly
+
+
+def _client_aliases(name: str) -> list[str]:
+    """'Arab National Bank (ANB)' -> ['Arab National Bank (ANB)',
+    'Arab National Bank', 'ANB']; 'Brunei Shell / DMOS' -> both halves."""
+    name = " ".join((name or "").split())
+    out = [name]
+    m = re.match(r"^(.*?)\s*\(([^)]+)\)\s*$", name)
+    if m:
+        out += [m.group(1), m.group(2)]
+    for part in re.split(r"\s*/\s*", name):
+        if part and part not in out:
+            out.append(part)
+    return [a for a in dict.fromkeys(out) if len(a) >= 3]
+
+
+def _mentions_client(text: str, alias: str) -> bool:
+    flags = 0 if len(alias) <= _SHORT_ALIAS else re.I
+    return re.search(rf"(?<![\w-]){re.escape(alias)}(?![\w-])", text, flags) is not None
+
+
+def build_reference_book(proposals: list[dict], citation_chunks: list[dict]) -> str:
+    """The DELIVERED ENGAGEMENTS block for Similar Experience, or "".
+
+    proposals: corpus rows (id, client_name, iam_vendor, proposal_type, year,
+    industry, country, outcome). citation_chunks: (proposal_id, text) from the
+    similar-experience and company-profile sections of IV's proposals. A client
+    is nameable when a proposal addressed to a DIFFERENT client mentions it."""
+    by_id = {p.get("id"): p for p in proposals}
+    won: dict[str, dict] = {}
+    for p in proposals:
+        client = (p.get("client_name") or "").strip()
+        vendor = (p.get("iam_vendor") or "").strip()
+        if not client or (p.get("outcome") or "").lower() != "won" \
+                or vendor.lower() in ("", "other", "none"):
+            continue
+        e = won.setdefault(client, {"vendors": [], "types": set(), "years": set(),
+                                    "industry": p.get("industry"), "country": p.get("country")})
+        for v in re.split(r"\s*\+\s*|\s*,\s*", vendor):
+            if v and v not in e["vendors"]:
+                e["vendors"].append(v)
+        if p.get("proposal_type"):
+            e["types"].add(p["proposal_type"])
+        if p.get("year"):
+            e["years"].add(int(p["year"]))
+    if not won:
+        return ""
+    lines = []
+    for client in sorted(won):
+        e = won[client]
+        aliases = _client_aliases(client)
+        cited = any(
+            (by_id.get(c.get("proposal_id")) or {}).get("client_name") != client
+            and any(_mentions_client(c.get("text") or "", a) for a in aliases)
+            for c in citation_chunks)
+        who = (f"{client} (named)" if cited else
+               f"a {(e['industry'] or 'enterprise').lower()} organisation in "
+               f"{e['country'] or 'the region'} (do not name)")
+        years = f", {max(e['years'])}" if e["years"] else ""
+        lines.append(f"- {who}: {', '.join(e['vendors'])}; "
+                     f"{', '.join(sorted(e['types'])) or 'engagement'}{years}")
+    return ("DELIVERED ENGAGEMENTS -- IV's won work, the ONLY engagements you may "
+            "describe as delivered:\n" + "\n".join(lines) + "\n"
+            "RULES: name a client only where marked (named); for every other entry "
+            "use exactly the description given, never a name. State only the "
+            "product and engagement type listed -- no scope, figures or outcomes "
+            "the list does not give. Where a proposed vendor has no entry here, "
+            "describe IV's partner status and certified resources for it, never "
+            "past delivery.")
 
 
 # Vendor -> (its SaaS platform, its self-managed products). ESNAD 09-24 named
@@ -1222,6 +1304,8 @@ async def draft_section(
     # so they live in the cached system prompt, not the per-call user message
     # (where they re-billed at full price on every facet).
     section_context = f"\n\n{client_facts}RFP / requirement context:\n{rfp_ctx}"
+    if section_spec.id == "similar_experience" and context.get("delivered_references"):
+        section_context += "\n\n" + context["delivered_references"]
 
     def _system_for(pchunks: list[dict]) -> str:
         evidence_block = build_grounded_system_fn(chunks)
@@ -2687,6 +2771,7 @@ async def generate_proposal(
     scale_fn: Optional[Callable] = None,
     retrieve_product_fn=None,
     build_product_evidence_fn=None,
+    references_fn: Optional[Callable] = None,
 ) -> dict:
     """Orchestrate: pick template, draft sections concurrently, assemble DOCX.
 
@@ -2764,6 +2849,11 @@ async def generate_proposal(
         # scope and solution structure follow them for any vendor mix.
         **engagement_domains(iam_vendor or "", discovery_answers or {}),
     }
+    if references_fn:
+        try:
+            context["delivered_references"] = await references_fn(client)
+        except Exception as e:  # noqa: BLE001 - Similar Experience falls back to partner status
+            log.warning("delivered references unavailable: %s", e)
     if len(_vendors) > 1:
         log.info("multi-vendor proposal: %s", _vendors)
 

@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # Sprint 5 document-production engine. Safe top-level import: document_engine
 # does NOT import app (it receives the brain helpers as parameters), so there
 # is no circular dependency.
-from document_engine import generate_proposal
+from document_engine import build_reference_book, generate_proposal
 
 # Sprint 5 Pass 1 — structured intake + persistence. Neither module imports app.
 from intake_template import get_intake_template, iter_questions, missing_required
@@ -249,6 +249,45 @@ async def _fetch_partner_assets(client: httpx.AsyncClient) -> list[dict]:
         if vendor:  # an image with no vendor cannot be checked, so never placed
             out.append({**r, "vendor": vendor, "bucket": PARTNER_ASSET_BUCKET})
     return out
+
+
+_REFERENCE_BOOK: dict = {"at": 0.0, "text": ""}
+_REFERENCE_TTL_S = float(os.environ.get("SHILPI_REFERENCE_TTL_S", "3600"))
+
+
+async def _rest_all(client: httpx.AsyncClient, table: str, params: dict) -> list[dict]:
+    """Every row of a PostgREST query, 1,000 at a time."""
+    rows, start = [], 0
+    while True:
+        resp = await client.get(
+            f"{SUPABASE_URL}/rest/v1/{table}",
+            headers={**supabase_client._headers(prefer_representation=False),
+                     "Range": f"{start}-{start + 999}"},
+            params=params, timeout=60.0)
+        resp.raise_for_status()
+        page = resp.json() or []
+        rows += page
+        if len(page) < 1000:
+            return rows
+        start += 1000
+
+
+async def fetch_reference_book(client: httpx.AsyncClient) -> str:
+    """Won engagements, named only where IV already cites the client
+    (document_engine.build_reference_book). Cached for an hour: it changes
+    only when the corpus does."""
+    if _REFERENCE_BOOK["text"] and time.time() - _REFERENCE_BOOK["at"] < _REFERENCE_TTL_S:
+        return _REFERENCE_BOOK["text"]
+    proposals = await _rest_all(client, "proposals", {
+        "select": "id,client_name,iam_vendor,proposal_type,year,industry,country,outcome"})
+    chunks = await _rest_all(client, "proposal_chunks", {
+        "select": "proposal_id,text",
+        "section_topic": "in.(similar_experience,company_profile)"})
+    text = build_reference_book(proposals, chunks)
+    if not text:
+        log.warning("reference book empty: no proposal is marked outcome='won'")
+    _REFERENCE_BOOK.update(at=time.time(), text=text)
+    return text
 
 
 async def download_asset(client: httpx.AsyncClient, storage_path: str,
@@ -2795,6 +2834,7 @@ async def generate_proposal_endpoint(request: Request):
                 # unverified until the next full generation run.
                 retrieve_product_fn=retrieve_product_chunks,
                 build_product_evidence_fn=build_product_evidence_block,
+                references_fn=fetch_reference_book,
             )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)

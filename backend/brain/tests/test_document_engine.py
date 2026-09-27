@@ -2220,3 +2220,80 @@ def test_lite_compression_never_blurs_a_printed_image():
     for name in (n for n in z.namelist() if n.startswith("word/media/")):
         w = Image.open(io.BytesIO(z.read(name))).size[0]
         assert w >= 6 * document_engine.MIN_PRINT_DPI - 1, (name, w)
+
+
+# --- Delivered engagements: won only, named only where IV already cites ------
+
+_PROPS = [
+    {"id": 1, "client_name": "Arab National Bank (ANB)", "iam_vendor": "ForgeRock",
+     "proposal_type": "implementation", "year": 2025, "industry": "Banking",
+     "country": "Saudi Arabia", "outcome": "won"},
+    {"id": 2, "client_name": "Panda", "iam_vendor": "Saviynt",
+     "proposal_type": "implementation", "year": 2025, "industry": "Retail",
+     "country": "Saudi Arabia", "outcome": "won"},
+    {"id": 3, "client_name": "Riyad Bank", "iam_vendor": "ForgeRock",
+     "proposal_type": "implementation", "year": 2024, "industry": "Banking",
+     "country": "Saudi Arabia", "outcome": "won"},
+    {"id": 4, "client_name": "Lost Co", "iam_vendor": "Okta",
+     "proposal_type": "implementation", "year": 2025, "industry": "Banking",
+     "country": "UAE", "outcome": "lost"},
+]
+
+
+def test_client_is_named_only_when_another_proposal_cites_it():
+    """Imran 2026-09-27: name only clients IV already cites in its own corpus."""
+    chunks = [{"proposal_id": 3, "text": "Our clients include ANB and Saudi National Bank."},
+              {"proposal_id": 2, "text": "Panda is a leading retailer."}]  # its OWN proposal
+    book = document_engine.build_reference_book(_PROPS, chunks)
+    assert "Arab National Bank (ANB) (named): ForgeRock" in book
+    assert "Panda" not in book                      # only self-mentioned: not citable
+    assert "a retail organisation in Saudi Arabia (do not name): Saviynt" in book
+    assert "Lost Co" not in book and "Okta" not in book   # not won
+    assert "partner status" in book
+
+
+def test_short_alias_needs_exact_case_and_word_boundary():
+    chunks = [{"proposal_id": 1, "text": "snb-style arrangement; the Standard banks"}]
+    props = [dict(_PROPS[0], id=9, client_name="Saudi National Bank (SNB)")]
+    book = document_engine.build_reference_book(props + [_PROPS[0]], chunks)
+    assert "Saudi National Bank (SNB) (named)" not in book
+    # ...while the exact acronym in another client's proposal does cite it.
+    book = document_engine.build_reference_book(
+        props + [_PROPS[0]], [{"proposal_id": 1, "text": "References: SNB, Riyad Bank."}])
+    assert "Saudi National Bank (SNB) (named)" in book
+
+
+def test_no_won_engagements_gives_no_list():
+    assert document_engine.build_reference_book(
+        [dict(p, outcome="unknown") for p in _PROPS], []) == ""
+
+
+def test_reference_list_reaches_only_the_similar_experience_prompt():
+    import proposal_templates
+    prompts = {}
+
+    async def fake_draft(client, system_prompt, user_prompt, max_tokens):
+        prompts.setdefault(user_prompt.split('"')[3], system_prompt)
+        return "Body."
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    async def no_chunks(*a, **kw):
+        return []
+
+    ctx = {"client_name": "C", "iam_vendor": "V", "proposal_type": "implementation",
+           "rfp_text": "", "delivered_references": "DELIVERED ENGAGEMENTS -- test"}
+    orig = document_engine._draft_with_retry
+    document_engine._draft_with_retry = fake_draft
+    try:
+        for sid in ("similar_experience", "company_profile"):
+            spec = next(s for s in proposal_templates.get_template("implementation") if s.id == sid)
+            asyncio.run(document_engine.draft_section(
+                None, spec, ctx, embed_fn=stub_embed, retrieve_fn=no_chunks,
+                build_grounded_system_fn=lambda chunks: "EVIDENCE",
+                top_k=8, subsections=1, max_tokens=3500))
+    finally:
+        document_engine._draft_with_retry = orig
+    assert "DELIVERED ENGAGEMENTS" in prompts["Similar Experience and Customer References"]
+    assert "DELIVERED ENGAGEMENTS" not in prompts["Company Profile"]

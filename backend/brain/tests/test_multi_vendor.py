@@ -2333,3 +2333,23 @@ def test_no_duplicate_headings_in_a_multi_domain_template():
     ctx = _domain_ctx("Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM")
     heads = [h for s in pt.get_template("implementation") for h, _ in s.render_subsections(ctx) if h]
     assert len(heads) == len(set(heads)), sorted({h for h in heads if heads.count(h) > 1})
+
+
+def test_rfp_page_calls_are_bounded():
+    """ESNAD 09-27 hung 10+ minutes on one SOW page: no output cap, SDK default
+    600 s timeout with two silent retries per model."""
+    import asyncio
+    seen = {}
+
+    async def fake(response_model, messages, models=None, **kw):
+        seen.update(kw)
+        return "ok"
+
+    orig = app._structured_with_fallback
+    app._structured_with_fallback = fake
+    try:
+        asyncio.run(app.rfp_structured_call(object, []))
+    finally:
+        app._structured_with_fallback = orig
+    assert seen["max_tokens"] <= 8000 and seen["timeout"] <= 300 and seen["max_retries"] == 1
+    assert app.STRUCTURED_CLIENT_TIMEOUT_S <= 300

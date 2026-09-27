@@ -532,6 +532,13 @@ When the answers genuinely do not say, return full: under-writing a large
 proposal costs far more than an over-long small one."""
 
 
+RFP_PAGE_MAX_TOKENS = int(os.environ.get("SHILPI_RFP_PAGE_MAX_TOKENS", "6000"))
+RFP_PAGE_TIMEOUT_S = float(os.environ.get("SHILPI_RFP_PAGE_TIMEOUT_S", "150"))
+# No structured call should run for ten minutes; the SDK default is 600 s with
+# two silent retries, i.e. up to half an hour before a fallback even starts.
+STRUCTURED_CLIENT_TIMEOUT_S = float(os.environ.get("SHILPI_STRUCTURED_TIMEOUT_S", "300"))
+
+
 async def rfp_structured_call(response_model, messages: list[dict]):
     """Adapter so rfp_intake never imports app.py.
 
@@ -541,8 +548,12 @@ async def rfp_structured_call(response_model, messages: list[dict]):
     """
     # Through the budget-retry wrapper: a 402 in-flight error on one page used
     # to come back as an empty page, indistinguishable from a blank one.
+    # Bounded: ESNAD 09-27 hung on one page for 10+ minutes -- no output cap,
+    # and the client's default 600 s timeout retried twice per model. A page's
+    # fields, requirements and gates fit comfortably in the cap.
     return await _structured_with_fallback(
-        response_model, messages, models=[PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL])
+        response_model, messages, models=[PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL],
+        max_tokens=RFP_PAGE_MAX_TOKENS, timeout=RFP_PAGE_TIMEOUT_S, max_retries=1)
 
 
 async def run_rfp_extraction(display_name_: str) -> tuple[Optional[rfp_intake.RfpExtraction], str]:
@@ -2073,7 +2084,8 @@ def instructor_client():
     if _instructor_client is None:
         from document_engine import openrouter_cache_headers
         oa = AsyncOpenAI(base_url=OPENROUTER_BASE, api_key=OPENROUTER_API_KEY,
-                         default_headers=openrouter_cache_headers())
+                         default_headers=openrouter_cache_headers(),
+                         timeout=STRUCTURED_CLIENT_TIMEOUT_S, max_retries=1)
         _instructor_client = instructor.from_openai(oa, mode=instructor.Mode.OPENROUTER_STRUCTURED_OUTPUTS)
     return _instructor_client
 

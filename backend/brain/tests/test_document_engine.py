@@ -911,10 +911,13 @@ def test_unmapped_section_passes_none():
 # is a mechanism that works in isolation and is never invoked.
 # ---------------------------------------------------------------------------
 
-def _png_bytes():
-    import base64
-    return base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+def _png_bytes(w=1200, h=800):
+    """A real-size image: the sharpness gate (MIN_PRINT_DPI) drops images too
+    small to print legibly, so a 1x1 pixel no longer stands in for a slide."""
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), "white").save(buf, "PNG")
+    return buf.getvalue()
 
 
 def test_assemble_embeds_section_assets():
@@ -983,7 +986,7 @@ def test_a_kit_covered_section_takes_no_keyword_matched_library_images():
     """ESNAD 09-25 put two near-identical Engagement Approach slides in one
     section: one from keyword matching, then another."""
     lib = [{"id": "a1", "storage_path": "p/1.png", "asset_kind": "corporate",
-            "approved": True, "vision_description": "Inspirit Vision skill matrix workforce"}]
+            "approved": True, "vision_description": "case study customer reference banking"}]
 
     async def library(_c):
         return lib
@@ -991,9 +994,9 @@ def test_a_kit_covered_section_takes_no_keyword_matched_library_images():
     async def download(_c, _p, _b=None):
         return io.BytesIO(_png_bytes())
 
-    sections = [{"id": "company_profile", "title": "Company Profile"}]
+    sections = [{"id": "similar_experience", "title": "Similar Experience"}]
     asyncio.run(document_engine._attach_assets(
-        None, sections, {"iam_vendor": "SailPoint"},
+        None, sections, {"iam_vendor": "Ping Identity", "iam_vendors": ["Ping Identity"]},
         {"library": library, "download": download}))
     ids = [a["id"] for a in sections[0]["assets"]]
     assert "a1" not in ids and any(i.startswith("kit:") for i in ids)
@@ -2147,3 +2150,73 @@ def test_a_stated_length_overrides_the_flat_prose_cap():
     prompt, budget = calls[0]
     assert "NO MORE than 800 words" in prompt
     assert budget >= 1600
+
+
+def test_no_image_is_printed_below_the_sharpness_floor():
+    """Imran, ESNAD 09-27: no blurry image anywhere. A 392-px Frost Radar was
+    stretched to 6 inches."""
+    from docx import Document as _Doc
+    doc = _Doc()
+    assert document_engine._add_picture_fitted(
+        doc, io.BytesIO(_png_bytes(1800, 1000)),
+        max_w=document_engine._DIAGRAM_MAX_W, max_h=document_engine._DIAGRAM_MAX_H)
+    shape = doc.inline_shapes[-1]
+    assert 1800 / (shape.width / 914400) >= document_engine.MIN_PRINT_DPI
+    # A small supporting image is printed smaller, never enlarged...
+    assert document_engine._add_picture_fitted(
+        doc, io.BytesIO(_png_bytes(600, 400)), max_w=document_engine._DIAGRAM_MAX_W,
+        max_h=document_engine._DIAGRAM_MAX_H, drop_if_small=True)
+    assert 600 / (doc.inline_shapes[-1].width / 914400) >= document_engine.MIN_PRINT_DPI
+    # ...and one too small to read at that density is dropped.
+    n = len(doc.inline_shapes)
+    assert not document_engine._add_picture_fitted(
+        doc, io.BytesIO(_png_bytes(300, 300)), max_w=document_engine._DIAGRAM_MAX_W,
+        max_h=document_engine._DIAGRAM_MAX_H, drop_if_small=True)
+    assert len(doc.inline_shapes) == n
+
+
+def test_vendor_slide_sits_under_the_capability_heading_it_explains():
+    """ESNAD 09-27 stacked 10 Ping slides after the last heading."""
+    from docx import Document as _Doc
+    import re as _re
+    content = ("# Workforce Identity\nIntro.\n\n## Protection of Legacy Applications via "
+               "PingGateway\nGateway text.\n\n## User Self-Service\nSelf-service text.")
+    sec = {"id": "solution_overview", "title": "Solution Overview",
+           "subsections": [{"title": "Ping Identity Solution Overview", "content": content}],
+           "assets": [{"id": "kit:ping_gateway.png", "stream": io.BytesIO(_png_bytes()),
+                       "heading": _re.compile("^Ping.* Solution Overview"),
+                       "near": _re.compile("Gateway|Legacy")}]}
+    doc = _Doc(io.BytesIO(document_engine.assemble_docx(
+        {"client_name": "C", "proposal_type": "implementation"}, [sec])))
+    body = doc.paragraphs
+    gw = next(i for i, p in enumerate(body) if p.text.startswith("Gateway text"))
+    ss = next(i for i, p in enumerate(body) if p.text == "User Self-Service")
+    img = [i for i, p in enumerate(body) if p._p.xpath(".//a:blip") and i > gw]
+    assert img and img[0] < ss, "slide must sit under its own capability heading"
+
+
+def test_pam_diagram_skips_the_scope_domain_heading():
+    pat = document_engine._placement_for(
+        {"diagram_type": "flow", "title": "Privileged Access Request and Session Flow"},
+        {"pam": "Saviynt"})
+    assert not pat.search("Privileged Access Management (PAM)")
+    assert pat.search("Saviynt Solution Overview")
+
+
+def test_lite_compression_never_blurs_a_printed_image():
+    """Lite cut ESNAD 09-27's diagrams from 1800 px to 1080 px."""
+    import export_engine
+    from docx import Document as _Doc
+    doc = _Doc()
+    for _ in range(3):
+        document_engine._add_picture_fitted(
+            doc, io.BytesIO(_png_bytes(1800, 1200)),
+            max_w=document_engine._DIAGRAM_MAX_W, max_h=document_engine._DIAGRAM_MAX_H)
+    buf = io.BytesIO(); doc.save(buf)
+    out, meta = export_engine.compress_docx_lite(buf.getvalue(), max_bytes=1)
+    import zipfile
+    from PIL import Image
+    z = zipfile.ZipFile(io.BytesIO(out))
+    for name in (n for n in z.namelist() if n.startswith("word/media/")):
+        w = Image.open(io.BytesIO(z.read(name))).size[0]
+        assert w >= 6 * document_engine.MIN_PRINT_DPI - 1, (name, w)

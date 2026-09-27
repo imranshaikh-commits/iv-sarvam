@@ -11,9 +11,9 @@ from docx import Document  # noqa: E402
 from PIL import Image  # noqa: E402
 
 
-def _png():
+def _png(w=40, h=20):
     b = io.BytesIO()
-    Image.new("RGB", (40, 20), "white").save(b, "PNG")
+    Image.new("RGB", (w, h), "white").save(b, "PNG")
     b.seek(0)
     return b
 
@@ -37,7 +37,8 @@ def _doc(path, exec_words=450, repeats=3, gantt=True, extra=""):
     for i, v in enumerate(["IGA", "Build", "1", "8"]):
         t.rows[1].cells[i].text = v
     if gantt:
-        d.add_picture(_png())
+        from docx.shared import Inches
+        d.add_picture(_png(900, 450), width=Inches(3))   # 300 dpi: sharp
     d.add_paragraph("Price: To be confirmed")
     d.save(path)
 
@@ -75,3 +76,21 @@ def test_clean_document_passes_its_hygiene_gates_and_exit_code_follows():
             ("prose_words", "table_words", "tables", "images"))]
         assert all(ok for _, ok, _ in hygiene), hygiene
         assert S.main([p]) == 1          # absolute size floors fail a 1-page doc
+
+
+def test_blurry_image_fails_the_gate():
+    """Imran, 2026-09-27: no blurry image anywhere. 40 px printed 2 in wide."""
+    from docx.shared import Inches
+    with tempfile.TemporaryDirectory() as tmp:
+        p = f"{tmp}/a.docx"
+        d = Document()
+        d.add_picture(_png(), width=Inches(2))
+        d.save(p)
+        m = S.measure(p)
+    assert m["blurry_images"] == 1
+    assert any(g == "no blurry images" and not ok for g, ok, _ in S.gates(m, None, {}))
+
+
+def test_term_matching_ignores_spacing():
+    assert S._mentions("PowerBI dashboards", "Power BI")
+    assert not S._mentions("Power users", "Power BI")

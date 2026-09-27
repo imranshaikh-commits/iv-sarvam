@@ -493,17 +493,34 @@ run_tests(globals(), "CHAT STATE TESTS")
 def test_multi_domain_plan_gets_a_diagram_per_domain():
     """ESNAD 09-25: 6 generated diagrams against IV's 16; the plan only drew
     what the consultant happened to list."""
-    planned = cs.plan_diagrams({
-        "iam_vendor": "Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM",
-        "required_diagram_types": "solution/reference"})
-    titles = " | ".join(t for t, _ in planned)
-    assert len(planned) == cs.MAX_DIAGRAMS_PER_ROUND
-    for want in ("SSO", "Customer", "Lifecycle", "Privileged"):
-        assert want in titles, want
-    assert titles.count("Solution") == 1   # the requested one is not duplicated
+    cs.DOMAIN_DIAGRAM_TOPUP = True
+    try:
+        planned = cs.plan_diagrams({
+            "iam_vendor": "Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM",
+            "required_diagram_types": "solution/reference"})
+        titles = " | ".join(t for t, _ in planned)
+        assert len(planned) == cs.MAX_DIAGRAMS_PER_ROUND
+        for want in ("SSO", "Customer", "Lifecycle", "Privileged"):
+            assert want in titles, want
+        assert titles.count("Solution") == 1   # the requested one is not duplicated
+    finally:
+        cs.DOMAIN_DIAGRAM_TOPUP = False
 
 
 def test_domain_top_up_respects_scope_and_explicit_count():
-    planned = cs.plan_diagrams({"iam_vendor": "CyberArk for PAM", "diagram_count": "2"})
-    assert [t for t, _ in planned] == ["Solution Architecture",
-                                        "Privileged Access Request and Session Flow"]
+    cs.DOMAIN_DIAGRAM_TOPUP = True
+    try:
+        planned = cs.plan_diagrams({"iam_vendor": "CyberArk for PAM", "diagram_count": "2"})
+        assert [t for t, _ in planned] == ["Solution Architecture",
+                                            "Privileged Access Request and Session Flow"]
+
+    finally:
+        cs.DOMAIN_DIAGRAM_TOPUP = False
+
+
+def test_domain_top_up_is_off_by_default():
+    """ESNAD 09-27: the auto per-domain flows were unreadable; off unless asked."""
+    planned = cs.plan_diagrams({
+        "iam_vendor": "Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM",
+        "required_diagram_types": "solution/reference"})
+    assert len(planned) == 1

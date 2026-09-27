@@ -65,11 +65,23 @@ def _kit(section, **ctx):
     return [k["storage_path"] for k in A.kit_for(section, {**base, **ctx})]
 
 
-def test_house_kit_goes_in_every_proposal_under_its_heading():
-    got = A.kit_for("company_profile", {"iam_vendors": ["Okta"]})
-    assert "kit/iv_at_a_glance.png" in [k["storage_path"] for k in got]
-    head = next(k for k in got if k["storage_path"] == "kit/iv_skill_matrix.png")["heading"]
-    assert head.search("Workforce and Capabilities")
+def test_no_iv_corporate_slides_until_the_updated_deck_arrives():
+    """Imran, 2026-09-27: the corporate deck is out of date; use none of it."""
+    assert not any(k["file"].startswith("iv_") for k in A.KIT)
+    assert not A.kit_for("company_profile", {"iam_vendors": ["Okta"]})
+
+
+def test_kit_images_are_large_enough_to_print_sharp():
+    """Every kit file must reach 150 dpi at 2.5 in (375 px) wide at least; the
+    Frost Radar (392 px) and Gartner PAM (600 px) were withdrawn as blurry."""
+    names = {k["file"] for k in A.KIT}
+    assert "saviynt_frost_radar.png" not in names and "saviynt_gartner_pam.png" not in names
+
+
+def test_vendor_kit_image_sits_near_its_capability_heading():
+    k = next(x for x in A.kit_for("solution_overview", {"iam_vendors": ["Ping Identity"]})
+             if x["storage_path"] == "kit/ping_gateway.png")
+    assert k["near"].search("Protection of Legacy Applications via PingGateway")
 
 
 def test_vendor_kit_follows_vendor_domains_and_deployment():

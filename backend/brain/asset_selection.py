@@ -250,51 +250,40 @@ def asset_summary(placed: dict[str, list[dict]]) -> str:
 # vendor: placed only when a proposed vendor's name contains this.
 # domains: placed only when ALL are in scope (and scope is known).
 # deployment: "saas" / "self" -- placed only for that deployment model.
+# near: regex on the model's own capability headings inside that subsection;
+#   the image sits under the first one that matches, not piled at the end
+#   (ESNAD 09-27 stacked 10 Ping and 9 Saviynt images after the last heading).
 KIT: tuple[dict, ...] = (
-    # IV house slides
-    {"file": "iv_at_a_glance.png", "section": "company_profile", "heading": r"^Inspirit Vision$"},
-    {"file": "iv_services.png", "section": "company_profile", "heading": r"^Inspirit Vision$"},
-    {"file": "iv_expertise.png", "section": "company_profile", "heading": r"^Inspirit Vision$"},
-    {"file": "iv_global_reach.png", "section": "company_profile", "heading": r"^Branch"},
-    {"file": "iv_skill_matrix.png", "section": "company_profile", "heading": r"^Workforce"},
-    {"file": "iv_why_trust_us.png", "section": "company_profile", "heading": r"^Workforce"},
-    {"file": "iv_client_logos.png", "section": "similar_experience", "heading": r"^Client References"},
-    {"file": "iv_engagement_approach.png", "section": "implementation_approach", "heading": r"Maturity Journey|Methodology"},
-    {"file": "iv_hybrid_approach.png", "section": "implementation_approach", "heading": r"Maturity Journey|Methodology"},
-    {"file": "iv_agile_methodology.png", "section": "implementation_approach", "heading": r"Maturity Journey|Methodology"},
-    {"file": "iv_capability_building.png", "section": "knowledge_transfer", "heading": r"^Knowledge Transfer Objectives"},
-    {"file": "iv_kt_process.png", "section": "knowledge_transfer", "heading": r"^Knowledge Transfer Plan"},
-    {"file": "iv_training.png", "section": "knowledge_transfer", "heading": r"^Training"},
-    {"file": "iv_managed_services_approach.png", "section": "post_production_support", "heading": r"^Post-Implementation Support"},
-    {"file": "iv_support_model.png", "section": "post_production_support", "heading": r"^Post-Implementation Support"},
+    # IV house slides: withdrawn 2026-09-27 at Imran's instruction -- the
+    # corporate deck they came from is out of date. They return when the
+    # updated deck is supplied.
     # Ping Identity
     {"file": "ping_market_leadership.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "ping"},
     {"file": "ping_ciam_customers.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "ping", "domains": ("ciam",)},
     {"file": "ping_case_study_1.png", "section": "similar_experience", "heading": r"^Relevant Engagements", "vendor": "ping"},
     {"file": "ping_case_study_2.png", "section": "similar_experience", "heading": r"^Relevant Engagements", "vendor": "ping"},
     {"file": "ping_case_study_3.png", "section": "similar_experience", "heading": r"^Relevant Engagements", "vendor": "ping"},
-    {"file": "ping_workforce_challenges.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "domains": ("wiam",)},
-    {"file": "ping_aic_multitenant.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "deployment": "saas"},
-    {"file": "ping_aic_tenant_isolation.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "deployment": "saas"},
-    {"file": "ping_advanced_identity_software.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "deployment": "self"},
-    {"file": "ping_orchestration.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping"},
-    {"file": "ping_gateway.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping"},
-    {"file": "ping_app_integration.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping"},
-    {"file": "ping_adaptive_risk.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping"},
-    {"file": "ping_pingid_app.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping"},
-    # Saviynt
+    {"file": "ping_workforce_challenges.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "domains": ("wiam",), "near": r"Workforce Identity|WIAM"},
+    {"file": "ping_aic_multitenant.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "deployment": "saas", "near": r"Workforce Identity|WIAM|Platform|Architecture"},
+    {"file": "ping_aic_tenant_isolation.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "deployment": "saas", "near": r"Workforce Identity|WIAM|Platform|Architecture"},
+    {"file": "ping_advanced_identity_software.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "deployment": "self", "near": r"Workforce Identity|WIAM|Platform|Architecture"},
+    {"file": "ping_orchestration.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "near": r"Orchestration|Journey"},
+    {"file": "ping_gateway.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "near": r"Gateway|Legacy"},
+    {"file": "ping_app_integration.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "near": r"Single Sign-On|Federation|Integration"},
+    {"file": "ping_adaptive_risk.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "near": r"Adaptive|Risk"},
+    {"file": "ping_pingid_app.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "near": r"Passwordless|FIDO|MFA"},
+    # Saviynt (Frost Radar 392 px and Gartner PAM 600 px withdrawn: too small
+    # to print sharp)
     {"file": "saviynt_kuppingercole_iga.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "saviynt", "domains": ("iga",)},
-    {"file": "saviynt_frost_radar.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "saviynt"},
-    {"file": "saviynt_gartner_pam.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "saviynt", "domains": ("pam",)},
-    {"file": "saviynt_cloud_platform.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "deployment": "saas"},
-    {"file": "saviynt_eic_logical.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga",)},
-    {"file": "saviynt_jml_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga",)},
-    {"file": "saviynt_jml_iga_pam.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga", "pam")},
-    {"file": "saviynt_pam_hla.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",)},
-    {"file": "saviynt_pam_architecture.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",)},
-    {"file": "saviynt_pam_e2e_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",)},
-    {"file": "saviynt_pam_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",)},
-    {"file": "saviynt_identity_to_privileged_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga", "pam")},
+    {"file": "saviynt_cloud_platform.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "deployment": "saas", "near": r"Identity Governance|IGA|Platform"},
+    {"file": "saviynt_eic_logical.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga",), "near": r"Identity Governance|IGA"},
+    {"file": "saviynt_jml_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga",), "near": r"Joiner|Lifecycle"},
+    {"file": "saviynt_jml_iga_pam.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga", "pam"), "near": r"Joiner|Lifecycle"},
+    {"file": "saviynt_pam_hla.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",), "near": r"Privileged Access Management|\bPAM\b"},
+    {"file": "saviynt_pam_architecture.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",), "near": r"Privileged Access Management|\bPAM\b"},
+    {"file": "saviynt_pam_e2e_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",), "near": r"Session|Just-in-Time"},
+    {"file": "saviynt_pam_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",), "near": r"Session|Just-in-Time"},
+    {"file": "saviynt_identity_to_privileged_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga", "pam"), "near": r"Approval|Audit|Analytics"},
 )
 KIT_PREFIX = "kit/"
 
@@ -324,5 +313,6 @@ def kit_for(section_id: str, context: dict) -> list[dict]:
             heading = heading.replace("{vendor}", re.escape(name.split()[0]))
         out.append({"id": f"kit:{item['file']}",
                     "storage_path": KIT_PREFIX + item["file"],
-                    "heading": re.compile(heading, re.I) if heading else None})
+                    "heading": re.compile(heading, re.I) if heading else None,
+                    "near": re.compile(item["near"], re.I) if item.get("near") else None})
     return out

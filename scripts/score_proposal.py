@@ -54,6 +54,9 @@ try:
 except Exception:  # noqa: BLE001 - the scorecard still runs without it
     is_degenerate = None
 
+# Pixels per printed inch below which an image reads as blurry (Imran,
+# 2026-09-27: no blurry image anywhere; hard gate).
+BLUR_DPI = 150
 _NUMBER_RE = re.compile(r"\b\d{1,3}(?:,\d{3})+\b")
 _SME_RE = re.compile(r"\[SME REVIEW")
 _TBC_RE = re.compile(r"(?i)\bto be confirmed\b|\bTBC\b|\bTBD\b")
@@ -67,6 +70,8 @@ def measure(path: str) -> dict:
     """Everything countable about one document, in body order."""
     doc = Document(path)
     styles = {s.style_id: s.name for s in doc.styles}
+    rels = doc.part.rels
+    dpis: list[float] = []
     m = collections.Counter()
     heads = collections.Counter()
     prose: list[str] = []
@@ -87,6 +92,14 @@ def measure(path: str) -> dict:
         if el.tag != qn("w:p"):
             continue
         imgs = len(list(el.iter(qn("a:blip"))))
+        for ext, blip in zip(el.iter(qn("wp:extent")), el.iter(qn("a:blip"))):
+            try:
+                from PIL import Image
+                import io
+                px = Image.open(io.BytesIO(rels[blip.get(qn("r:embed"))].target_part.blob)).size[0]
+                dpis.append(px / (int(ext.get("cx")) / 914400))
+            except Exception:  # noqa: BLE001 - an unreadable image counts as blurry
+                dpis.append(0.0)
         if imgs:
             m["images"] += imgs
             if last_table_weeks:
@@ -120,7 +133,9 @@ def measure(path: str) -> dict:
     # Figures count across prose AND tables: a reader sees both.
     repeats = collections.Counter(
         _NUMBER_RE.findall(body + "\n" + "\n".join(table_text))).most_common(3)
+    m["blurry_images"] = sum(1 for d in dpis if d < BLUR_DPI)
     return {**dict(m), "exec_summary_words": exec_words,
+            "min_image_dpi": round(min(dpis)) if dpis else None,
             "headings": {f"H{k}": heads[k] for k in sorted(heads)},
             "top_repeated_figures": repeats,
             "max_figure_repeats": repeats[0][1] if repeats else 0,
@@ -128,7 +143,9 @@ def measure(path: str) -> dict:
 
 
 def _mentions(body: str, term: str) -> bool:
-    return re.search(rf"(?i)\b{re.escape(term)}\b", body) is not None
+    """Case- and spacing-insensitive: 'Power BI' matches 'PowerBI'."""
+    pat = r"\s*".join(re.escape(ch) for ch in term.replace(" ", ""))
+    return re.search(rf"(?i)\b{pat}\b", body) is not None
 
 
 def gates(run: dict, base: dict | None, cfg: dict) -> list[tuple[str, bool, str]]:
@@ -151,6 +168,8 @@ def gates(run: dict, base: dict | None, cfg: dict) -> list[tuple[str, bool, str]
                 str(run["top_repeated_figures"])))
     out.append(("sme <= 20", run.get("sme", 0) <= 20, str(run.get("sme", 0))))
     out.append(("tbc <= 25", run.get("tbc", 0) <= 25, str(run.get("tbc", 0))))
+    out.append(("no blurry images", run.get("blurry_images", 0) == 0,
+                f"{run.get('blurry_images', 0)} below {BLUR_DPI} dpi (min {run.get('min_image_dpi')})"))
     out.append(("degenerate == 0", run.get("degenerate", 0) == 0, str(run.get("degenerate", 0))))
     body = run["_body"]
     leaks = [c for c in cfg.get("other_clients", []) if _mentions(body, c)]
@@ -186,8 +205,8 @@ def main(argv=None) -> int:
                          indent=2))
     else:
         print(f"{Path(a.docx).name}")
-        for k in ("prose_words", "table_words", "tables", "images", "exec_summary_words",
-                  "sme", "tbc", "degenerate", "gantt_charts"):
+        for k in ("prose_words", "table_words", "tables", "images", "blurry_images",
+                  "exec_summary_words", "sme", "tbc", "degenerate", "gantt_charts"):
             print(f"  {k:20s} {public.get(k, 0):>7}" + (f"   IV {base.get(k, 0)}" if base else ""))
         print(f"  {'headings':20s} {public['headings']}" + (f"   IV {base['headings']}" if base else ""))
         for g, p, d in result:

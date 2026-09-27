@@ -181,6 +181,13 @@ PARTNER_ASSET_BUCKET = os.environ.get("SHILPI_PARTNER_ASSET_BUCKET", "partner-pr
 # Off by default. Turning this on changes what lands in a client document, so
 # it is an explicit choice rather than something that arrives with a deploy.
 ASSETS_ENABLED = os.environ.get("SHILPI_ASSETS_ENABLED", "0") not in ("0", "", "false")
+# The kit (asset_selection.KIT) is the curated image source. The IV proposal
+# library (older corporate slides, duplicates of kit slides) and the partner
+# datasheet library (covers, backgrounds, unrelated screenshots) put blurred,
+# decorative and outdated pictures into ESNAD 09-27; both are off unless
+# switched on deliberately.
+LIBRARY_IMAGES = os.environ.get("SHILPI_LIBRARY_IMAGES", "0") not in ("0", "", "false")
+PARTNER_IMAGES = os.environ.get("SHILPI_PARTNER_IMAGES", "0") not in ("0", "", "false")
 
 
 async def fetch_approved_assets(client: httpx.AsyncClient) -> list[dict]:
@@ -190,6 +197,8 @@ async def fetch_approved_assets(client: httpx.AsyncClient) -> list[dict]:
     """
     if not ASSETS_ENABLED:
         return []
+    if not LIBRARY_IMAGES:
+        return await _fetch_partner_assets(client) if PARTNER_IMAGES else []
     try:
         resp = await client.get(
             f"{SUPABASE_URL}/rest/v1/visual_assets",
@@ -213,7 +222,7 @@ async def fetch_approved_assets(client: httpx.AsyncClient) -> list[dict]:
         counts[a["storage_path"]] = counts.get(a["storage_path"], 0) + 1
     for a in assets:
         a["occurrences"] = counts.get(a["storage_path"], 1)
-    partner = await _fetch_partner_assets(client)
+    partner = await _fetch_partner_assets(client) if PARTNER_IMAGES else []
     log.info("asset library: %d approved placeable assets (+%d partner product)",
              len(assets), len(partner))
     return assets + partner

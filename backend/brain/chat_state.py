@@ -491,6 +491,8 @@ DIAGRAM_TYPE_MAP: dict[str, str] = {
 # dropped the 4th requested diagram (a 'security' diagram went missing in a live
 # run without ever telling the user).
 MAX_DIAGRAMS_PER_ROUND = 6
+DOMAIN_DIAGRAM_TOPUP = __import__("os").environ.get(
+    "SHILPI_DIAGRAM_TOPUP", "0") not in ("0", "", "false")
 DEFAULT_DIAGRAMS_PER_ROUND = 3
 
 
@@ -629,7 +631,10 @@ def plan_diagrams(answers: dict) -> list[tuple[str, str]]:
         requested = [p.strip() for p in re.split(r"[,;]", str(raw)) if p.strip()]
 
     explicit_count = bool(re.search(r"\d", str(answers.get("diagram_count") or "")))
-    domains = _engagement_domains(answers)
+    # Off by default (2026-09-27): the auto-drawn per-domain swimlane flows came
+    # out tall, sparse and unreadable, and the vendor kit already carries
+    # designed versions of the same flows. Kept behind a flag, not deleted.
+    domains = _engagement_domains(answers) if DOMAIN_DIAGRAM_TOPUP else []
     # A multi-domain programme needs a diagram per domain, not the default 3:
     # IV's ESNAD proposal has 16 deal-specific diagrams and ours had 6.
     target = _requested_count(answers) if explicit_count or len(domains) < 2 else \

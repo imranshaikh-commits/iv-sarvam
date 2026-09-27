@@ -227,7 +227,8 @@ def _engagement_facts_clause(context: dict) -> str:
         out += ("\n\nUSING THESE FACTS: they keep sections consistent; they are "
                 "not content to repeat. State a population, environment list or "
                 "deployment model only where this subsection is about it, at most "
-                "once, and never as an opener or closer. Elsewhere refer to 'the "
+                "once (table cells included), and never as an opener or closer. "
+                "Elsewhere refer to 'the "
                 "workforce', 'each environment', 'the SaaS tenants'.")
     if answers:
         out += ("\n\nSYSTEMS: name only systems, directories and products that the "
@@ -1832,8 +1833,19 @@ def _add_subheading(document: Document, text: str, *, level: int = 3) -> None:
         run.bold = True
 
 
-def _add_picture_fitted(document: Document, stream, *, max_w, max_h) -> None:
-    """Insert an image scaled to fit inside (max_w, max_h), keeping aspect ratio.
+# No blurry image in a proposal, ever (Imran, ESNAD 09-27: a 392-px Frost radar
+# stretched to 6 inches). An image is never printed below this many pixels per
+# inch; a supporting image that would then be too small to read is dropped.
+MIN_PRINT_DPI = int(os.environ.get("SHILPI_MIN_PRINT_DPI", "150"))
+_MIN_ASSET_W = Inches(2.5)
+_EMU_PER_INCH = 914400
+
+
+def _add_picture_fitted(document: Document, stream, *, max_w, max_h,
+                        drop_if_small: bool = False) -> bool:
+    """Insert an image scaled to fit inside (max_w, max_h), keeping aspect ratio,
+    and never enlarged past MIN_PRINT_DPI. Returns False when the image was
+    dropped because it could not be shown sharp at a readable size.
 
     CENTRED. `document.add_picture` creates its own paragraph and leaves it
     left-aligned, so every diagram and reusable image sat hard against the left
@@ -1848,16 +1860,23 @@ def _add_picture_fitted(document: Document, stream, *, max_w, max_h) -> None:
         if pos is not None:
             stream.seek(pos)
         if w_px and h_px:
-            scale = min(max_w / w_px, max_h / h_px)
+            scale = min(max_w / w_px, max_h / h_px, _EMU_PER_INCH / MIN_PRINT_DPI)
+            if drop_if_small and w_px * scale < _MIN_ASSET_W:
+                log.warning("image dropped: %dx%d px cannot print sharp at a readable "
+                            "size (%d dpi minimum)", w_px, h_px, MIN_PRINT_DPI)
+                return False
             document.add_picture(stream, width=int(w_px * scale), height=int(h_px * scale))
             _centre_last_paragraph(document)
-            return
+            return True
     except Exception as e:  # noqa: BLE001 — never lose a diagram over sizing
         log.warning("could not measure diagram for fitting (%s); using width only", e)
         if hasattr(stream, "seek"):
             stream.seek(0)
+        if drop_if_small:
+            return False  # unmeasurable: cannot promise it is sharp
     document.add_picture(stream, width=max_w)
     _centre_last_paragraph(document)
+    return True
 
 
 def _centre_last_paragraph(document: Document) -> None:
@@ -2010,7 +2029,8 @@ async def _attach_assets(client, sections: list[dict], context: dict,
             if stream is None:
                 continue
             used.add(key(a))
-            attached.append({"id": a["id"], "stream": stream, "heading": a.get("heading")})
+            attached.append({"id": a["id"], "stream": stream, "heading": a.get("heading"),
+                             "near": a.get("near")})
         if attached:
             sec["assets"] = attached
             placed += len(attached)
@@ -2037,7 +2057,8 @@ _DIAGRAM_PLACEMENT: tuple[tuple[str, str], ...] = (
     # THIS engagement (proposal_templates.engagement_domains), so a PAM diagram
     # lands under whichever vendor's overview covers PAM, for any vendor mix.
     (r"\bstack\b", r"^Why\b"),
-    (r"privileged|\bpam\b", r"Privileged|^{pam} Solution Overview"),
+    # Not the scope section's "Privileged Access Management (PAM)" heading.
+    (r"privileged|\bpam\b", r"^{pam} Solution Overview|Privileged(?! Access Management \(PAM\))"),
     (r"governance|certification|\biga\b", r"Access Certification|^{iga} Solution Overview"),
     (r"joiner|hrms|lifecycle|jml", r"HRMS Integration|Joiner"),
     (r"\bciam\b|customer|authentication|\bsso\b|federation",
@@ -2109,6 +2130,27 @@ def _render_section_assets(document: Document, sec: dict) -> None:
         _embed_asset(document, asset)
 
 
+def _add_sub_content(document: Document, content: str, near_assets: list,
+                     placed: set) -> None:
+    """Subsection body, with each kit image under the first of the model's own
+    capability headings that it matches ("near"), instead of all of them piled
+    up after the last heading."""
+    if not near_assets:
+        _add_body_paragraphs(document, content)
+        return
+    for chunk in re.split(r"(?m)^(?=#{1,6}\s)", content or ""):
+        if not chunk.strip():
+            continue
+        _add_body_paragraphs(document, chunk)
+        head = re.match(r"\s*#{1,6}\s+(.*)", chunk)
+        if not head:
+            continue
+        for asset in near_assets:
+            if id(asset) not in placed and asset["near"].search(head.group(1)):
+                placed.add(id(asset))
+                _embed_asset(document, asset)
+
+
 def _embed_asset(document: Document, asset: dict) -> None:
     stream = asset.get("stream")
     if not stream:
@@ -2119,7 +2161,8 @@ def _embed_asset(document: Document, asset: dict) -> None:
     try:
         _add_picture_fitted(document, stream,
                             max_w=_DIAGRAM_MAX_W if kit else _IMAGE_MAX_W,
-                            max_h=_DIAGRAM_MAX_H if kit else _IMAGE_MAX_H)
+                            max_h=_DIAGRAM_MAX_H if kit else _IMAGE_MAX_H,
+                            drop_if_small=True)
     except Exception as e:  # noqa: BLE001 - a bad image must not sink a section
         log.warning("could not embed asset %s: %s", asset.get("id"), e)
 
@@ -2250,16 +2293,20 @@ def assemble_docx(
                     _h2 = document.add_heading(title, level=2)
                     if title in _toc_bookmarks:
                         _bookmark_paragraph(_h2, _toc_bookmarks[title])
-                _add_body_paragraphs(document, sub.get("content", ""))
+                mine = [x for x in (sec.get("assets") or [])
+                        if x.get("heading") is not None and id(x) not in _placed_assets
+                        and x["heading"].search(title)]
+                _add_sub_content(document, sub.get("content", ""),
+                                 [x for x in mine if x.get("near")], _placed_assets)
                 # The diagram that explains THIS subsection, immediately after
                 # the prose describing it -- the way IV places them.
                 for claimed in _claim_diagram(_inline_diagrams, title,
                                               _placed_diagrams, _owners):
                     _embed_diagram(document, claimed)
-                # Kit images belonging to this subsection, after its diagram.
-                for asset in sec.get("assets") or []:
-                    if asset.get("heading") is not None and id(asset) not in _placed_assets \
-                            and asset["heading"].search(title):
+                # Kit images for this subsection not already placed under one
+                # of its capability headings, after its diagram.
+                for asset in mine:
+                    if id(asset) not in _placed_assets:
                         _placed_assets.add(id(asset))
                         _embed_asset(document, asset)
         else:

@@ -880,8 +880,11 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
              "supplied at discovery. Phases are realistic: discovery, assessment "
              "and design take several weeks before any build, never a single "
              "month for a multi-domain programme; workstreams may run in parallel "
-             "after design; application onboarding runs in batches. Start and End "
-             "Week are plain integers."),
+             "after design; application onboarding runs in batches. When the "
+             "client-supplied facts set a phase framework with months (e.g. "
+             "'Phase 1 (Month 1)'), keep its phase names and fit each phase inside "
+             "its months (Month N = weeks 4N-3 to 4N), so the timeline agrees with "
+             "the rest of the proposal. Start and End Week are plain integers."),
             # IV gives each tranche its own milestone TABLE with success
             # criteria -- 14, 6 and 6 rows. Run 9 wrote prose for all three,
             # which is why the table count trails the human original.

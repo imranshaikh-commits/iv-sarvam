@@ -49,7 +49,30 @@ _COMPRESSION_LEVELS: list[tuple[float, int]] = [
 _MEDIA_PREFIX = "word/media/"
 
 
-def _recompress_image(data: bytes, scale: float, quality: int) -> bytes:
+# Never shrink an image below this many pixels per inch at the size it is
+# printed in the document: lite compression cut ESNAD 09-27's diagrams from
+# 1800 px to 1080 px and made them unreadable.
+MIN_PRINT_DPI = 150
+_EMU_PER_INCH = 914400
+
+
+def _print_widths(originals: dict[str, bytes]) -> dict[str, float]:
+    """media path -> widest printed width in inches, read from the document XML."""
+    import re as _re
+    rels = originals.get("word/_rels/document.xml.rels", b"").decode("utf-8", "ignore")
+    target = {m.group(1): "word/" + m.group(2).lstrip("/").removeprefix("word/")
+              for m in _re.finditer(r'Id="([^"]+)"[^>]*Target="([^"]+)"', rels)}
+    body = originals.get("word/document.xml", b"").decode("utf-8", "ignore")
+    out: dict[str, float] = {}
+    for m in _re.finditer(r'<wp:extent cx="(\d+)"[^>]*/>.*?r:embed="([^"]+)"', body, _re.S):
+        path = target.get(m.group(2))
+        if path:
+            out[path] = max(out.get(path, 0.0), int(m.group(1)) / _EMU_PER_INCH)
+    return out
+
+
+def _recompress_image(data: bytes, scale: float, quality: int,
+                      min_width_px: int = 0) -> bytes:
     """Downscale + re-encode a single embedded image, preserving its format.
 
     Format is preserved so the DOCX relationship references (which include the
@@ -59,6 +82,9 @@ def _recompress_image(data: bytes, scale: float, quality: int) -> bytes:
     img = Image.open(io.BytesIO(data))
     fmt = (img.format or "").upper()
     w, h = img.size
+    scale = max(scale, min(1.0, min_width_px / w)) if w else scale
+    if fmt == "PNG" and scale >= 1.0:
+        return data  # diagrams and slides stay pixel-exact unless they must shrink
     if scale < 1.0:
         img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
 
@@ -66,13 +92,8 @@ def _recompress_image(data: bytes, scale: float, quality: int) -> bytes:
     if fmt in ("JPEG", "JPG"):
         img.convert("RGB").save(out, format="JPEG", quality=quality, optimize=True)
     elif fmt == "PNG":
-        if img.mode in ("RGBA", "LA", "P"):
-            # Keep alpha / palette; downscale + optimize without dropping channels.
-            img.save(out, format="PNG", optimize=True)
-        else:
-            img.convert("P", palette=Image.ADAPTIVE, colors=256).save(
-                out, format="PNG", optimize=True
-            )
+        # Lossless only: quantising to 256 colours posterised diagrams.
+        img.save(out, format="PNG", optimize=True)
     else:
         # Unknown/other format: re-save as-is (best effort).
         img.save(out, format=fmt or "PNG")
@@ -137,6 +158,7 @@ def compress_docx_lite(
             return docx_bytes, meta
 
         originals = {info.filename: zin.read(info.filename) for info in infos}
+    printed = _print_widths(originals)
 
     best_bytes, best_size = docx_bytes, original_size
     for scale, quality in _COMPRESSION_LEVELS:
@@ -144,7 +166,8 @@ def compress_docx_lite(
         for name in media:
             data = originals[name]
             try:
-                rc = _recompress_image(data, scale, quality)
+                rc = _recompress_image(data, scale, quality,
+                                       int(printed.get(name, 0) * MIN_PRINT_DPI))
                 new_media[name] = rc if len(rc) < len(data) else data
             except Exception as e:  # noqa: BLE001 — a bad image never breaks export
                 log.warning("compress_docx_lite: skipping image %s (%s)", name, e)

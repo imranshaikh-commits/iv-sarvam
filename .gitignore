@@ -106,3 +106,6 @@ deploy/*.pdf
 # Image kit files (uploaded to storage, never committed)
 asset_kit/
 asset_kit.tar.gz
+
+# Local agent-tool state (never commit)
+.claude-flow/

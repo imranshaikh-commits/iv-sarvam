@@ -2345,3 +2345,18 @@ def test_client_matrix_never_shows_the_corpus_grading():
     assert "Compliant - confirmed during Discovery" in md
     assert "| X-99 |" in md and "To be confirmed" in md
     assert confirm == ["IGA-04", "X-99"]
+
+
+def test_matrix_reference_uses_capability_headings_and_word_variants():
+    """09-28 check: 'joiner/mover/leaver' missed 'Joiner-Mover-Leaver', and a
+    lead-in sentence set as a heading became a reference."""
+    sections = [{"id": "s", "title": "Solution Overview", "subsections": [{
+        "title": "Saviynt Solution Overview",
+        "content": ("### The in-scope Saviynt implementation covers the following areas\n"
+                    "Intro text.\n\n### Joiner-Mover-Leaver Lifecycle Automation\n"
+                    "HR-triggered workflows provision and remove access.")}]}]
+    refs = document_engine.requirement_references(
+        [_E("ILM-07", "HR-driven joiner/mover/leaver workflows with automated triggers", "covered")],
+        sections)
+    assert refs["ILM-07"] == ("Solution Overview > Saviynt Solution Overview > "
+                              "Joiner-Mover-Leaver Lifecycle Automation")

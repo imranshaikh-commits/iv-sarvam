@@ -350,8 +350,18 @@ solution system systems platform based using within across all any each""".split
 
 
 def _req_tokens(text: str) -> set:
-    return {w for w in re.findall(r"[a-z0-9][a-z0-9/-]{2,}", (text or "").lower())
-            if w not in _REQ_STOP}
+    """Words of 3+ letters, split on '/' and '-' ('joiner/mover/leaver' and
+    'Joiner-Mover-Leaver' agree), with a light plural/-ing/-ed stem."""
+    out = set()
+    for w in re.findall(r"[a-z0-9]{3,}", (text or "").lower()):
+        if w in _REQ_STOP:
+            continue
+        for suf in ("ing", "ed", "es", "s"):
+            if len(w) > 5 and w.endswith(suf):
+                w = w[: -len(suf)]
+                break
+        out.add(w)
+    return out
 
 
 def requirement_references(entries, sections: list[dict]) -> dict:
@@ -362,9 +372,16 @@ def requirement_references(entries, sections: list[dict]) -> dict:
         if sec.get("id") == COMPLIANCE_SECTION_ID:
             continue
         for sub in sec.get("subsections") or [{"title": "", "content": sec.get("content", "")}]:
-            label = " > ".join(t for t in (sec.get("title"), sub.get("title")) if t)
-            targets.append((label, _req_tokens(sub.get("title")),
-                            _req_tokens(sub.get("content"))))
+            # Each capability heading the model wrote inside a subsection is its
+            # own, more precise target ("Joiner-Mover-Leaver Lifecycle Automation").
+            for chunk in re.split(r"(?m)^(?=#{1,6}\s)", sub.get("content") or ""):
+                head = re.match(r"\s*#{1,6}\s+(.*)", chunk)
+                inner = head.group(1).strip() if head else ""
+                # A lead-in sentence set as a heading is not a reference.
+                shown = inner if inner and len(inner.split()) <= 8 and not inner.endswith(":") else ""
+                label = " > ".join(t for t in (sec.get("title"), sub.get("title"), shown) if t)
+                targets.append((label, _req_tokens(f"{sub.get('title')} {inner}"),
+                                _req_tokens(chunk)))
     out = {}
     for e in entries:
         req = _req_tokens(getattr(e, "requirement_text", "") or "")

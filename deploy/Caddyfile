@@ -1,0 +1,12 @@
+# Shilpi over HTTPS. The certificate is issued and renewed automatically.
+{$SHILPI_DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+	# Open WebUI (chat, uploads, websockets). Long proposal generations stream
+	# heartbeats, so no read timeout is imposed here.
+	reverse_proxy sarvam-webui:8080
+}

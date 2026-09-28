@@ -1,4 +1,4 @@
--- sarvam_018: close the Supabase security-advisor warnings that need no auth design.
+-- sarvam_018: close the Supabase security-advisor warnings that need no auth design, and RLS on visual_assets.
 --
 -- Measured before this migration (2026-09-25, SET ROLE anon): every public
 -- table returns 0 rows to the anon key except visual_assets (939 rows, RLS
@@ -22,3 +22,9 @@ alter function public.match_proposal_chunks(text, integer, integer, text, intege
   set search_path = public, extensions, pg_temp;
 alter function public.match_partner_product_chunks(text, integer, text, text, integer)
   set search_path = public, extensions, pg_temp;
+
+-- Applied 2026-09-28 with Imran's go-ahead. visual_assets had RLS off (anon could
+-- read/write all 939 rows). Every consumer uses the service-role key, which
+-- bypasses RLS, so enabling it with no policies closes anon access and breaks
+-- nothing. Verified after applying: anon sees 0 rows.
+alter table public.visual_assets enable row level security;

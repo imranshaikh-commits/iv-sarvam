@@ -18,6 +18,14 @@
 
 name: sarvam
 
+# Rotate container logs: they had no limit, and until 2026-09-28 the brain
+# wrote client text into them.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   open-webui:
     # Thin custom image (deploy/Dockerfile.webui) that strips Open WebUI's
@@ -32,8 +40,11 @@ services:
     environment:
       - "WEBUI_NAME=Shilpi AI - Inspirit Vision Proposal Architect"
       - "WEBUI_FAVICON_URL=/static/favicon.png"
+    # Not published to the internet any more: colleagues reach Open WebUI
+    # through Caddy over HTTPS (below). Loopback only, for an SSH-tunnel fallback.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
+    logging: *default-logging
     volumes:
       - open-webui:/app/backend/data
 
@@ -45,6 +56,7 @@ services:
       - ../scripts/sarvam.env
     ports:
       - "127.0.0.1:8000:8000"
+    logging: *default-logging
     volumes:
       # Open WebUI's data volume, READ-ONLY.
       #
@@ -59,7 +71,30 @@ services:
       # including the stored connection to this service.
       - open-webui:/owui-data:ro
 
+  # HTTPS front door. Caddy obtains and renews a Let's Encrypt certificate for
+  # SHILPI_DOMAIN by itself (ports 80 and 443 must be open in the EC2 security
+  # group). Until IV points a DNS name here, the default is the sslip.io name
+  # for the Elastic IP, which resolves to it without any DNS change.
+  caddy:
+    image: caddy:2.8
+    container_name: sarvam-caddy
+    restart: always
+    environment:
+      - "SHILPI_DOMAIN=${SHILPI_DOMAIN:-13-206-20-25.sslip.io}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - open-webui
+    logging: *default-logging
+
 volumes:
   open-webui:
     external: true
     name: open-webui
+  caddy_data:
+  caddy_config:

@@ -248,6 +248,9 @@ def _engagement_facts_clause(context: dict) -> str:
 # describe every other client without its name.
 
 _SHORT_ALIAS = 5  # aliases this short (ANB, SNB, STC) must match case-exactly
+# Products whose delivery counts for the acquirer's platform (IV's own case
+# studies present its ForgeRock projects as Ping Identity implementations).
+_ACQUIRED_BY = {"forgerock": "Ping Identity"}
 
 
 def _client_aliases(name: str) -> list[str]:
@@ -303,17 +306,24 @@ def build_reference_book(proposals: list[dict], citation_chunks: list[dict]) -> 
             (by_id.get(c.get("proposal_id")) or {}).get("client_name") != client
             and any(_mentions_client(c.get("text") or "", a) for a in aliases)
             for c in citation_chunks)
+        ind = (e["industry"] or "").strip().lower()
+        ind = "" if ind in ("other", "unknown", "none", "n/a") else ind
+        noun = f"{ind} organisation" if ind else "organisation"
+        art = "an" if noun[0] in "aeiou" else "a"
         who = (f"{client} (named)" if cited else
-               f"a {(e['industry'] or 'enterprise').lower()} organisation in "
-               f"{e['country'] or 'the region'} (do not name)")
+               f"{art} {noun} in {e['country'] or 'the region'} (do not name)")
         years = f", {max(e['years'])}" if e["years"] else ""
-        lines.append(f"- {who}: {', '.join(e['vendors'])}; "
+        vendors = [f"{v} (now part of {_ACQUIRED_BY[v.lower()]})"
+                   if v.lower() in _ACQUIRED_BY else v for v in e["vendors"]]
+        lines.append(f"- {who}: {', '.join(vendors)}; "
                      f"{', '.join(sorted(e['types'])) or 'engagement'}{years}")
     return ("DELIVERED ENGAGEMENTS -- IV's won work, the ONLY engagements you may "
             "describe as delivered:\n" + "\n".join(lines) + "\n"
             "RULES: name a client only where marked (named); for every other entry "
-            "use exactly the description given, never a name. State only the "
-            "product and engagement type listed -- no scope, figures or outcomes "
+            "use exactly the description given, never a name. Mention each entry "
+            "at most once. A product listed as 'now part of' a vendor counts as "
+            "that vendor's delivery. State only the product and engagement type "
+            "listed -- no scope, figures, outcomes or claims about referenceability "
             "the list does not give. Where a proposed vendor has no entry here, "
             "describe IV's partner status and certified resources for it, never "
             "past delivery.")

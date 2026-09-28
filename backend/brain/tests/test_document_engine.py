@@ -2297,3 +2297,14 @@ def test_reference_list_reaches_only_the_similar_experience_prompt():
         document_engine._draft_with_retry = orig
     assert "DELIVERED ENGAGEMENTS" in prompts["Similar Experience and Customer References"]
     assert "DELIVERED ENGAGEMENTS" not in prompts["Company Profile"]
+
+
+def test_reference_book_grammar_and_acquired_products():
+    """ESNAD 09-28 check: 'a other organisation'; ForgeRock work (Riyad Bank)
+    not used as Ping Identity credentials."""
+    props = [dict(_PROPS[1], industry="other"), dict(_PROPS[2], id=5, industry="Insurance")]
+    book = document_engine.build_reference_book(props, [])
+    assert "an organisation in Saudi Arabia (do not name): Saviynt" in book
+    assert "an insurance organisation in Saudi Arabia" in book
+    assert "ForgeRock (now part of Ping Identity)" in book
+    assert "at most once" in book and "referenceability" in book

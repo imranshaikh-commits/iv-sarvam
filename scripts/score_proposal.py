@@ -156,8 +156,11 @@ def gates(run: dict, base: dict | None, cfg: dict) -> list[tuple[str, bool, str]
     """[(gate, passed, detail)]. Relative to the baseline where one exists."""
     out = []
 
+    # With a baseline, size gates scale with IV's own document: a scoped
+    # upgrade (BTPN, 2,551 prose words) must not fail absolute floors set for
+    # a 42-week build. The floors apply only when there is nothing to compare.
     def rel(key, share, floor):
-        want = max(floor, int(base.get(key, 0) * share)) if base else floor
+        want = int(base.get(key, 0) * share) if base else floor
         out.append((f"{key} >= {want}", run.get(key, 0) >= want,
                     f"{run.get(key, 0)}" + (f" (IV {base.get(key, 0)})" if base else "")))
 
@@ -165,7 +168,8 @@ def gates(run: dict, base: dict | None, cfg: dict) -> list[tuple[str, bool, str]
     rel("table_words", 0.70, 1500)
     rel("tables", 0.70, 10)
     rel("images", 0.50, 10)
-    out.append(("exec_summary_words >= 400", run["exec_summary_words"] >= 400,
+    ex = min(400, int(base.get("exec_summary_words", 0) * 0.8)) if base else 400
+    out.append((f"exec_summary_words >= {ex}", run["exec_summary_words"] >= ex,
                 str(run["exec_summary_words"])))
     cap = max(15, (base or {}).get("max_figure_repeats", 0) + 5)
     out.append((f"max_figure_repeats <= {cap}", run["max_figure_repeats"] <= cap,

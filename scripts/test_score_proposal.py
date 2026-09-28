@@ -94,3 +94,14 @@ def test_blurry_image_fails_the_gate():
 def test_term_matching_ignores_spacing():
     assert S._mentions("PowerBI dashboards", "Power BI")
     assert not S._mentions("Power users", "Power BI")
+
+
+def test_size_gates_scale_to_a_small_baseline():
+    # A scoped deal's own IV document must pass the size gates it sets.
+    with tempfile.TemporaryDirectory() as tmp:
+        p = f"{tmp}/a.docx"
+        _doc(p, exec_words=100)
+        m = S.measure(p)
+    size = [g for g in S.gates(m, m, {}) if g[0].startswith(
+        ("prose_words", "table_words", "tables", "images", "exec_summary"))]
+    assert size and all(ok for _, ok, _ in size), size

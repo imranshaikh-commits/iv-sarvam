@@ -2018,6 +2018,11 @@ async def generate_proposal_from_chat(session_id: str | None,
     else:
         lines.append("_The document was produced but no download link came back — check "
                      "the generated-drafts bucket._")
+    confirm = (data or {}).get("compliance_to_confirm") or []
+    if confirm:
+        lines += ["", f"**Compliance matrix:** {len(confirm)} requirement(s) need a "
+                      f"bid-team check before submission (no IV precedent, or no section "
+                      f"of this proposal addresses them): {', '.join(confirm)}."]
     lines += [
         "",
         "This is a **draft for human review**, not client-ready: check the "
@@ -2882,6 +2887,7 @@ async def generate_proposal_endpoint(request: Request):
         lite=lite,
         include_pdf=include_pdf,
         return_signed_urls=return_signed_urls,
+        compliance_to_confirm=result.get("compliance_to_confirm") or [],
     )
 
 
@@ -2893,6 +2899,7 @@ async def _build_export_response(
     lite: bool,
     include_pdf: bool,
     return_signed_urls: bool,
+    compliance_to_confirm: list | None = None,
 ) -> JSONResponse:
     """Apply the opt-in export steps and return JSON export metadata.
 
@@ -2923,6 +2930,9 @@ async def _build_export_response(
         "pdf": pdf_meta,
         "signed_urls": {},
         "generated_proposal_id": proposal_id,
+        # For the bid team, never the client document: requirements answered
+        # "confirmed during Discovery" or with no section of this proposal behind them.
+        "compliance_to_confirm": compliance_to_confirm or [],
     }
 
     if return_signed_urls:

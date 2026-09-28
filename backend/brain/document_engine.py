@@ -338,6 +338,72 @@ def build_reference_book(proposals: list[dict], citation_chunks: list[dict]) -> 
             "past delivery.")
 
 
+# --- Client-facing compliance matrix -----------------------------------------
+# The corpus grading (covered/partial/missing) says whether IV's PAST proposals
+# show a capability. ESNAD 09-27 printed it as the client's answer: 30 of 56
+# requirements "Partial" in the bid itself. The client document now states the
+# response and WHERE this proposal addresses each requirement; the grading goes
+# to the bid team in chat.
+_REQ_STOP = set("""the and for with that this from into shall must will should
+able support supports provide provides including include such other their
+solution system systems platform based using within across all any each""".split())
+
+
+def _req_tokens(text: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9][a-z0-9/-]{2,}", (text or "").lower())
+            if w not in _REQ_STOP}
+
+
+def requirement_references(entries, sections: list[dict]) -> dict:
+    """requirement_id -> 'Section > Subsection' of THIS proposal that best
+    addresses it, or None. Keyword overlap, subsection title counted twice."""
+    targets = []
+    for sec in sections:
+        if sec.get("id") == COMPLIANCE_SECTION_ID:
+            continue
+        for sub in sec.get("subsections") or [{"title": "", "content": sec.get("content", "")}]:
+            label = " > ".join(t for t in (sec.get("title"), sub.get("title")) if t)
+            targets.append((label, _req_tokens(sub.get("title")),
+                            _req_tokens(sub.get("content"))))
+    out = {}
+    for e in entries:
+        req = _req_tokens(getattr(e, "requirement_text", "") or "")
+        best, best_score = None, 0.0
+        for label, title_t, body_t in targets:
+            if not req:
+                break
+            score = (2 * len(req & title_t) + len(req & body_t)) / (2 * len(req))
+            if score > best_score:
+                best, best_score = label, score
+        out[getattr(e, "requirement_id", "")] = best if best_score >= 0.3 else None
+    return out
+
+
+def render_client_matrix(entries, refs: dict) -> tuple[str, list[str]]:
+    """(markdown, requirement ids the bid team must confirm). Never shows the
+    corpus grading: 'Compliant' where IV has precedent, 'Compliant - confirmed
+    during Discovery' where it does not, 'To be confirmed' where no section of
+    this proposal addresses the requirement."""
+    rows = ["Compliance Matrix", "",
+            "| Req | Requirement | Response | Proposal Reference |", "|---|---|---|---|"]
+    to_confirm = []
+    for e in entries:
+        rid = getattr(e, "requirement_id", "")
+        ref = refs.get(rid)
+        precedent = getattr(e, "status", "") in ("covered", "partial")
+        if not ref:
+            response = "To be confirmed"
+        elif precedent:
+            response = "Compliant"
+        else:
+            response = "Compliant - confirmed during Discovery"
+        if not (ref and precedent):
+            to_confirm.append(rid)
+        text = (getattr(e, "requirement_text", "") or "").replace("|", "/").replace("\n", " ").strip()
+        rows.append(f"| {rid} | {text} | {response} | {ref or '-'} |")
+    return "\n".join(rows), to_confirm
+
+
 # Vendor -> (its SaaS platform, its self-managed products). ESNAD 09-24 named
 # PingFederate, PingDirectory and PingAccess as components of a PingOne
 # Advanced Identity Cloud tenant; IV's own proposal names AIC and PingGateway.
@@ -2897,6 +2963,7 @@ async def generate_proposal(
 
     # Optional compliance matrix.
     compliance_markdown: Optional[str] = None
+    compliance_to_confirm: list[str] = []
     want_compliance = include_compliance_matrix or (
         sections is not None and COMPLIANCE_SECTION_ID in {s.strip().lower() for s in sections}
     )
@@ -2931,7 +2998,11 @@ async def generate_proposal(
         try:
             matrix = await run_compliance_matrix_fn(
                 client, rfp_text, _extracted_reqs, top_k)
-            compliance_markdown = render_matrix_markdown_fn(matrix)
+            if getattr(matrix, "entries", None):
+                compliance_markdown, compliance_to_confirm = render_client_matrix(
+                    matrix.entries, requirement_references(matrix.entries, list(drafted)))
+            else:
+                compliance_markdown = render_matrix_markdown_fn(matrix)
         except Exception as e:
             log.error("Compliance matrix generation failed: %s", e)
             # The exception text stays in the log: it can carry model output
@@ -3001,6 +3072,7 @@ async def generate_proposal(
         "draft_markdown": draft_markdown,
         "filename": filename,
         "included_compliance_matrix": compliance_markdown is not None,
+        "compliance_to_confirm": compliance_to_confirm,
         "proposal_depth": tier.name,
         "included_appendices": tier.include_appendices,
     }

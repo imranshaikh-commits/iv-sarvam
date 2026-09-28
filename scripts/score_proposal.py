@@ -88,6 +88,10 @@ def measure(path: str) -> dict:
             table_text.extend(c for r in cells for c in r)
             head = " ".join(cells[0]).lower() if cells else ""
             last_table_weeks = "start week" in head and "end week" in head
+            if "requirement" in head:
+                # The corpus grading must never reach the client (09-27: 30 "Partial").
+                m["matrix_self_downgrades"] += sum(
+                    1 for r in cells[1:] for c in r if c.strip().lower() in ("partial", "missing"))
             continue
         if el.tag != qn("w:p"):
             continue
@@ -170,6 +174,8 @@ def gates(run: dict, base: dict | None, cfg: dict) -> list[tuple[str, bool, str]
     out.append(("tbc <= 25", run.get("tbc", 0) <= 25, str(run.get("tbc", 0))))
     out.append(("no blurry images", run.get("blurry_images", 0) == 0,
                 f"{run.get('blurry_images', 0)} below {BLUR_DPI} dpi (min {run.get('min_image_dpi')})"))
+    out.append(("no Partial/Missing in client matrix", run.get("matrix_self_downgrades", 0) == 0,
+                str(run.get("matrix_self_downgrades", 0))))
     out.append(("degenerate == 0", run.get("degenerate", 0) == 0, str(run.get("degenerate", 0))))
     body = run["_body"]
     leaks = [c for c in cfg.get("other_clients", []) if _mentions(body, c)]

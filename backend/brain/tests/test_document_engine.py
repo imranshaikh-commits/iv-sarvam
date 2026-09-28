@@ -2318,3 +2318,30 @@ def test_reference_book_uses_the_most_common_industry_and_country():
              dict(base, id=12, industry="other", country="Saudi Arabia")]
     book = document_engine.build_reference_book(props, [])
     assert "an education organisation in Saudi Arabia" in book
+
+
+class _E:
+    def __init__(self, rid, text, status):
+        self.requirement_id, self.requirement_text, self.status = rid, text, status
+
+
+def test_client_matrix_never_shows_the_corpus_grading():
+    """ESNAD 09-27 printed 30 of 56 requirements as 'Partial' in the bid."""
+    sections = [{"id": "solution_overview", "title": "Solution Overview", "subsections": [
+        {"title": "Privileged Session Management and Keystroke Recording",
+         "content": "Sessions are recorded with keystroke logging and just-in-time access."},
+        {"title": "Access Certification Campaigns",
+         "content": "Quarterly certification campaigns for managers."}]}]
+    entries = [_E("PAM-01", "Privileged session recording with keystroke logging", "partial"),
+               _E("IGA-04", "Periodic access certification campaigns by managers", "missing"),
+               _E("X-99", "Quantum-safe cryptographic agility for mainframes", "covered")]
+    refs = document_engine.requirement_references(entries, sections)
+    assert refs["PAM-01"].endswith("Privileged Session Management and Keystroke Recording")
+    assert refs["IGA-04"].endswith("Access Certification Campaigns")
+    assert refs["X-99"] is None
+    md, confirm = document_engine.render_client_matrix(entries, refs)
+    assert "Partial" not in md and "Missing" not in md
+    assert "| PAM-01 | Privileged session recording with keystroke logging | Compliant |" in md
+    assert "Compliant - confirmed during Discovery" in md
+    assert "| X-99 |" in md and "To be confirmed" in md
+    assert confirm == ["IGA-04", "X-99"]

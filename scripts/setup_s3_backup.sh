@@ -63,5 +63,5 @@ cat <<EOF
 
 Done. On the EC2 host:
   sudo snap install aws-cli --classic
-  (crontab -l; echo '30 2 * * * aws s3 sync \$HOME/sarvam-backups s3://$BUCKET/tables/ --only-show-errors >> \$HOME/sarvam-backup.log 2>&1') | crontab -
+  (crontab -l; echo '15 3 * * * /snap/bin/aws s3 sync \$HOME/sarvam-backups s3://$BUCKET/tables/ --only-show-errors >> \$HOME/sarvam-backup.log 2>&1') | crontab -
 EOF

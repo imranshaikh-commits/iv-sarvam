@@ -288,7 +288,13 @@ def build_reference_book(proposals: list[dict], citation_chunks: list[dict]) -> 
                 or vendor.lower() in ("", "other", "none"):
             continue
         e = won.setdefault(client, {"vendors": [], "types": set(), "years": set(),
-                                    "industry": p.get("industry"), "country": p.get("country")})
+                                    "industries": [], "countries": []})
+        # Rows for one client disagree (NWC: 3 rows with no country), so the
+        # most common non-empty value wins, not whichever row came first.
+        if p.get("industry"):
+            e["industries"].append(p["industry"])
+        if p.get("country"):
+            e["countries"].append(p["country"])
         for v in re.split(r"\s*\+\s*|\s*,\s*", vendor):
             if v and v not in e["vendors"]:
                 e["vendors"].append(v)
@@ -306,12 +312,15 @@ def build_reference_book(proposals: list[dict], citation_chunks: list[dict]) -> 
             (by_id.get(c.get("proposal_id")) or {}).get("client_name") != client
             and any(_mentions_client(c.get("text") or "", a) for a in aliases)
             for c in citation_chunks)
-        ind = (e["industry"] or "").strip().lower()
+        def _mode(vals):
+            return max(set(vals), key=vals.count) if vals else None
+        ind = (_mode(e["industries"]) or "").strip().lower()
+        country = _mode(e["countries"])
         ind = "" if ind in ("other", "unknown", "none", "n/a") else ind
         noun = f"{ind} organisation" if ind else "organisation"
         art = "an" if noun[0] in "aeiou" else "a"
         who = (f"{client} (named)" if cited else
-               f"{art} {noun} in {e['country'] or 'the region'} (do not name)")
+               f"{art} {noun} in {country or 'the region'} (do not name)")
         years = f", {max(e['years'])}" if e["years"] else ""
         vendors = [f"{v} (now part of {_ACQUIRED_BY[v.lower()]})"
                    if v.lower() in _ACQUIRED_BY else v for v in e["vendors"]]

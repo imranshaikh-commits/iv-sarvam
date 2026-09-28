@@ -2308,3 +2308,13 @@ def test_reference_book_grammar_and_acquired_products():
     assert "an insurance organisation in Saudi Arabia" in book
     assert "ForgeRock (now part of Ping Identity)" in book
     assert "at most once" in book and "referenceability" in book
+
+
+def test_reference_book_uses_the_most_common_industry_and_country():
+    """NWC 09-28: three rows had no country; KAU rows disagreed on industry."""
+    base = dict(_PROPS[1], client_name="Uni", outcome="won")
+    props = [dict(base, id=10, industry="education", country=None),
+             dict(base, id=11, industry="education", country="Saudi Arabia"),
+             dict(base, id=12, industry="other", country="Saudi Arabia")]
+    book = document_engine.build_reference_book(props, [])
+    assert "an education organisation in Saudi Arabia" in book

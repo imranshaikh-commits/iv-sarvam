@@ -18,6 +18,7 @@ Design note (circular-import avoidance):
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import io
 import itertools
 import logging
@@ -736,6 +737,35 @@ def _draft_payload(model: str, system_prompt: str, user_prompt: str,
     return payload
 
 
+# What one proposal costs (Sprint 3.4). A ledger opened for a request collects
+# the usage of every OpenRouter call awaited inside it, including calls in
+# gathered tasks (contextvars copy into them). OpenRouter reports the charged
+# cost when a request carries usage={"include": true}.
+# ponytail: covers the generation request only; the chat turns before it (RFP
+# reading, diagram specs) are separate requests and are not summed per deal yet.
+_LEDGER: contextvars.ContextVar = contextvars.ContextVar("llm_ledger", default=None)
+USAGE_ACCOUNTING = {"usage": {"include": True}}
+
+
+def start_ledger() -> dict:
+    ledger = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
+    _LEDGER.set(ledger)
+    return ledger
+
+
+def record_usage(usage) -> None:
+    """Add one response's usage (a dict, or an OpenAI usage object) to the open ledger."""
+    ledger = _LEDGER.get()
+    if ledger is None or not usage:
+        return
+    if not isinstance(usage, dict):
+        usage = usage.model_dump() if hasattr(usage, "model_dump") else {}
+    ledger["calls"] += 1
+    ledger["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
+    ledger["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+    ledger["cost_usd"] = round(ledger["cost_usd"] + float(usage.get("cost") or 0), 6)
+
+
 async def _post_once(client: httpx.AsyncClient, payload: dict) -> dict:
     resp = await client.post(
         f"{OPENROUTER_BASE}/chat/completions",
@@ -744,13 +774,14 @@ async def _post_once(client: httpx.AsyncClient, payload: dict) -> dict:
             "Content-Type": "application/json",
             **openrouter_cache_headers(),
         },
-        json=payload,
+        json={**payload, **USAGE_ACCOUNTING},
         timeout=180,
     )
     resp.raise_for_status()
     body = resp.json()
     choice = body["choices"][0]
     choice["_usage"] = body.get("usage") or {}
+    record_usage(choice["_usage"])
     return choice
 
 

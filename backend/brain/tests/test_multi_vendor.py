@@ -2174,7 +2174,8 @@ def test_structured_calls_default_to_low_reasoning_and_json_cutoffs_retry():
         asyncio.run(app._structured_across_models(app.Requirement, [], models=["m"]))
     finally:
         app.instructor_client = orig
-    assert seen["extra_body"] == {"reasoning": {"effort": app.STRUCTURED_REASONING_EFFORT}}
+    assert seen["extra_body"] == {"reasoning": {"effort": app.STRUCTURED_REASONING_EFFORT},
+                                  "usage": {"include": True}}
     assert app._is_length_error(ValueError("1 validation error: Invalid JSON: EOF while parsing"))
 
 

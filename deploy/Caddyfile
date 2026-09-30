@@ -6,7 +6,15 @@
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 	}
+	# Uptime monitor target: brain up AND database reachable (200 / 503).
+	# Answers only {"status","database"}; /health's config detail stays private.
+	handle /healthz {
+		rewrite * /v1/keepalive
+		reverse_proxy sarvam-brain:8000
+	}
 	# Open WebUI (chat, uploads, websockets). Long proposal generations stream
 	# heartbeats, so no read timeout is imposed here.
-	reverse_proxy sarvam-webui:8080
+	handle {
+		reverse_proxy sarvam-webui:8080
+	}
 }

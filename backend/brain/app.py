@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # Sprint 5 document-production engine. Safe top-level import: document_engine
 # does NOT import app (it receives the brain helpers as parameters), so there
 # is no circular dependency.
+import document_engine
 from document_engine import build_reference_book, generate_proposal
 
 # Sprint 5 Pass 1 — structured intake + persistence. Neither module imports app.
@@ -2207,12 +2208,15 @@ async def _structured_across_models(response_model, messages: list[dict],
     # including RFP page reading and compliance. Callers may pass their own.
     if STRUCTURED_REASONING_EFFORT:
         kwargs.setdefault("extra_body", {"reasoning": {"effort": STRUCTURED_REASONING_EFFORT}})
+    kwargs["extra_body"] = {**(kwargs.get("extra_body") or {}), **document_engine.USAGE_ACCOUNTING}
     for model in chain:
         try:
             result = await ic.chat.completions.create(
                 model=model, response_model=response_model, messages=messages, **kwargs
             )
             log.info("Structured LLM model=%s", model)
+            raw = getattr(result, "_raw_response", None)
+            document_engine.record_usage(getattr(raw, "usage", None))
             return result
         except Exception as e:
             # An account budget error is not a model failure: fail out
@@ -2672,6 +2676,7 @@ async def generate_proposal_endpoint(request: Request):
     blocks the download) and linked back to the intake session.
     """
     body = await request.json()
+    ledger = document_engine.start_ledger()
     rfp_text = (body.get("rfp_text") or "").strip()
     client_name = (body.get("client_name") or "").strip()
     proposal_type = (body.get("proposal_type") or "").strip().lower()
@@ -2869,8 +2874,13 @@ async def generate_proposal_endpoint(request: Request):
             )
             if proposal_id and intake_session_id:
                 await supabase_client.link_intake_to_proposal(pclient, intake_session_id, proposal_id)
+            if proposal_id:
+                await supabase_client.set_proposal_usage(pclient, proposal_id, ledger)
     except Exception as e:  # noqa: BLE001 — persistence must never break the download
         log.error("generate-proposal persistence failed (returning DOCX anyway): %s", e)
+    log.info("proposal cost: %d calls, %d prompt + %d completion tokens, $%.4f",
+             ledger["calls"], ledger["prompt_tokens"], ledger["completion_tokens"],
+             ledger["cost_usd"])
 
     # DEFAULT path (no export flag): return the DOCX binary byte-for-byte, exactly
     # as Pass 1-5 did. Nothing below runs unless the caller opts in.

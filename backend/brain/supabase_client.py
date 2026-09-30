@@ -283,6 +283,21 @@ async def insert_generated_proposal(
 DIAGRAM_BUCKET = os.environ.get("DIAGRAM_BUCKET", "diagram-renders")
 
 
+async def set_proposal_usage(client: httpx.AsyncClient, proposal_id: str, usage: dict) -> bool:
+    """Record what generating this proposal cost (llm_usage, sarvam_019).
+    A separate fail-soft write: if the column is missing, only this is lost,
+    never the proposal row itself."""
+    try:
+        resp = await client.patch(
+            _table_url("generated_proposals"), headers=_headers(prefer_representation=False),
+            params={"id": f"eq.{proposal_id}"}, json={"llm_usage": usage}, timeout=30.0)
+        resp.raise_for_status()
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("set_proposal_usage failed: %s", _why(e))
+        return False
+
+
 async def insert_diagram(
     client: httpx.AsyncClient,
     *,

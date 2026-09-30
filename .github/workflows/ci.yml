@@ -1,0 +1,16 @@
+# Every push runs the full keyless test suite. No secrets are needed: tests
+# never reach Supabase or OpenRouter. deploy/deploy.sh runs the brain suite
+# again inside the built image on the host, so a red build cannot ship.
+name: tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"   # matches backend/brain/Dockerfile
+          cache: pip
+      - run: pip install -r backend/brain/requirements.txt -r scripts/requirements.txt pytest
+      - run: python -m pytest -q backend/brain/tests scripts

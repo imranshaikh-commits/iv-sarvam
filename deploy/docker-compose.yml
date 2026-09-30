@@ -50,6 +50,9 @@ services:
 
   sarvam-brain:
     build: ../backend/brain
+    # Tagged by commit so deploy/rollback.sh can put an earlier build back.
+    # deploy/deploy.sh sets BRAIN_TAG; a plain `up --build` builds :latest.
+    image: sarvam-brain:${BRAIN_TAG:-latest}
     container_name: sarvam-brain
     restart: always
     env_file:

@@ -113,3 +113,4 @@ asset_kit.tar.gz
 # Local agent/plugin state
 .swarm/
 ruvector.db
+deploy/.deploy_history

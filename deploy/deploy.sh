@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Deploy the brain at the current origin/main, tagged by commit.
+#
+#   ~/iv-sarvam/deploy/deploy.sh
+#
+# 1. pull, 2. build sarvam-brain:<sha>, 3. run the test suite INSIDE that image
+# (a red build never ships), 4. swap the container, 5. wait for /v1/keepalive,
+# rolling back to the previous tag by itself if the new one never comes up.
+# Undo a good-but-wrong deploy with deploy/rollback.sh.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+git pull --ff-only
+TAG=$(git rev-parse --short HEAD)
+HIST=deploy/.deploy_history          # one tag per line, newest last (gitignored)
+# Whatever is running now, however it was built, stays available as :previous.
+PREV=""
+if CUR_ID=$(docker inspect sarvam-brain --format '{{.Image}}' 2>/dev/null); then
+  docker tag "$CUR_ID" sarvam-brain:previous && PREV=previous
+fi
+
+docker build -q -t "sarvam-brain:$TAG" backend/brain >/dev/null
+echo "built sarvam-brain:$TAG; running tests in the image"
+docker run --rm -v "$PWD/backend/brain/tests:/app/tests:ro" --entrypoint sh "sarvam-brain:$TAG" \
+  -c "pip install -q pytest >/dev/null 2>&1 && python -m pytest -q -p no:cacheprovider tests | tail -1"
+
+BRAIN_TAG=$TAG docker compose -f deploy/docker-compose.yml up -d --no-build sarvam-brain
+for _ in $(seq 1 45); do
+  if curl -fsS -m 5 http://127.0.0.1:8000/v1/keepalive >/dev/null 2>&1; then
+    echo "$TAG" >> "$HIST"
+    echo "deployed sarvam-brain:$TAG (previous: ${PREV:-none})"
+    # Keep the last five tagged images for rollback.
+    docker images sarvam-brain --format '{{.Tag}}' | grep -vE '^(latest|previous)$' | tail -n +6 \
+      | xargs -r -I{} docker rmi -f "sarvam-brain:{}" >/dev/null 2>&1 || true
+    exit 0
+  fi
+  sleep 2
+done
+echo "sarvam-brain:$TAG did not become healthy in 90 s"
+if [ -n "$PREV" ]; then
+  echo "rolling back to $PREV"
+  BRAIN_TAG=$PREV docker compose -f deploy/docker-compose.yml up -d --no-build sarvam-brain
+fi
+exit 1

@@ -2408,3 +2408,25 @@ def test_usage_ledger_sums_calls_inside_the_request_only():
     assert led == {"calls": 2, "prompt_tokens": 150, "completion_tokens": 25, "cost_usd": 0.012}
     # Outside any request there is no ledger, so recording is a no-op.
     document_engine.record_usage({"prompt_tokens": 1})
+
+
+def test_signed_in_user_is_stamped_on_the_proposal_row():
+    import asyncio, json as _json
+    import httpx
+    import supabase_client as sc
+    calls = []
+
+    def handler(req):
+        calls.append((req.method, req.url.path, _json.loads(req.content or b"{}")))
+        return httpx.Response(201, json=[{"id": "p1"}])
+
+    async def run(user):
+        sc.REQUEST_USER.set(user)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await sc.insert_generated_proposal(c, org_id="o", client_name="c",
+                                                      proposal_type="implementation")
+    assert asyncio.run(run("imran@example.test")) == "p1"
+    assert calls[-1][0] == "PATCH" and calls[-1][2] == {"created_by_email": "imran@example.test"}
+    calls.clear()
+    asyncio.run(run(None))                      # no header: no stamp write
+    assert [m for m, _, _ in calls] == ["POST"]

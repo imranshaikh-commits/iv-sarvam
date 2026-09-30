@@ -21,6 +21,7 @@ Design rules:
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 
@@ -83,6 +84,27 @@ def _table_url(table: str) -> str:
     return f"{SUPABASE_URL}/rest/v1/{table}"
 
 
+
+# Who is working (Sprint 3.5). Open WebUI forwards the signed-in user as
+# X-OpenWebUI-User-Email (ENABLE_FORWARD_USER_INFO_HEADERS). The created_by /
+# approved_by uuid columns point at Supabase auth users, which nobody signs in
+# as, so the email goes in *_by_email text columns (sarvam_019). Each stamp is
+# its own fail-soft write: a missing column or a hiccup loses the name, never
+# the proposal, session or approval.
+REQUEST_USER: contextvars.ContextVar = contextvars.ContextVar("request_user", default=None)
+
+
+async def _stamp_user(client: httpx.AsyncClient, table: str, row_id: str, column: str) -> None:
+    user = REQUEST_USER.get()
+    if not (user and row_id):
+        return
+    try:
+        resp = await client.patch(_table_url(table), headers=_headers(prefer_representation=False),
+                                  params={"id": f"eq.{row_id}"}, json={column: user}, timeout=30.0)
+        resp.raise_for_status()
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not record %s on %s: %s", column, table, _why(e))
+
 # --- intake_sessions --------------------------------------------------------
 
 async def create_intake_session(
@@ -113,6 +135,7 @@ async def create_intake_session(
         raise SupabaseError(f"could not create intake session: {e}") from e
     if not rows:
         raise SupabaseError("create_intake_session returned no row")
+    await _stamp_user(client, "intake_sessions", rows[0]["id"], "created_by_email")
     return rows[0]["id"]
 
 
@@ -272,6 +295,8 @@ async def insert_generated_proposal(
     except Exception as e:  # noqa: BLE001
         log.error("insert_generated_proposal failed: %s", _why(e))
         return None
+    if rows:
+        await _stamp_user(client, "generated_proposals", rows[0]["id"], "created_by_email")
     return rows[0]["id"] if rows else None
 
 
@@ -396,6 +421,8 @@ async def update_diagram(
     except Exception as e:  # noqa: BLE001
         log.error("update_diagram failed: %s", _why(e))
         return None
+    if rows and body.get("status") == "approved":
+        await _stamp_user(client, "architecture_diagrams", diagram_id, "approved_by_email")
     return rows[0] if rows else None
 
 

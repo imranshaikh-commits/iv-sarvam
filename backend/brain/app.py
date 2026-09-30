@@ -1993,7 +1993,9 @@ async def generate_proposal_from_chat(session_id: str | None,
             payload["generated_proposal_id"] = proposal_id
 
         try:
-            resp = await client.post(f"{_SELF_BASE}/v1/generate-proposal", json=payload)
+            user = supabase_client.REQUEST_USER.get()
+            resp = await client.post(f"{_SELF_BASE}/v1/generate-proposal", json=payload,
+                                     headers={_USER_HEADER: user} if user else None)
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:  # noqa: BLE001
@@ -2675,6 +2677,7 @@ async def generate_proposal_endpoint(request: Request):
     persisted to generated_proposals (fail-soft — persistence failure never
     blocks the download) and linked back to the intake session.
     """
+    supabase_client.REQUEST_USER.set(request.headers.get(_USER_HEADER) or None)
     body = await request.json()
     ledger = document_engine.start_ledger()
     rfp_text = (body.get("rfp_text") or "").strip()
@@ -3167,8 +3170,12 @@ async def keepalive_endpoint():
     )
 
 
+_USER_HEADER = "x-openwebui-user-email"
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    supabase_client.REQUEST_USER.set(request.headers.get(_USER_HEADER) or None)
     body = await request.json()
     messages = body.get("messages", [])
     stream = bool(body.get("stream", False))

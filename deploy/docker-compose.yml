@@ -40,6 +40,10 @@ services:
     environment:
       - "WEBUI_NAME=Shilpi AI - Inspirit Vision Proposal Architect"
       - "WEBUI_FAVICON_URL=/static/favicon.png"
+      # Sprint 3.5: send the signed-in user (X-OpenWebUI-User-Email etc.) to
+      # the brain, which records who created each proposal and approved each
+      # diagram.
+      - "ENABLE_FORWARD_USER_INFO_HEADERS=true"
     # Not published to the internet any more: colleagues reach Open WebUI
     # through Caddy over HTTPS (below). Loopback only, for an SSH-tunnel fallback.
     ports:

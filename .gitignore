@@ -109,3 +109,7 @@ asset_kit.tar.gz
 
 # Local agent-tool state (never commit)
 .claude-flow/
+
+# Local agent/plugin state
+.swarm/
+ruvector.db

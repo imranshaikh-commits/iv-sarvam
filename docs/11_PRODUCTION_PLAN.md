@@ -89,7 +89,7 @@ Goal: every security gate closed.
 
 Run budget: 0. Security work needs no paid runs.
 
-### Sprint 2: Prove it generalises (Mon 28 – Tue 29 Sep)
+### Sprint 2: Prove it generalises (Mon 28 – Tue 29 Sep; runs 2.1–2.5 moved after Sprint 3 on 30 Sep at Imran's call)
 
 Goal: the golden set passes; the 09-25 fixes are shown to be generic, not ESNAD-fitted.
 
@@ -103,7 +103,7 @@ Goal: the golden set passes; the 09-25 fixes are shown to be generic, not ESNAD-
 
 Run budget: 5 to 6.
 
-### Sprint 3: Run it like a service (Wed 30 Sep)
+### Sprint 3: Run it like a service (Wed 30 Sep) — built 30 Sep; 3.2/3.3 need one host step each
 
 Goal: it can be operated and recovered by someone other than Claude.
 

@@ -982,3 +982,24 @@ def test_plan_table_in_a_draft_gets_a_chart_under_it():
         "| Workstream | Phase | Start Week | End Week |\n|---|---|---|---|\n"
         "| WIAM | Design | 1 | 8 |\n| WIAM | Build | 9 | 20 |\n"))
     assert len(doc.tables) == 1 and len(doc.inline_shapes) == 1
+
+
+def test_compact_merges_fan_out_leaves_and_wraps_long_labels():
+    from diagram_engine import DiagramSpec, _compact
+    spec = DiagramSpec.model_validate({
+        "diagram_type": "architecture", "title": "t",
+        "nodes": [{"id": "idp", "label": "PingOne Advanced Identity Cloud (AM & CIAM)", "group": "IAM"},
+                  *[{"id": f"a{i}", "label": f"App {i}", "group": "Apps"} for i in range(4)],
+                  {"id": "siem", "label": "SIEM", "group": "Ops"}],
+        "edges": [*[{"source": "idp", "target": f"a{i}", "label": "SAML" if i % 2 else "OIDC"}
+                    for i in range(4)],
+                  {"source": "idp", "target": "siem", "label": "Syslog"}]})
+    out = _compact(spec)
+    ids = [n.id for n in out.nodes]
+    assert ids == ["idp", "a0", "siem"]
+    assert out.nodes[1].label.replace("\\n", " ") == "App 0 · App 1 · App 2 · App 3"
+    assert "\\n" in out.nodes[0].label                   # long label wrapped
+    assert [(e.target, e.label) for e in out.edges] == [("a0", "OIDC / SAML"), ("siem", "Syslog")]
+    assert len(spec.nodes) == 6                          # stored spec untouched
+    stack = spec.model_copy(update={"diagram_type": "stack"})
+    assert _compact(stack) is stack

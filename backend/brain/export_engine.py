@@ -51,8 +51,10 @@ _MEDIA_PREFIX = "word/media/"
 
 # Never shrink an image below this many pixels per inch at the size it is
 # printed in the document: lite compression cut ESNAD 09-27's diagrams from
-# 1800 px to 1080 px and made them unreadable.
-MIN_PRINT_DPI = 150
+# 1800 px to 1080 px and made them unreadable. 150 dpi (the document gate)
+# still left every diagram exactly at the line (ESNAD 09-28); lite keeps a
+# margin above it and accepts a file over 5 MB instead.
+MIN_PRINT_DPI = 200
 _EMU_PER_INCH = 914400
 
 

@@ -1989,7 +1989,7 @@ def test_saas_clause_names_the_saas_product_and_population_rule():
 def test_each_esnad_diagram_has_a_home_section():
     """ESNAD 09-24 sent Integration, PAM and IGA to a trailing section."""
     cases = {
-        ("stack", "ESNAD — Solution Stack"): "Why Ping Identity",
+        ("stack", "ESNAD — Solution Stack"): "Proposed Future IAM State for X",
         ("flow", "ESNAD — Privileged Access Management"): "Saviynt Solution Overview",
         ("flow", "ESNAD — Identity Governance"): "Access Certification",
         ("flow", "ESNAD — Identity Lifecycle"): "Proposed HRMS Integration and Joiner Workflow",
@@ -2360,3 +2360,35 @@ def test_matrix_reference_uses_capability_headings_and_word_variants():
         sections)
     assert refs["ILM-07"] == ("Solution Overview > Saviynt Solution Overview > "
                               "Joiner-Mover-Leaver Lifecycle Automation")
+
+
+def test_generated_diagram_yields_to_the_kit_picture_of_the_same_topic():
+    """ESNAD 09-28: three JML flows and three PAM flows in one document."""
+    sections = [{"assets": [{"id": "kit:saviynt_pam_flow.png"},
+                            {"id": "kit:saviynt_jml_iga_pam.png"}]}]
+    img = b"\x89PNG"
+    ds = [{"status": "approved", "image_bytes": img, "diagram_type": t, "title": f"X — {n}"}
+          for t, n in (("stack", "Solution Stack"), ("flow", "Privileged Access Management"),
+                       ("flow", "Identity Lifecycle"), ("flow", "Identity Governance"),
+                       ("architecture", "Solution Architecture"))]
+    kept = [d["title"] for d in document_engine._embeddable_diagrams(ds, sections)]
+    # No EIC logical picture in the kit, so the governance flow stays.
+    assert kept == ["X — Solution Stack", "X — Identity Governance", "X — Solution Architecture"]
+    # Without a kit every approved diagram is kept.
+    assert len(document_engine._embeddable_diagrams(ds)) == 5
+
+
+def test_second_structural_view_of_the_same_boxes_is_left_out():
+    arch = ["Nafath (National IdP)", "Active Directory / LDAP", "PingOne AIC", "Saviynt EIC",
+            "Taadeen Platform", "Bravo / Inspection Platform", "Enterprise SIEM"]
+    integ = ["Nafath National IdP", "Active Directory / LDAP", "PingOne AIC", "Saviynt EIC",
+             "Taadeen Platform", "Bravo / Inspection Platform", "Grafana"]
+    img = b"\x89PNG"
+    ds = [{"status": "approved", "image_bytes": img, "diagram_type": "architecture",
+           "title": "Architecture", "nodes": arch},
+          {"status": "approved", "image_bytes": img, "diagram_type": "component",
+           "title": "Integration", "nodes": integ},
+          {"status": "approved", "image_bytes": img, "diagram_type": "flow",
+           "title": "Joiner", "nodes": integ}]
+    kept = [d["title"] for d in document_engine._embeddable_diagrams(ds)]
+    assert kept == ["Architecture", "Joiner"]

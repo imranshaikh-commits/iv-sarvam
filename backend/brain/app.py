@@ -2773,6 +2773,7 @@ async def generate_proposal_endpoint(request: Request):
                     {"title": drow.get("title") or "Architecture Diagram",
                      "status": "approved", "image_bytes": image,
                      "diagram_type": drow.get("diagram_type"),
+                     "nodes": [n.label for n in spec.nodes],
                      "legend": diagram_engine.legend_for(spec)}
                 )
 

@@ -223,3 +223,14 @@ def test_partner_images_interleave_vendors_in_a_multi_vendor_deal():
     got = A.select_assets(lib, "solution_overview",
                           iam_vendors=["Ping Identity", "Saviynt"], limit=2)
     assert sorted(a["vendor"] for a in got) == ["Ping Identity", "Saviynt"]
+
+
+def test_one_kit_picture_per_topic_when_iga_and_pam_are_both_in_scope():
+    ctx = {"iam_vendor": "Saviynt", "domains": ["iga", "pam"], "is_saas": True}
+    files = [a["id"] for a in A.kit_for("solution_overview", ctx)]
+    assert "kit:saviynt_jml_iga_pam.png" in files
+    assert "kit:saviynt_jml_flow.png" not in files
+    assert "kit:saviynt_pam_e2e_flow.png" not in files
+    iga_only = [a["id"] for a in A.kit_for(
+        "solution_overview", {**ctx, "domains": ["iga"]})]
+    assert "kit:saviynt_jml_flow.png" in iga_only

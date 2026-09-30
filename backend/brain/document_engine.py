@@ -2082,17 +2082,61 @@ _IMAGE_MAX_W = Inches(4.5)
 _IMAGE_MAX_H = Inches(3.2)
 
 
-def _embeddable_diagrams(diagrams: Optional[list[dict]]) -> list[dict]:
-    """Diagrams that will actually be embedded: approved AND carrying an image.
+# A generated diagram whose topic a vendor kit picture already covers is left
+# out: ESNAD 09-28 printed three JML flows and three PAM flows, IV's kit
+# versions beside Shilpi's thinner redraws. (diagram topic, kit file marker)
+_KIT_COVERS: tuple[tuple[str, str], ...] = (
+    (r"privileged|\bpam\b", "_pam_"),
+    (r"governance|certification|\biga\b", "_eic_logical"),
+    (r"joiner|lifecycle|\bjml\b|hrms", "_jml_"),
+)
+_OVERLAP_TYPES = frozenset({"architecture", "component"})
+
+
+def _label_tokens(labels) -> set:
+    return {w for lab in labels or () for w in re.findall(r"[a-z0-9]{3,}", str(lab).lower())}
+
+
+def _is_duplicate(d: dict, kit_ids: set, kept: list[dict]) -> bool:
+    if d.get("diagram_type") == "stack":
+        return False  # the one-page stack is IV's lead picture; always kept
+    key = f"{d.get('diagram_type') or ''} {d.get('title') or ''}"
+    if any(re.search(pat, key, re.I) and any(mark in k for k in kit_ids)
+           for pat, mark in _KIT_COVERS):
+        return True
+    # Two structural views of the same boxes (ESNAD 09-28: "Integration" shared
+    # 85% of its labels with "Solution Architecture") print as one picture twice.
+    if d.get("diagram_type") in _OVERLAP_TYPES and d.get("nodes"):
+        mine = _label_tokens(d["nodes"])
+        for k in kept:
+            other = _label_tokens(k.get("nodes"))
+            if (k.get("diagram_type") in _OVERLAP_TYPES and mine and other
+                    and len(mine & other) / min(len(mine), len(other)) >= 0.7):
+                return True
+    return False
+
+
+def _embeddable_diagrams(diagrams: Optional[list[dict]],
+                         sections: Optional[list[dict]] = None) -> list[dict]:
+    """Diagrams that will actually be embedded: approved AND carrying an image,
+    minus duplicates of a kit picture or of another diagram.
 
     Single source of truth. The contents list previously re-implemented a looser
     version of this check and advertised a diagram section the assembler then
     declined to create.
     """
+    kit_ids = {str(a.get("id") or "") for s in sections or () for a in s.get("assets") or ()
+               if str(a.get("id") or "").startswith("kit:")}
     out: list[dict] = []
+    kept: list[dict] = []
     for d in diagrams or []:
         if (d.get("status") or "").strip() != "approved":
             continue
+        if _is_duplicate(d, kit_ids, kept):
+            log.info("diagram '%s' left out: duplicates a kit picture or another diagram",
+                     d.get("title"))
+            continue
+        kept.append(d)
         title = d.get("title") or "Architecture Diagram"
         image = d.get("image_bytes")
         path = d.get("image_path")
@@ -2114,7 +2158,7 @@ def _unplaced_diagrams(diagrams: Optional[list[dict]],
     same class of bug as the contents entry that once advertised a diagram
     section the assembler declined to create.
     """
-    embeddable = _embeddable_diagrams(diagrams)
+    embeddable = _embeddable_diagrams(diagrams, sections)
     if not embeddable:
         return []
     headings = [(sub.get("title") or "")
@@ -2242,7 +2286,9 @@ _DIAGRAM_PLACEMENT: tuple[tuple[str, str], ...] = (
     # {pam}/{iga}/{ciam}/{wiam} become the vendor that owns that domain in
     # THIS engagement (proposal_templates.engagement_domains), so a PAM diagram
     # lands under whichever vendor's overview covers PAM, for any vendor mix.
-    (r"\bstack\b", r"^Why\b"),
+    # The stack opens the proposed solution, as IV19 does (ESNAD 09-28 put it
+    # under "Why Ping Identity"). MSS has neither heading: trailing gallery.
+    (r"\bstack\b", r"Proposed Future IAM State|Proposed Target Architecture"),
     # Not the scope section's "Privileged Access Management (PAM)" heading.
     (r"privileged|\bpam\b", r"^{pam} Solution Overview|Privileged(?! Access Management \(PAM\))"),
     (r"governance|certification|\biga\b", r"Access Certification|^{iga} Solution Overview"),
@@ -2444,7 +2490,7 @@ def assemble_docx(
     # Diagrams are placed INSIDE the subsection that explains them, the way IV
     # does it. Whatever no subsection claims still gets the trailing gallery, so
     # an unmatched diagram is never silently dropped.
-    _inline_diagrams = _embeddable_diagrams(diagrams)
+    _inline_diagrams = _embeddable_diagrams(diagrams, sections)
     _placed_diagrams: set = set()
     _placed_assets: set = set()
 

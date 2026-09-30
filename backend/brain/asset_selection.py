@@ -249,6 +249,7 @@ def asset_summary(placed: dict[str, list[dict]]) -> str:
 #   the proposed vendor's first word); None = directly under the section title.
 # vendor: placed only when a proposed vendor's name contains this.
 # domains: placed only when ALL are in scope (and scope is known).
+# unless: NOT placed when all of these are in scope (a fuller picture covers it).
 # deployment: "saas" / "self" -- placed only for that deployment model.
 # near: regex on the model's own capability headings inside that subsection;
 #   the image sits under the first one that matches, not piled at the end
@@ -275,13 +276,16 @@ KIT: tuple[dict, ...] = (
     # Saviynt (Frost Radar 392 px and Gartner PAM 600 px withdrawn: too small
     # to print sharp)
     {"file": "saviynt_kuppingercole_iga.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "saviynt", "domains": ("iga",)},
-    {"file": "saviynt_cloud_platform.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "deployment": "saas", "near": r"Identity Governance|IGA|Platform"},
+    # One picture per topic (ESNAD 09-28 printed two JML flows and two PAM
+    # flows side by side): the IGA-only JML flow yields to the IGA+PAM one, and
+    # the second PAM flow slide is withdrawn.
     {"file": "saviynt_eic_logical.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga",), "near": r"Identity Governance|IGA"},
-    {"file": "saviynt_jml_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga",), "near": r"Joiner|Lifecycle"},
+    {"file": "saviynt_jml_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga",), "unless": ("pam",), "near": r"Joiner|Lifecycle"},
     {"file": "saviynt_jml_iga_pam.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga", "pam"), "near": r"Joiner|Lifecycle"},
     {"file": "saviynt_pam_hla.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",), "near": r"Privileged Access Management|\bPAM\b"},
     {"file": "saviynt_pam_architecture.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",), "near": r"Privileged Access Management|\bPAM\b"},
-    {"file": "saviynt_pam_e2e_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",), "near": r"Session|Just-in-Time"},
+    # IV shows the SaaS platform picture with the PAM technical architecture.
+    {"file": "saviynt_cloud_platform.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "deployment": "saas", "near": r"Privileged Access Management|\bPAM\b|Platform|Architecture"},
     {"file": "saviynt_pam_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("pam",), "near": r"Session|Just-in-Time"},
     {"file": "saviynt_identity_to_privileged_flow.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "saviynt", "domains": ("iga", "pam"), "near": r"Approval|Audit|Analytics"},
 )
@@ -304,6 +308,8 @@ def kit_for(section_id: str, context: dict) -> list[dict]:
             if not name:
                 continue
         if item.get("domains") and not set(item["domains"]) <= domains:
+            continue
+        if item.get("unless") and set(item["unless"]) <= domains:
             continue
         dep = item.get("deployment")
         if dep and (dep == "saas") != saas:

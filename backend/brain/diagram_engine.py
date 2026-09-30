@@ -28,6 +28,7 @@ import shutil
 import os
 import re
 import subprocess
+import textwrap
 from typing import Awaitable, Callable, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -889,6 +890,58 @@ D2_PNG_WIDTH = int(os.environ.get("SHILPI_D2_PNG_WIDTH", "1800"))
 DIAGRAM_RENDERER = os.environ.get("SHILPI_DIAGRAM_RENDERER", "auto")  # auto|d2|graphviz
 
 
+_WRAP_NODE, _WRAP_EDGE = 24, 20
+
+
+def _compact(spec: DiagramSpec) -> DiagramSpec:
+    """Fewer, narrower boxes so the text prints larger.
+
+    ESNAD 09-28's architecture diagram printed its labels at ~3.8 pt (IV's own
+    diagrams print at 5-7 pt): five application boxes side by side set the page
+    width, and one-line labels made every box wide. Leaves that hang off the
+    same source in the same zone become one box listing them, the way the
+    solution stack does, and long labels wrap. Measured on that diagram:
+    3.8 pt -> 4.9 pt. Render-time only; the stored spec is unchanged.
+    """
+    if spec.diagram_type == "stack":
+        return spec
+    outgoing = {e.source for e in spec.edges}
+    incoming: dict[str, list[DiagramEdge]] = {}
+    for e in spec.edges:
+        incoming.setdefault(e.target, []).append(e)
+    fans: dict[tuple, list[DiagramNode]] = {}
+    for n in spec.nodes:
+        into = incoming.get(n.id) or []
+        if n.id not in outgoing and len(into) == 1:
+            fans.setdefault((n.group, into[0].source), []).append(n)
+    merged: dict[str, str] = {}   # dropped id -> kept id
+    labels: dict[str, str] = {}
+    for ns in fans.values():
+        if len(ns) >= 3:
+            labels[ns[0].id] = " · ".join(n.label for n in ns)
+            merged.update({n.id: ns[0].id for n in ns[1:]})
+
+    def wrap(text, width):
+        return "\\n".join(textwrap.wrap(text, width)) if text and len(text) > width else text
+
+    nodes = [n.model_copy(update={"label": wrap(labels.get(n.id, n.label), _WRAP_NODE)})
+             for n in spec.nodes if n.id not in merged]
+    edges, seen = [], {}
+    for e in spec.edges:
+        tgt = merged.get(e.target, e.target)
+        prev = seen.get((e.source, tgt))
+        if prev is not None:   # a merged leaf's edge: fold its label into the kept one
+            if e.label and e.label not in (prev.label or ""):
+                prev.label = f"{prev.label} / {e.label}" if prev.label else e.label
+            continue
+        ne = e.model_copy(update={"target": tgt})
+        seen[(e.source, tgt)] = ne
+        edges.append(ne)
+    for e in edges:
+        e.label = wrap(e.label, _WRAP_EDGE)
+    return spec.model_copy(update={"nodes": nodes, "edges": edges})
+
+
 def render_spec(
     spec: DiagramSpec,
     fmt: Literal["png", "svg"] = "png",
@@ -903,6 +956,7 @@ def render_spec(
     """
     if fmt not in ("png", "svg"):
         fmt = "png"
+    spec = _compact(spec)
     choice = (renderer or DIAGRAM_RENDERER or "auto").lower()
 
     if choice in ("auto", "d2") and d2_available():

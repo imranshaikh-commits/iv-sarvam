@@ -94,6 +94,17 @@ def _table_url(table: str) -> str:
 REQUEST_USER: contextvars.ContextVar = contextvars.ContextVar("request_user", default=None)
 
 
+def _may_access(row: dict) -> bool:
+    """A session opened by one signed-in user is not readable by another
+    (audit 2026-10-12, finding 6). Session ids reach the brain inside chat
+    markers, which a user can edit, so the id alone proves nothing. Rows with
+    no recorded owner (created before sarvam_019, or with identity forwarding
+    off) stay readable: IV is one organisation and that is the prior behaviour.
+    ponytail: sharing a session between two colleagues needs an explicit grant."""
+    user, owner = REQUEST_USER.get(), (row or {}).get("created_by_email")
+    return not (user and owner and user.strip().lower() != owner.strip().lower())
+
+
 async def _stamp_user(client: httpx.AsyncClient, table: str, row_id: str, column: str) -> None:
     user = REQUEST_USER.get()
     if not (user and row_id):
@@ -153,7 +164,11 @@ async def get_intake_session(client: httpx.AsyncClient, session_id: str) -> dict
     except Exception as e:  # noqa: BLE001
         log.error("get_intake_session failed: %s", _why(e))
         return None
-    return rows[0] if rows else None
+    row = rows[0] if rows else None
+    if row and not _may_access(row):
+        log.warning("intake session %s refused: it belongs to another user", session_id)
+        return None
+    return row
 
 
 async def patch_intake_answers(
@@ -419,6 +434,22 @@ async def list_diagrams_for_proposal(
         return resp.json() or []
     except Exception as e:  # noqa: BLE001
         log.error("list_diagrams_for_proposal failed: %s", _why(e))
+        return []
+
+
+async def list_diagrams_for_session(client: httpx.AsyncClient, intake_session_id: str) -> list[dict]:
+    """Every diagram of an intake session, newest first. Fail-soft -> [].
+    The session is the authority for what was reviewed, not a proposal id
+    supplied by the caller."""
+    try:
+        resp = await client.get(
+            _table_url("architecture_diagrams"), headers=_headers(prefer_representation=False),
+            params={"intake_session_id": f"eq.{intake_session_id}", "select": "*",
+                    "order": "created_at.desc"}, timeout=30.0)
+        resp.raise_for_status()
+        return resp.json() or []
+    except Exception as e:  # noqa: BLE001
+        log.error("list_diagrams_for_session failed: %s", _why(e))
         return []
 
 

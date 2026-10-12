@@ -18,6 +18,7 @@ Endpoints:
 import asyncio
 import base64
 import functools
+import hmac
 import io
 import ipaddress
 import json
@@ -33,7 +34,7 @@ from typing import Literal, Optional
 
 import httpx
 import instructor
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field
@@ -110,7 +111,30 @@ COMPLIANCE_TRIGGER = "compliance matrix"
 # Structured extraction/classification uses the same hardcoded primary model.
 STRUCTURED_MODEL = PRIMARY_LLM_MODEL
 
-app = FastAPI(title="shilpi-brain")
+# Who may call this service (audit 2026-10-12, finding 6). The brain holds the
+# service-role database key, so anything that can reach it can read and write
+# everything. Open WebUI sends the API key of its OpenAI connection as a Bearer
+# token; set the same value as SHILPI_API_KEY and every route except the two
+# liveness probes requires it.
+SERVICE_KEY = os.environ.get("SHILPI_API_KEY", "")
+_OPEN_PATHS = frozenset({"/health", "/v1/keepalive"})
+# Generation without an intake session (no discovery, no reviewed architecture)
+# is for evaluation harnesses only and must be switched on deliberately.
+ALLOW_DIRECT_GENERATE = os.environ.get("SHILPI_ALLOW_DIRECT_GENERATE") == "1"
+
+
+async def _require_service_key(request: Request) -> None:
+    if not SERVICE_KEY or request.url.path in _OPEN_PATHS:
+        return
+    supplied = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(supplied.encode(), SERVICE_KEY.encode()):
+        raise HTTPException(status_code=401, detail="missing or invalid service key")
+
+
+app = FastAPI(title="shilpi-brain", dependencies=[Depends(_require_service_key)])
+if not SERVICE_KEY:
+    log.warning("SHILPI_API_KEY is not set: the brain accepts unauthenticated callers "
+                "on its network. Set it here and as the API key of Open WebUI's connection.")
 
 # An override must never be silent — that was the whole point of hardcoding
 # these. /health reports the same two values for post-deploy verification.
@@ -2075,8 +2099,16 @@ async def generate_proposal_from_chat(session_id: str | None,
 
         try:
             user = supabase_client.REQUEST_USER.get()
+            headers = {_USER_HEADER: user} if user else {}
+            if SERVICE_KEY:
+                headers["Authorization"] = f"Bearer {SERVICE_KEY}"
             resp = await client.post(f"{_SELF_BASE}/v1/generate-proposal", json=payload,
-                                     headers={_USER_HEADER: user} if user else None)
+                                     headers=headers or None)
+            if resp.status_code in (400, 409):
+                # A refused precondition (architecture not approved, a draft
+                # already running) is the user's to act on: say what it is.
+                why = (resp.json() or {}).get("error") or "a precondition was not met"
+                return f"I haven't started drafting: {why}"
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:  # noqa: BLE001
@@ -2801,6 +2833,14 @@ async def generate_proposal_endpoint(request: Request):
     return_signed_urls = bool(body.get("return_signed_urls", False))
     export_requested = lite or include_pdf or return_signed_urls
 
+    # Generation is the end of a workflow, not a free-standing call (audit
+    # 2026-10-12, finding 4): it needs the intake session whose discovery and
+    # architecture review it is drafting from.
+    if not intake_session_id and not ALLOW_DIRECT_GENERATE:
+        return JSONResponse(
+            {"error": "generation needs an intake_session_id: discovery and architecture "
+                      "review come first"}, status_code=400)
+
     # Load intake answers and backfill any core field the caller omitted.
     intake_answers: dict = {}
     if intake_session_id:
@@ -2864,11 +2904,24 @@ async def generate_proposal_endpoint(request: Request):
     # `dot` binary just skips the embed, never breaks generation).
     embed_diagrams: list[dict] = []
     embed_proposal_id = (body.get("generated_proposal_id") or "").strip() or None
-    if embed_proposal_id:
-        async with httpx.AsyncClient() as dclient:
+    diagram_rows: list[dict] = []
+    async with httpx.AsyncClient() as dclient:
+        if intake_session_id:
+            # The SESSION's diagrams are the authority. A proposal id in the
+            # request used to select what was embedded and was never checked.
+            diagram_rows = await supabase_client.list_diagrams_for_session(dclient, intake_session_id)
+        elif embed_proposal_id:
             diagram_rows = await supabase_client.list_diagrams_for_proposal(dclient, embed_proposal_id)
-        # Only the newest version of each diagram, and only if THAT one is approved.
-        diagram_rows, _ = diagram_engine.current_revisions(diagram_rows)
+    # Only the newest version of each diagram, and only if THAT one is approved.
+    diagram_rows, _ = diagram_engine.current_revisions(diagram_rows)
+    pending = [d.get("title") or "a diagram" for d in diagram_rows
+               if (d.get("status") or "") in ("draft", "needs_review")]
+    if pending and intake_session_id:
+        return JSONResponse(
+            {"error": f"the architecture is not approved yet: {len(pending)} diagram(s) "
+                      f"still await review ({', '.join(pending)}). Approve or regenerate "
+                      f"them, then draft."}, status_code=409)
+    if diagram_rows:
         for drow in diagram_rows:
             if (drow.get("status") or "") != "approved":
                 continue

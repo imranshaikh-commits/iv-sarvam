@@ -286,9 +286,17 @@ async def _fake_insert(*args, **kwargs):
     return "prop-123"
 
 
-def _patch_common(monkeypatch):
+async def _fake_set_usage(*args, **kwargs):
+    return True
+
+
+def _patch_common(monkeypatch, direct=True):
     monkeypatch.setattr(app_module, "generate_proposal", _fake_generate_proposal)
     monkeypatch.setattr(app_module.supabase_client, "insert_generated_proposal", _fake_insert)
+    monkeypatch.setattr(app_module.supabase_client, "set_proposal_usage", _fake_set_usage)
+    # These tests exercise the export step alone, with no intake session: the
+    # privileged evaluation mode, switched on explicitly.
+    monkeypatch.setattr(app_module, "ALLOW_DIRECT_GENERATE", direct)
 
 
 def _base_body():
@@ -362,3 +370,79 @@ if __name__ == "__main__":
     import pytest
 
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-10-12, findings 4 and 6: generation is the end of a workflow, and
+# the service knows who is calling.
+# ---------------------------------------------------------------------------
+
+def test_generation_without_an_intake_session_is_refused(monkeypatch):
+    _patch_common(monkeypatch, direct=False)
+    with TestClient(app_module.app) as tc:
+        resp = tc.post("/v1/generate-proposal", json=_base_body())
+    assert resp.status_code == 400 and "intake_session_id" in resp.json()["error"]
+
+
+def _session_with_diagrams(monkeypatch, rows):
+    async def fake_session(client, sid):
+        return {"id": sid, "answers": {}, "client_name": "Test Client",
+                "proposal_type": "implementation"}
+
+    async def fake_diagrams(client, sid):
+        return rows
+
+    async def fake_link(*a, **k):
+        return None
+    monkeypatch.setattr(app_module.supabase_client, "get_intake_session", fake_session)
+    monkeypatch.setattr(app_module.supabase_client, "list_diagrams_for_session", fake_diagrams)
+    monkeypatch.setattr(app_module.supabase_client, "link_intake_to_proposal", fake_link)
+
+
+def test_generation_is_refused_while_a_diagram_awaits_review(monkeypatch):
+    _patch_common(monkeypatch, direct=False)
+    _session_with_diagrams(monkeypatch, [
+        {"id": "d2", "title": "X — Solution", "status": "needs_review", "spec_json": {}},
+        {"id": "d1", "title": "X — Solution", "status": "approved", "spec_json": {}}])
+    with TestClient(app_module.app) as tc:
+        resp = tc.post("/v1/generate-proposal", json={**_base_body(), "intake_session_id": "s1"})
+    # The older approved version does not make the newer, unreviewed one acceptable.
+    assert resp.status_code == 409 and "X — Solution" in resp.json()["error"]
+
+
+def test_generation_proceeds_from_a_reviewed_session(monkeypatch):
+    _patch_common(monkeypatch, direct=False)
+    _session_with_diagrams(monkeypatch, [])
+    with TestClient(app_module.app) as tc:
+        resp = tc.post("/v1/generate-proposal", json={**_base_body(), "intake_session_id": "s1"})
+    assert resp.status_code == 200
+
+
+def test_service_key_is_required_when_configured(monkeypatch):
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(app_module, "SERVICE_KEY", "s3cret")
+    with TestClient(app_module.app) as tc:
+        assert tc.post("/v1/generate-proposal", json=_base_body()).status_code == 401
+        assert tc.post("/v1/generate-proposal", json=_base_body(),
+                       headers={"Authorization": "Bearer wrong"}).status_code == 401
+        assert tc.post("/v1/generate-proposal", json=_base_body(),
+                       headers={"Authorization": "Bearer s3cret"}).status_code == 200
+        assert tc.get("/health").status_code == 200          # liveness stays open
+
+
+def test_a_session_opened_by_someone_else_reads_as_not_found():
+    import asyncio
+    import httpx
+    import supabase_client as sc
+
+    def handler(req):
+        return httpx.Response(200, json=[{"id": "s1", "created_by_email": "alice@iv.test",
+                                          "answers": {"client_name": "Secret"}}])
+
+    async def read(user):
+        sc.REQUEST_USER.set(user)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await sc.get_intake_session(c, "s1")
+    assert asyncio.run(read("bob@iv.test")) is None
+    assert asyncio.run(read("Alice@IV.test"))["id"] == "s1"
+    assert asyncio.run(read(None))["id"] == "s1"            # no identity forwarded: prior behaviour

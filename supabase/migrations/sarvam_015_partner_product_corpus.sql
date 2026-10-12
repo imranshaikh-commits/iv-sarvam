@@ -62,7 +62,12 @@ create table if not exists public.partner_product_chunks (
   heading      text,
   text         text not null,
   word_count   integer not null default 0,
-  embedding    vector,
+  -- Corrected in place 2026-10-12 (deep audit F43). This said `vector` with no
+  -- dimension, and the HNSW index below then fails on a clean database
+  -- ("column does not have dimensions"). Production's column, created by
+  -- hand before this file existed, is vector(1536): the file now says what
+  -- is live. Production never ran this file, so nothing there changes.
+  embedding    vector(1536),
   created_at   timestamptz not null default now()
 );
 

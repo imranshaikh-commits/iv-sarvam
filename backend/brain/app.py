@@ -2145,6 +2145,15 @@ async def generate_proposal_from_chat(session_id: str | None,
         lines += ["", f"**Compliance matrix:** {len(confirm)} requirement(s) need a "
                       f"bid-team check before submission (no full IV precedent, or no "
                       f"section of this proposal addresses them): {', '.join(confirm)}."]
+    # How much of the matrix rests on no IV precedent at all. Those rows read
+    # "Compliant, subject to confirmation" only because a section of this
+    # proposal mentions the topic, which proves nothing about the requirement.
+    no_precedent = ((data or {}).get("compliance_breakdown") or {}).get("missing") or {}
+    if no_precedent.get("with_reference"):
+        lines += ["", f"**No IV precedent:** {no_precedent['with_reference']} of "
+                      f"{no_precedent.get('rows', 0)} requirement(s) with no IV precedent "
+                      f"are answered \"Compliant, subject to confirmation\" because a "
+                      f"section of this proposal covers the topic. Check each one."]
     unassessed = (data or {}).get("compliance_unassessed") or 0
     if unassessed:
         lines += ["", f"**Incomplete compliance check:** {unassessed} requirement(s) were "
@@ -3090,6 +3099,7 @@ async def _generate_proposal(request: Request, body: dict):
         return_signed_urls=return_signed_urls,
         compliance_to_confirm=result.get("compliance_to_confirm") or [],
         compliance_unassessed=result.get("compliance_unassessed") or 0,
+        compliance_breakdown=result.get("compliance_breakdown") or {},
     )
 
 
@@ -3103,6 +3113,7 @@ async def _build_export_response(
     return_signed_urls: bool,
     compliance_to_confirm: list | None = None,
     compliance_unassessed: int = 0,
+    compliance_breakdown: dict | None = None,
 ) -> JSONResponse:
     """Apply the opt-in export steps and return JSON export metadata.
 
@@ -3138,6 +3149,8 @@ async def _build_export_response(
         # "confirmed during Discovery" or with no section of this proposal behind them.
         "compliance_to_confirm": compliance_to_confirm or [],
         "compliance_unassessed": compliance_unassessed,
+        # {status: {"rows", "with_reference"}}: what the matrix wording rests on.
+        "compliance_breakdown": compliance_breakdown or {},
     }
 
     if return_signed_urls:

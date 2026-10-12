@@ -105,3 +105,28 @@ def test_size_gates_scale_to_a_small_baseline():
     size = [g for g in S.gates(m, m, {}) if g[0].startswith(
         ("prose_words", "table_words", "tables", "images", "exec_summary"))]
     assert size and all(ok for _, ok, _ in size), size
+
+
+def test_the_compliance_matrix_is_counted_apart_from_the_tbc_gate():
+    """Deep audit F08: an honest matrix says "To be confirmed" on every row
+    nobody judged. Counting those cells in the `tbc <= 25` gate would fail a
+    run for telling the truth, so the matrix is reported on its own."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = f"{tmp}/a.docx"
+        _doc(p)
+        d = Document(p)
+        rows = [("Req", "Requirement", "Response", "Proposal Reference")]
+        rows += [(f"R-{i}", "Session recording", "To be confirmed", "-") for i in range(30)]
+        rows += [("R-30", "SSO", "Compliant", "Solution > SSO"),
+                 ("R-31", "MFA", "Compliant, subject to confirmation during Discovery",
+                  "Solution > MFA")]
+        t = d.add_table(rows=len(rows), cols=4)
+        for r, cells in enumerate(rows):
+            for c, text in enumerate(cells):
+                t.rows[r].cells[c].text = text
+        d.save(p)
+        m = S.measure(p)
+    assert m["tbc"] == 1                                   # the "Price" line, as before
+    assert (m["matrix_rows"], m["matrix_tbc"], m["matrix_compliant"],
+            m["matrix_subject"]) == (32, 30, 1, 1)
+    assert any(g == "tbc <= 25" and ok for g, ok, _ in S.gates(m, None, {}))

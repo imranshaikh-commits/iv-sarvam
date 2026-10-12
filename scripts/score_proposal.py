@@ -14,7 +14,8 @@ WHAT IT MEASURES
 ----------------
 Size and shape: prose words, table words, tables, images, headings per level,
 executive-summary words. Hygiene: [SME REVIEW] markers, "To be confirmed"/TBC
-cells, degenerate paragraphs (document_qa.is_degenerate), the most-repeated
+cells (the compliance matrix is counted separately, as matrix_*, and is not
+part of the tbc gate), degenerate paragraphs (document_qa.is_degenerate), the most-repeated
 figures (ESNAD 09-25 said "5,000" 57 times; IV said it 4). Correctness hooks
 from an optional deal config: other clients' names (leaks), systems that must
 be named, terms that must not appear (invented systems). Gantt: a chart
@@ -84,7 +85,6 @@ def measure(path: str) -> dict:
             rows = el.findall(qn("w:tr"))
             cells = [[_text(c).strip() for c in r.findall(qn("w:tc"))] for r in rows]
             m["table_words"] += sum(len(c.split()) for r in cells for c in r)
-            m["tbc"] += sum(1 for r in cells for c in r if _TBC_RE.search(c))
             table_text.extend(c for r in cells for c in r)
             head = " ".join(cells[0]).lower() if cells else ""
             last_table_weeks = "start week" in head and "end week" in head
@@ -92,6 +92,17 @@ def measure(path: str) -> dict:
                 # The corpus grading must never reach the client (09-27: 30 "Partial").
                 m["matrix_self_downgrades"] += sum(
                     1 for r in cells[1:] for c in r if c.strip().lower() in ("partial", "missing"))
+                # The matrix is counted on its own, outside the `tbc` gate: a row
+                # nobody judged SHOULD say "To be confirmed", and a gate that
+                # punished that would reward overstating compliance.
+                for r in cells[1:]:
+                    answer = " ".join(r[2:3]).strip().lower()
+                    m["matrix_rows"] += 1
+                    m["matrix_tbc"] += 1 if _TBC_RE.search(answer) else 0
+                    m["matrix_compliant"] += 1 if answer == "compliant" else 0
+                    m["matrix_subject"] += 1 if answer.startswith("compliant,") else 0
+                continue
+            m["tbc"] += sum(1 for r in cells for c in r if _TBC_RE.search(c))
             continue
         if el.tag != qn("w:p"):
             continue
@@ -216,7 +227,8 @@ def main(argv=None) -> int:
     else:
         print(f"{Path(a.docx).name}")
         for k in ("prose_words", "table_words", "tables", "images", "blurry_images",
-                  "exec_summary_words", "sme", "tbc", "degenerate", "gantt_charts"):
+                  "exec_summary_words", "sme", "tbc", "degenerate", "gantt_charts",
+                  "matrix_rows", "matrix_compliant", "matrix_subject", "matrix_tbc"):
             print(f"  {k:20s} {public.get(k, 0):>7}" + (f"   IV {base.get(k, 0)}" if base else ""))
         print(f"  {'headings':20s} {public['headings']}" + (f"   IV {base['headings']}" if base else ""))
         for g, p, d in result:

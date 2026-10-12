@@ -2596,3 +2596,29 @@ def test_stripped_review_asides_are_counted_per_section_not_lost():
     assert meta["stripped_asides"] == 2 * len(calls) > 0
     assert result["stripped_asides"] == meta["stripped_asides"]
     assert "needs SME confirmation" not in result["draft_markdown"]      # still stripped
+
+
+def test_a_requirement_nobody_judged_is_never_printed_as_compliant():
+    """Deep audit F08: a keyword-matched section reference was enough to print
+    "Compliant, subject to confirmation" on a row whose status is needs-human,
+    which includes the rows past the cost cap that were never assessed at all."""
+    sections = [{"id": "s", "title": "Solution Overview", "subsections": [
+        {"title": "Privileged Session Management and Keystroke Recording",
+         "content": "Sessions are recorded with keystroke logging."}]}]
+    text = "Privileged session recording with keystroke logging"
+    entries = [_E("PAM-01", text, "needs-human"), _E("PAM-02", text, "partial"),
+               _E("PAM-03", text, "covered"), _E("PAM-04", text, "missing"),
+               _E("X-01", "Quantum-safe cryptographic agility", "missing")]
+    refs = document_engine.requirement_references(entries, sections)
+    assert refs["PAM-01"] and refs["PAM-04"] and refs["X-01"] is None
+    md, confirm = document_engine.render_client_matrix(entries, refs)
+    assert f"| PAM-01 | {text} | To be confirmed |" in md
+    assert f"| PAM-02 | {text} | Compliant, subject to confirmation during Discovery |" in md
+    assert f"| PAM-03 | {text} | Compliant |" in md
+    assert confirm == ["PAM-01", "PAM-02", "PAM-04", "X-01"]
+    # What the wording rests on, for the bid team and for measuring a run.
+    assert document_engine.matrix_breakdown(entries, refs) == {
+        "needs-human": {"rows": 1, "with_reference": 1},
+        "partial": {"rows": 1, "with_reference": 1},
+        "covered": {"rows": 1, "with_reference": 1},
+        "missing": {"rows": 2, "with_reference": 1}}

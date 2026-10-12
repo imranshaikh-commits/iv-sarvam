@@ -511,3 +511,49 @@ def test_a_call_with_no_cost_is_recorded_as_unpriced_never_as_zero(monkeypatch):
     document_engine.record_usage({"prompt_tokens": 1})
     assert led["cost_usd"] == 0.25 and led["unpriced_calls"] == 1 and led["calls"] == 3
     assert "unpriced" in document_engine.cost_text(led)
+
+
+def test_the_matrix_breakdown_travels_from_drafting_to_the_chat_reply(monkeypatch):
+    """Deep audit F08: how many matrix rows rest on no IV precedent has to be
+    seen on a run before the wording for them is chosen. Caller-side check:
+    the count must leave generate_proposal, the endpoint and the chat reply."""
+    import asyncio
+    breakdown = {"covered": {"rows": 20, "with_reference": 18},
+                 "missing": {"rows": 10, "with_reference": 9}}
+
+    async def generate_with_breakdown(client, **kwargs):
+        return {**await _fake_generate_proposal(client, **kwargs),
+                "compliance_breakdown": breakdown}
+
+    async def fake_upload(client, path, data, content_type):
+        return path
+
+    async def fake_sign(client, path, expires_in=3600):
+        return "https://example.supabase.co/x"
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(app_module, "generate_proposal", generate_with_breakdown)
+    monkeypatch.setattr(app_module.supabase_client, "upload_generated_draft", fake_upload)
+    monkeypatch.setattr(app_module.supabase_client, "create_signed_url", fake_sign)
+    with TestClient(app_module.app) as tc:
+        data = tc.post("/v1/generate-proposal",
+                       json={**_base_body(), "return_signed_urls": True}).json()
+    assert data["compliance_breakdown"] == breakdown
+
+    # ...and the chat reply built from that JSON says it in words.
+    async def fake_session(client, sid):
+        return {"answers": {"client_name": "Test Client", "proposal_type": "implementation",
+                            "rfp_text": "x"}}
+
+    class _Resp:
+        status_code = 200
+        def raise_for_status(self): return None
+        def json(self): return data
+
+    async def fake_post(self, url, **kwargs):
+        return _Resp()
+
+    monkeypatch.setattr(app_module.supabase_client, "get_intake_session", fake_session)
+    monkeypatch.setattr(app_module.httpx.AsyncClient, "post", fake_post)
+    reply = asyncio.run(app_module.generate_proposal_from_chat("sess-1", "prop-1"))
+    assert "9 of 10" in reply and "no IV precedent" in reply

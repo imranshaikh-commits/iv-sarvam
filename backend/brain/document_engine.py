@@ -415,17 +415,25 @@ RESPONSE_TBC = "To be confirmed"
 def render_client_matrix(entries, refs: dict) -> tuple[str, list[str]]:
     """(markdown, requirement ids the bid team must confirm before submission).
 
-    covered + a section reference  -> Compliant
-    anything else with a reference -> Compliant, subject to confirmation ...
-    no section addresses it        -> To be confirmed
-    Every row that is not plainly Compliant is on the to-confirm list."""
+    covered + a section reference            -> Compliant
+    partial or missing + a section reference -> Compliant, subject to confirmation ...
+    not judged (needs-human), whatever it references -> To be confirmed
+    no section addresses it                  -> To be confirmed
+    Every row that is not plainly Compliant is on the to-confirm list.
+
+    needs-human means nobody assessed the requirement: the classifier declined,
+    failed, or the row was past the cost cap. A keyword-matched section
+    reference used to be enough to print "Compliant, subject to ..." on those
+    (audit F08). `missing` with a reference keeps the conditional wording for
+    now: the status grades IV's past-proposal precedent, not capability, and
+    how many rows that is must be seen on a run first (matrix_breakdown)."""
     rows = ["Compliance Matrix", "",
             "| Req | Requirement | Response | Proposal Reference |", "|---|---|---|---|"]
     to_confirm = []
     for e in entries:
         rid = getattr(e, "requirement_id", "")
         ref = refs.get(rid)
-        if not ref:
+        if not ref or getattr(e, "status", "") == "needs-human":
             response = RESPONSE_TBC
         elif getattr(e, "status", "") == "covered":
             response = RESPONSE_COMPLIANT
@@ -436,6 +444,18 @@ def render_client_matrix(entries, refs: dict) -> tuple[str, list[str]]:
         text = (getattr(e, "requirement_text", "") or "").replace("|", "/").replace("\n", " ").strip()
         rows.append(f"| {rid} | {text} | {response} | {ref or '-'} |")
     return "\n".join(rows), to_confirm
+
+
+def matrix_breakdown(entries, refs: dict) -> dict:
+    """{status: {"rows": n, "with_reference": n}} for a compliance matrix: what
+    the client-facing wording rests on. For the bid team, never the document."""
+    out: dict[str, dict[str, int]] = {}
+    for e in entries:
+        row = out.setdefault(getattr(e, "status", "") or "unknown",
+                             {"rows": 0, "with_reference": 0})
+        row["rows"] += 1
+        row["with_reference"] += 1 if refs.get(getattr(e, "requirement_id", "")) else 0
+    return out
 
 
 # Vendor -> (its SaaS platform, its self-managed products). ESNAD 09-24 named
@@ -3144,6 +3164,7 @@ async def generate_proposal(
     compliance_markdown: Optional[str] = None
     compliance_to_confirm: list[str] = []
     compliance_unassessed = 0
+    compliance_breakdown: dict = {}
     want_compliance = include_compliance_matrix or (
         sections is not None and COMPLIANCE_SECTION_ID in {str(s).strip().lower() for s in sections}
     )
@@ -3180,8 +3201,12 @@ async def generate_proposal(
                 client, rfp_text, _extracted_reqs, top_k)
             compliance_unassessed = int(getattr(matrix, "unassessed", 0) or 0)
             if getattr(matrix, "entries", None):
+                _refs = requirement_references(matrix.entries, list(drafted))
                 compliance_markdown, compliance_to_confirm = render_client_matrix(
-                    matrix.entries, requirement_references(matrix.entries, list(drafted)))
+                    matrix.entries, _refs)
+                compliance_breakdown = matrix_breakdown(matrix.entries, _refs)
+                log.info("compliance matrix by status (rows, with a section "
+                         "reference): %s", compliance_breakdown)
             else:
                 compliance_markdown = render_matrix_markdown_fn(matrix)
         except Exception as e:
@@ -3261,6 +3286,7 @@ async def generate_proposal(
         "included_compliance_matrix": compliance_markdown is not None,
         "compliance_to_confirm": compliance_to_confirm,
         "compliance_unassessed": compliance_unassessed,
+        "compliance_breakdown": compliance_breakdown,
         "stripped_asides": stripped_asides,
         "proposal_depth": tier.name,
         "included_appendices": tier.include_appendices,

@@ -39,7 +39,10 @@ RUN set -eux; \
     else echo "no d2 build for $arch - Graphviz fallback only"; fi
 COPY requirements.txt constraints.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt
-COPY app.py asset_selection.py rfp_intake.py scope_filter.py proposal_templates.py document_engine.py intake_template.py supabase_client.py branding.py diagram_engine.py export_engine.py chat_state.py document_qa.py .
+# Every module, by glob. This was a hand-kept list, and a module missing from
+# it crash-looped the container on import: the project's most repeated mistake.
+# tests/ is a directory, so it is not matched.
+COPY *.py ./
 COPY assets/ ./assets/
 EXPOSE 8000
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

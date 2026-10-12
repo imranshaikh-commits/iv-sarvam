@@ -68,8 +68,9 @@ available, `get_project` on ref `jthrjmiulefmyrqtwsnz` should report
 - Confirm which of the open items in `03_CURRENT_STATE.md` you are addressing.
 - If you are adding a parameter, plan the test that asserts the **caller**
   passes it — not just that the function accepts it.
-- If you are adding a new `.py` module under `backend/brain/`, add it to the
-  `Dockerfile` COPY allowlist in the same change.
+- A new `.py` module under `backend/brain/` is copied into the image by
+  itself (`COPY *.py`). A new directory or data file is not: add it to the
+  `Dockerfile` in the same change.
 
 ## Before saying anything is done
 

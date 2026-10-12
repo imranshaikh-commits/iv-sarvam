@@ -68,8 +68,10 @@ python -m pytest -q backend/brain/tests scripts
 
 ## Conventions and constraints
 
-- **New `.py` module → add it to `backend/brain/Dockerfile`'s COPY line**,
-  or the container crash-loops on import. The single most-repeated mistake
+- **A new `.py` module in `backend/brain/` ships by itself** (the Dockerfile
+  copies `*.py`). A new directory or data file does not: add it to
+  `backend/brain/Dockerfile`, or the container crash-loops on import. The
+  hand-kept module list this replaced was the single most-repeated mistake
   in this project's history.
 - **A new parameter needs a test asserting the CALLER passes it**, not just
   that the function accepts it. "Built but never wired" — a mechanism

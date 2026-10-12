@@ -110,9 +110,10 @@ the pushed commit — not against its own working copy.
 
 ## Gotchas that have bitten before
 
-- **Dockerfile COPY allowlist.** `backend/brain/Dockerfile` lists source files
-  explicitly. A new `.py` module not added there is missing at runtime and the
-  container crash-loops. Tests are not copied into the image.
+- **Dockerfile COPY.** `backend/brain/Dockerfile` copies every `*.py` in that
+  folder (since 2026-10-12; it used to list them by hand, and a module missing
+  from the list crash-looped the container). A new directory or data file must
+  still be added. Tests are not copied into the image.
 - **Env var changes need a container restart**, not just a rebuild of code:
   `docker compose up -d sarvam-brain` after editing `sarvam.env`.
 - **Angle-bracket placeholders get pasted literally.** Writing

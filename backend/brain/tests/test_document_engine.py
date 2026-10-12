@@ -2437,3 +2437,24 @@ def test_signed_in_user_is_stamped_on_the_proposal_row():
     calls.clear()
     asyncio.run(run(None))                      # no header: no stamp write
     assert [m for m, _, _ in calls] == ["POST"]
+
+
+def test_answers_are_merged_in_one_database_call():
+    """Audit 2026-10-12 finding 9: read-merge-write lost a concurrent answer."""
+    import asyncio, json as _json
+    import httpx
+    import supabase_client as sc
+    calls = []
+
+    def handler(req):
+        calls.append((req.method, req.url.path, _json.loads(req.content or b"{}")))
+        return httpx.Response(200, json=[{"id": "s1", "answers": {"a": 1, "b": 2}}])
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await sc.patch_intake_answers(c, "s1", {"b": 2})
+    row = asyncio.run(run())
+    assert row["answers"] == {"a": 1, "b": 2}
+    # One POST to the merge function: no read of the old object, no whole-object write.
+    assert [(m, p.rsplit("/", 1)[-1]) for m, p, _ in calls] == [("POST", "merge_intake_answers")]
+    assert calls[0][2] == {"p_session": "s1", "p_partial": {"b": 2}}

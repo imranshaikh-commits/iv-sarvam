@@ -161,10 +161,32 @@ async def patch_intake_answers(
 ) -> dict | None:
     """Merge answers_partial into the stored answers jsonb. Fail-soft -> None.
 
-    Read-merge-write: PostgREST cannot deep-merge jsonb in a single PATCH, so we
-    load the current answers, shallow-merge the partial, and write back. Also
-    keeps the denormalised proposal_type/client_name/iam_vendor columns in sync
-    when those keys are present in the partial."""
+    Atomic: one UPDATE in the database (merge_intake_answers, sarvam_020), which
+    also keeps the denormalised proposal_type/client_name/iam_vendor columns in
+    sync. It used to be read-merge-write here, and two concurrent saves each
+    read the old object, so the later write dropped the other's answer."""
+    try:
+        resp = await client.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/merge_intake_answers", headers=_headers(),
+            json={"p_session": session_id, "p_partial": answers_partial or {}}, timeout=30.0)
+        if resp.status_code == 404:
+            # The function is not in this database yet (sarvam_020 not applied).
+            log.warning("merge_intake_answers missing; using the non-atomic merge. "
+                        "Apply supabase/migrations/sarvam_020_atomic_answer_merge.sql")
+            return await _patch_intake_answers_legacy(client, session_id, answers_partial)
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as e:  # noqa: BLE001
+        log.error("patch_intake_answers failed: %s", _why(e))
+        return None
+    return rows[0] if rows else None
+
+
+async def _patch_intake_answers_legacy(
+    client: httpx.AsyncClient, session_id: str, answers_partial: dict
+) -> dict | None:
+    """Read-merge-write. NOT safe under concurrent saves; only for a database
+    that predates sarvam_020."""
     current = await get_intake_session(client, session_id)
     if current is None:
         return None

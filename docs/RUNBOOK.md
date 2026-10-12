@@ -16,8 +16,22 @@ The repo lives at `~/iv-sarvam`; secrets live in `~/iv-sarvam/scripts/sarvam.env
 | Models | OpenRouter | key `OPENROUTER_API_KEY` in `sarvam.env` |
 | Backups | `~/sarvam-backups` and S3 `iv-sarvam-backups-430689518268` | 30-day retention in S3 |
 
-Scheduled jobs (`crontab -l`): 00:54 keepalive, 02:15 table backup, Sunday
-02:45 backup including proposal chunks, 03:15 sync to S3 (all UTC).
+Scheduled jobs (`crontab -l`, all UTC): 00:54 keepalive, 02:15 table backup,
+02:20 Open WebUI volume, Sunday 02:45 backup including proposal chunks and
+the Storage buckets, 03:15 sync of everything to S3.
+
+## What a full recovery needs
+
+| Piece | Holds | Backed up by |
+|---|---|---|
+| Supabase tables | sessions, proposals, diagrams, corpus, approvals | `scripts/backup_tables.py` nightly |
+| Supabase Storage | rendered diagrams, generated DOCX/PDF, image library, vendor kit | `backup_tables.py --with-storage` weekly (`~/sarvam-backups/storage/`) |
+| Open WebUI volume | accounts, chats, uploaded RFPs | `scripts/backup_owui.sh` nightly (`~/sarvam-backups/owui/`, last 7) |
+| `scripts/sarvam.env` | the keys | **nothing: keep a copy in the password manager** |
+| Code and migrations | this repo | GitHub |
+
+A restore into a brand-new Supabase project has not been rehearsed end to
+end. Do that drill before relying on these backups for a real outage.
 
 ## Health
 
@@ -65,11 +79,35 @@ Backups are gzipped JSON lines per table, one folder per night.
    `cd ~/iv-sarvam && python3 scripts/backup_tables.py --env-file scripts/sarvam.env --restore ~/sarvam-backups/<STAMP> --tables generated_proposals`
 
 Restore upserts by primary key and never deletes: rows in the backup are written
-back, rows created since are left alone. Storage buckets (rendered diagrams,
-generated DOCX) are not in these backups.
+back, rows created since are left alone. Tables are written parents first,
+whatever order you list them in. Storage files are under
+`~/sarvam-backups/storage/<bucket>/`; upload them back through the Supabase
+dashboard or the Storage API. The Open WebUI volume restores with the command
+at the top of `scripts/backup_owui.sh`.
 
 If Supabase has **paused** the project (idle 7 days): open the Supabase
 dashboard, restore the project, then `curl -s http://127.0.0.1:8000/v1/keepalive`.
+
+## Access control
+
+- **Service key.** With `SHILPI_API_KEY` set in `sarvam.env`, every brain
+  route except `/health` and `/v1/keepalive` needs it as a Bearer token. Open
+  WebUI sends the API key of its connection: Admin Settings → Connections →
+  the Shilpi connection → API Key. Set both to the same value, then recreate
+  the brain. Unset, the brain logs a warning and accepts any caller on its
+  network.
+- **Whose data.** Open WebUI forwards the signed-in user
+  (`ENABLE_FORWARD_USER_INFO_HEADERS`). A session opened by one user is not
+  readable by another, and an uploaded RFP is read only by its uploader.
+- **"I can't confirm that the attached document is yours."** The brain could
+  not identify the requester or the uploader. Check, in order:
+  `docker exec sarvam-webui env | grep FORWARD_USER` (must be `true`), then
+  `docker exec sarvam-brain python3 -c "import sqlite3;print(sqlite3.connect('file:/owui-data/webui.db?mode=ro',uri=True).execute('select count(*) from file').fetchone())"`.
+  `SHILPI_ALLOW_UNBOUND_UPLOADS=1` restores "newest recent upload" and is only
+  for an install with a single user.
+- **Drafting refused.** "Architecture is not approved yet" (approve or
+  regenerate the named diagrams), "already being generated" (wait), or "N
+  proposals are being drafted" (limit `SHILPI_MAX_CONCURRENT_DRAFTS`, default 2).
 
 ## Rotate a key
 

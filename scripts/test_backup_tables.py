@@ -85,3 +85,57 @@ if __name__ == "__main__":
         if name.startswith("test_") and callable(fn):
             fn()
     print("ALL BACKUP TESTS PASSED")
+
+
+# --- audit 2026-10-12, finding 11 ---------------------------------------------
+
+def test_restore_writes_parents_before_children_whatever_order_is_asked():
+    """architecture_diagrams references generated_proposals and intake_sessions;
+    restoring it first into an empty database fails the foreign key."""
+    with tempfile.TemporaryDirectory() as tmp:
+        for t in ("architecture_diagrams", "generated_proposals", "intake_sessions"):
+            with gzip.open(Path(tmp) / f"{t}.jsonl.gz", "wt") as f:
+                f.write(json.dumps({"id": 1}) + "\n")
+        fetch, calls = _fake_db({})
+        bt.restore(ENV, tmp, ["architecture_diagrams", "generated_proposals", "intake_sessions"],
+                   fetch=fetch)
+    assert [c[1].split("?")[0] for c in calls] == [
+        "intake_sessions", "generated_proposals", "architecture_diagrams"]
+    order = bt.TABLES
+    assert order.index("generated_proposals") < order.index("architecture_diagrams")
+
+
+def test_storage_mirror_walks_folders_and_fetches_only_what_changed():
+    files = {"kit/a.png": b"AAAA", "kit/b.png": b"BB", "top.png": b"C"}
+    fetched = []
+
+    def call(env, method, path, body=None):
+        if method == "POST":                                  # listing
+            prefix = body["prefix"]
+            names = {}
+            for full, data in files.items():
+                if not full.startswith(prefix):
+                    continue
+                rest = full[len(prefix):]
+                head = rest.split("/")[0]
+                names[head] = None if "/" in rest else len(data)
+            return json.dumps([{"name": n, "id": None if size is None else "x",
+                                "metadata": None if size is None else {"size": size}}
+                               for n, size in sorted(names.items())]).encode()
+        fetched.append(path)
+        return files[path.split("/", 2)[2]]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        counts = bt.mirror_storage(ENV, tmp, buckets=["visual-assets"], call=call)
+        root = Path(tmp) / "storage" / "visual-assets"
+        assert (root / "kit" / "a.png").read_bytes() == b"AAAA" and (root / "top.png").exists()
+        assert counts == {"visual-assets": (3, 3)}
+        fetched.clear()
+        files["kit/b.png"] = b"BBBBBB"                        # one object changed
+        assert bt.mirror_storage(ENV, tmp, buckets=["visual-assets"], call=call) == {
+            "visual-assets": (3, 1)}
+        assert fetched == ["object/visual-assets/kit/b.png"]
+        # prune leaves the mirror alone
+        (Path(tmp) / "20260101T000000Z").mkdir()
+        bt.prune(tmp, keep=0)
+        assert root.exists()

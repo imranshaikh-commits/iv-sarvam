@@ -19,7 +19,10 @@ WHAT IT WRITES
 
 proposal_chunks (173 MB, mostly embeddings) is skipped unless
 --with-proposal-chunks is given; run that weekly, not nightly.
-Storage buckets (rendered diagrams, generated DOCX) are NOT covered.
+Storage buckets (rendered diagrams, generated DOCX, image library) are
+mirrored to <out>/storage/<bucket>/ with --with-storage; run that weekly.
+Open WebUI's own volume (accounts, chats, uploaded RFPs) is a separate job:
+scripts/backup_owui.sh.
 
 USAGE (on the EC2 host)
 -----
@@ -38,17 +41,26 @@ import datetime as dt
 import gzip
 import json
 import os
+import re
 import shutil
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
+# In foreign-key order: a table comes after everything it references, so a
+# restore into an EMPTY database succeeds. architecture_diagrams used to sit
+# before generated_proposals, which it references (audit 2026-10-12, finding 11).
 TABLES = [
     "organizations", "org_members", "profiles",
-    "intake_sessions", "architecture_diagrams", "generated_proposals",
+    "intake_sessions", "generated_proposals", "architecture_diagrams",
     "proposals", "visual_assets",
     "partner_products", "partner_product_chunks", "partner_product_assets",
 ]
+_RESTORE_ORDER = TABLES + ["proposal_chunks"]     # proposal_chunks references proposals
+# Files the tables only point at: rendered diagrams, generated DOCX/PDF, the
+# approved image library and the vendor kit. Mirrored with --with-storage.
+BUCKETS = ["diagram-renders", "generated-drafts", "partner-product-assets", "visual-assets"]
 PRIMARY_KEYS = {"org_members": "org_id,user_id", "profiles": "user_id"}
 PAGE = 1000          # PostgREST's default max-rows
 KEEP = 14            # backup directories kept locally
@@ -111,13 +123,68 @@ def backup(env, out_root, tables, fetch=_request, now=None):
     return out, counts
 
 
+def _storage(env, method, path, body=None):
+    """Raw bytes from the Storage API (object listing is JSON, objects are files)."""
+    req = urllib.request.Request(
+        env["SUPABASE_URL"].rstrip("/") + "/storage/v1/" + path, method=method,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={"apikey": env["SUPABASE_KEY"],
+                 "Authorization": f"Bearer {env['SUPABASE_KEY']}",
+                 "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        return resp.read()
+
+
+def list_bucket(env, bucket, prefix="", call=_storage):
+    """[(object path, size)] for every file under prefix, folders walked."""
+    out, offset = [], 0
+    while True:
+        page = json.loads(call(env, "POST", f"object/list/{bucket}",
+                               {"prefix": prefix, "limit": PAGE, "offset": offset,
+                                "sortBy": {"column": "name", "order": "asc"}}) or b"[]")
+        for item in page:
+            path = f"{prefix}{item['name']}"
+            if item.get("id") is None:               # a folder
+                out.extend(list_bucket(env, bucket, path + "/", call))
+            else:
+                out.append((path, int((item.get("metadata") or {}).get("size") or -1)))
+        if len(page) < PAGE:
+            return out
+        offset += PAGE
+
+
+def mirror_storage(env, out_root, buckets=BUCKETS, call=_storage):
+    """Copy every object to <out>/storage/<bucket>/<path>. A mirror, not a
+    nightly folder: a file already present at the same size is not fetched
+    again, so a weekly run moves only what is new. Deletions are not mirrored."""
+    root = Path(out_root).expanduser() / "storage"
+    counts = {}
+    for bucket in buckets:
+        fetched = 0
+        objects = list_bucket(env, bucket, call=call)
+        for path, size in objects:
+            dest = root / bucket / path
+            if dest.exists() and dest.stat().st_size == size:
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(call(env, "GET", f"object/{bucket}/{urllib.parse.quote(path)}"))
+            fetched += 1
+        counts[bucket] = (len(objects), fetched)
+        print(f"storage {bucket}: {len(objects)} objects, {fetched} fetched")
+    return counts
+
+
 def prune(out_root, keep=KEEP):
-    dirs = sorted(d for d in Path(out_root).expanduser().iterdir() if d.is_dir())
+    # Only the timestamped table folders; storage/ and owui/ are not nightly sets.
+    dirs = sorted(d for d in Path(out_root).expanduser().iterdir()
+                  if d.is_dir() and re.fullmatch(r"\d{8}T\d{6}Z", d.name))
     for d in dirs[:-keep]:
         shutil.rmtree(d)
 
 
 def restore(env, backup_dir, tables, fetch=_request, batch=500):
+    # Parents before children, whatever order the caller listed them in.
+    tables = sorted(tables, key=lambda t: _RESTORE_ORDER.index(t) if t in _RESTORE_ORDER else 99)
     for t in tables:
         path = Path(backup_dir).expanduser() / f"{t}.jsonl.gz"
         with gzip.open(path, "rt", encoding="utf-8") as f:
@@ -134,6 +201,8 @@ def main():
     ap.add_argument("--out", default="~/sarvam-backups")
     ap.add_argument("--tables", help="comma-separated; default: all irreplaceable tables")
     ap.add_argument("--with-proposal-chunks", action="store_true")
+    ap.add_argument("--with-storage", action="store_true",
+                    help="also mirror the Storage buckets (weekly)")
     ap.add_argument("--restore", metavar="BACKUP_DIR")
     a = ap.parse_args()
     env = load_env(a.env_file)
@@ -145,6 +214,8 @@ def main():
         restore(env, a.restore, tables)
         return
     out, _ = backup(env, a.out, tables)
+    if a.with_storage:
+        mirror_storage(env, a.out)
     prune(a.out)
     print(f"backup written to {out}")
 

@@ -619,10 +619,21 @@ def build_d2(spec: DiagramSpec, *, direction: Optional[str] = None) -> str:
         else:
             loose.append(n)
 
-    def emit_node(n: DiagramNode, indent: str) -> list[str]:
+    def unique(raw: str, taken: set[str]) -> str:
+        """A D2 id not yet used in this scope. _d2_id turns every
+        non-alphanumeric character into "_", so "Zone-A" and "Zone A" (or node
+        ids "a.b" and "a-b") became one id and two things were drawn as one."""
+        base = out = _d2_id(raw)
+        i = 2
+        while out in taken:
+            out, i = f"{base}_{i}", i + 1
+        taken.add(out)
+        return out
+
+    def emit_node(n: DiagramNode, indent: str, nid: str) -> list[str]:
         decision = n.shape == "decision"
         vendor = None if decision else _vendor_colour(n.label, n.group)
-        out = [f'{indent}{_d2_id(n.id)}: "{_d2_label(n.label)}" {{']
+        out = [f'{indent}{nid}: "{_d2_label(n.label)}" {{']
         d2_shape = NODE_SHAPES.get(n.shape, "rectangle")
         if d2_shape != "rectangle":
             out.append(f"{indent}  shape: {d2_shape}")
@@ -635,8 +646,10 @@ def build_d2(spec: DiagramSpec, *, direction: Optional[str] = None) -> str:
         return out
 
     path: dict[str, str] = {}
+    top: set[str] = set()
     for group, members in grouped.items():
-        gid = _d2_id(group)
+        gid = unique(group, top)
+        inside: set[str] = set()
         path[f"{GROUP_REF}{group}"] = gid
         lines.append(f'{gid}: "{_d2_label(_pretty_group(group))}" {{')
         if lanes:
@@ -649,12 +662,13 @@ def build_d2(spec: DiagramSpec, *, direction: Optional[str] = None) -> str:
                            font_color=IV_COSMOS, bold=True,
                            stroke_width=2 if tint else 1)
         for n in members:
-            path[n.id] = f"{gid}.{_d2_id(n.id)}"
-            lines += emit_node(n, "  ")
+            nid = unique(n.id, inside)
+            path[n.id] = f"{gid}.{nid}"
+            lines += emit_node(n, "  ", nid)
         lines.append("}")
     for n in loose:
-        path[n.id] = _d2_id(n.id)
-        lines += emit_node(n, "")
+        path[n.id] = unique(n.id, top)
+        lines += emit_node(n, "", path[n.id])
 
     lines.append("")
     for e in spec.edges:

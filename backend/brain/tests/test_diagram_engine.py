@@ -1186,3 +1186,27 @@ def test_the_esnad_stack_keeps_its_true_links_and_loses_the_invented_one():
     assert "joiner/mover/leaver feed" in labels
     if diagram_engine.d2_available():
         assert diagram_engine._d2_run(diagram_engine.build_d2(_esnad_stack()), 25)
+
+
+def test_two_zones_whose_names_differ_only_by_punctuation_stay_two_zones():
+    """Deep audit F55: D2 ids replace every non-alphanumeric character with an
+    underscore, so "Zone-A" and "Zone A" both became Zone_A and the two zones
+    were drawn as one. A reviewer cannot be expected to notice a merged zone."""
+    N, E = diagram_engine.DiagramNode, diagram_engine.DiagramEdge
+    spec = diagram_engine.sanitize_spec(diagram_engine.DiagramSpec(
+        diagram_type="architecture", title="t",
+        nodes=[N(id="web", label="Web tier", group="Zone-A"),
+               N(id="db", label="Database", group="Zone A", shape="datastore"),
+               N(id="a.b", label="Proxy"), N(id="a-b", label="Cache")],
+        edges=[E(source="web", target="db", label="SQL")]))
+    d2 = diagram_engine.build_d2(spec)
+    containers = re.findall(r'(?m)^(\w+): "Zone', d2)
+    assert len(containers) == 2 and len(set(containers)) == 2, containers
+    # The edge joins the two different zones, not a zone to itself.
+    edge = re.search(r"(?m)^(\w+)\.\w+ -> (\w+)\.\w+", d2)
+    assert edge and edge.group(1) != edge.group(2)
+    # Top-level nodes that normalise alike stay distinct too.
+    top = re.findall(r'(?m)^(\w+): "(?:Proxy|Cache)"', d2)
+    assert len(set(top)) == 2, top
+    if diagram_engine.d2_available():
+        assert diagram_engine._d2_run(d2, 25)

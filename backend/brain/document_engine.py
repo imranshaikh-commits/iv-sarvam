@@ -891,10 +891,19 @@ async def _post_draft(client: httpx.AsyncClient, payload: dict) -> str:
     choice = await _post_once(client, {**payload, "max_tokens": retry_budget})
     content = choice["message"]["content"]
     if choice.get("finish_reason") == "length":
-        log.warning("draft still cut off after retry (%s); trimming the incomplete tail",
-                    _usage_note(choice))
-        content = _trim_incomplete_tail(content)
+        log.warning("draft still cut off after retry (%s); trimming the incomplete tail "
+                    "and marking it for review", _usage_note(choice))
+        # The trim makes it read as finished, which is exactly why it must be
+        # marked: whole obligations can be missing after a clean full stop.
+        content = _mark_cut_off(_trim_incomplete_tail(content))
     return content
+
+
+def _mark_cut_off(text: str) -> str:
+    """End a cut-off draft with the review marker, once. The blank line keeps
+    it out of a table whose last row was the thing cut."""
+    text = (text or "").rstrip()
+    return text if text.endswith(SME_REVIEW_MARKER) else f"{text}\n\n{SME_REVIEW_MARKER}"
 
 
 async def draft_with_openrouter(
@@ -1269,6 +1278,10 @@ async def _draft_with_retry(
         return None
 
     # Single chokepoint for every drafted (sub)section.
+    # `source` is the draft `cleaned` is derived from. If it came back marked as
+    # cut off (_post_draft), the marker is put back after the trims below: they
+    # drop a last line with no sentence ending, and a bare marker is one.
+    source = content
     cleaned = strip_model_artifacts(content)
     cleaned, issues = document_qa.qa_text(cleaned)
 
@@ -1288,6 +1301,7 @@ async def _draft_with_retry(
         if not _is_blank(retry):
             retry_clean, retry_issues = document_qa.qa_text(
                 strip_model_artifacts(retry))
+            source = retry
             if not any(i.startswith("degenerate") for i in retry_issues):
                 cleaned = retry_clean
             else:
@@ -1300,6 +1314,8 @@ async def _draft_with_retry(
         log.info("QA: %s", "; ".join(issues))
 
     cleaned = _trim_mid_sentence_end(cleaned)
+    if not _is_blank(cleaned) and (source or "").rstrip().endswith(SME_REVIEW_MARKER):
+        cleaned = _mark_cut_off(cleaned)
     return cleaned if not _is_blank(cleaned) else None
 
 

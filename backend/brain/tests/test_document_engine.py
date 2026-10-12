@@ -1894,7 +1894,9 @@ def test_a_draft_still_cut_off_after_retry_is_trimmed_cleanly():
     table = "Lead in.\n| A | B |\n|---|---|\n| 1 | done |\n| 2 | have not"
     c = _SeqClient([(table, "length"), (table, "length")])
     out = asyncio.run(document_engine._post_draft(c, {"model": "m", "max_tokens": 900}))
-    assert out.endswith("| 1 | done |"), out
+    # Trimmed to the last whole row, then marked (deep audit F42): a tidy
+    # half-table must not read as a finished one.
+    assert out == "Lead in.\n| A | B |\n|---|---|\n| 1 | done |\n\n" + SME_MARKER, out
     assert document_engine._trim_incomplete_tail(
         "Full sentence. Another one is avail") == "Full sentence."
 
@@ -2513,3 +2515,52 @@ def test_won_work_is_not_presented_as_delivered_work():
     instructions = " ".join(text for _, text in spec.subsections)
     assert name in instructions and "DELIVERED ENGAGEMENTS" not in instructions
     assert "described as delivered" not in instructions
+
+
+def test_a_draft_still_cut_off_after_the_retry_is_marked_all_the_way_to_the_docx():
+    """Deep audit F42: a response cut off at max_tokens twice was trimmed to its
+    last full sentence or table row and returned as ordinary text. A tidy
+    half-section is the one thing an editor cannot see, so it now carries
+    [SME REVIEW], and the marker has to survive every later clean-up."""
+    table_cut_mid_row = ("Staffing for the engagement.\n\n| Role | Count |\n|---|---|\n"
+                         "| Architect | 2 |\n| Engin")
+    budgets = []
+
+    async def always_cut_off(client, payload):
+        budgets.append(payload.get("max_tokens"))
+        return {"message": {"content": reply["text"]}, "finish_reason": reply["finish"],
+                "_usage": {}}
+
+    async def run():
+        async with httpx.AsyncClient() as client:
+            return await generate_proposal(
+                client, rfp_text="Deliver IAM.", client_name=CLIENT_NAME,
+                proposal_type="implementation", iam_vendor="SailPoint",
+                embed_fn=stub_embed, retrieve_fn=stub_retrieve,
+                build_grounded_system_fn=stub_build_system, sections=["executive_summary"])
+
+    # Earlier tests in this file replace draft_with_openrouter with a stub and
+    # leave it; this one needs the real chain down to the (faked) HTTP call.
+    async def real_chain(client, system_prompt, user_prompt, max_tokens=None):
+        return await document_engine._draft_across_models(
+            client, system_prompt, user_prompt, max_tokens=max_tokens or 2500)
+
+    saved = document_engine._post_once, document_engine.draft_with_openrouter
+    document_engine._post_once = always_cut_off
+    document_engine.draft_with_openrouter = real_chain
+    try:
+        reply = {"text": "First sentence. Second sente", "finish": "length"}
+        text = asyncio.run(document_engine._post_draft(None, {"max_tokens": 900}))
+        assert text == "First sentence.\n\n" + SME_MARKER
+        assert len(budgets) == 2 and budgets[1] > budgets[0]      # it did retry first
+
+        reply = {"text": table_cut_mid_row, "finish": "length"}
+        docx_text = _extract_text(asyncio.run(run())["docx_bytes"])
+        assert SME_MARKER in docx_text
+        assert "Architect" in docx_text and "Engin" not in docx_text
+
+        # A response that finished normally is not marked.
+        reply = {"text": "A complete answer.", "finish": "stop"}
+        assert SME_MARKER not in _extract_text(asyncio.run(run())["docx_bytes"])
+    finally:
+        document_engine._post_once, document_engine.draft_with_openrouter = saved

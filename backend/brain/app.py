@@ -614,7 +614,15 @@ async def run_rfp_extraction(display_name_: str) -> tuple[Optional[rfp_intake.Rf
     error is user-facing text for the ambiguous/missing/failed cases; extraction
     is None whenever error is set.
     """
-    path, ambiguous = rfp_intake.pick_upload()
+    path, ambiguous, reason = rfp_intake.pick_upload(
+        user_id=rfp_intake.REQUEST_USER_ID.get(), name_hint=display_name_)
+    if reason == rfp_intake.UNBOUND:
+        log.error("RFP upload refused: uploader or requester could not be identified "
+                  "(X-OpenWebUI-User-Id forwarded? %s readable?)", rfp_intake.OWUI_DB)
+        return None, ("I can't confirm that the attached document is yours, so I "
+                      "haven't read it. This is a setup issue, not your file: ask "
+                      "the administrator to check that Open WebUI forwards user "
+                      "identity to Shilpi. Use the interview instead for now.")
     if ambiguous:
         names = ", ".join(sorted(set(ambiguous)))
         return None, (f"I see {len(ambiguous)} documents uploaded at nearly the "
@@ -3273,6 +3281,7 @@ _USER_HEADER = "x-openwebui-user-email"
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     supabase_client.REQUEST_USER.set(request.headers.get(_USER_HEADER) or None)
+    rfp_intake.REQUEST_USER_ID.set(request.headers.get("x-openwebui-user-id") or None)
     body = await request.json()
     messages = body.get("messages", [])
     stream = bool(body.get("stream", False))

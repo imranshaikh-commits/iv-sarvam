@@ -30,9 +30,11 @@ nothing generates until a human has seen the list.
 """
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import re
+import sqlite3
 import time
 
 from pydantic import BaseModel, Field as PField
@@ -105,24 +107,78 @@ def display_name(path: str) -> str:
                   r"[0-9a-f]{12}_", "", base, flags=re.I)
 
 
-def pick_upload(window_s: int = UPLOAD_WINDOW_S) -> tuple[Optional[str], list[str]]:
-    """(chosen path, ambiguous candidates).
+# Whose upload is it (audit 2026-10-12, finding 2). The uploads directory is
+# shared by every Open WebUI user, and "the newest file in the last 15 minutes"
+# handed Alice's extraction Bob's tender. Open WebUI records the uploader of
+# each file in its own database (file.id is the uuid prefix of the stored
+# name), on the volume already mounted here read-only, and forwards the
+# signed-in user's id as X-OpenWebUI-User-Id. An upload is read only when it
+# provably belongs to the person asking. With no identity there is no guess.
+OWUI_DB = os.environ.get("SHILPI_OWUI_DB",
+                         os.path.join(os.path.dirname(OWUI_UPLOADS.rstrip("/")), "webui.db"))
+REQUEST_USER_ID: contextvars.ContextVar = contextvars.ContextVar("owui_user_id", default=None)
+# Escape hatch for a deliberately single-user install whose Open WebUI cannot
+# forward identity: restores "newest recent upload". Off by default.
+ALLOW_UNBOUND_UPLOADS = os.environ.get("SHILPI_ALLOW_UNBOUND_UPLOADS") == "1"
+_UUID_PREFIX = re.compile(r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_", re.I)
 
-    Returns the newest upload when it is clearly the one just attached. When two
-    files land within seconds of each other the caller must ASK: reading the
-    wrong tender is far worse than one extra question, and two copies of
-    SOW.pdf already exist from testing.
+UNBOUND = "unbound"   # pick_upload reason: ownership could not be established
+
+
+def upload_owners(paths: list[str]) -> Optional[dict[str, str]]:
+    """path -> Open WebUI user id of the uploader. None when OWUI's records
+    cannot be read at all (not mounted, schema moved): ownership is then unknown."""
+    ids = {}
+    for path in paths:
+        m = _UUID_PREFIX.match(os.path.basename(path))
+        if m:
+            ids[m.group(1).lower()] = path
+    if not ids:
+        return {}
+    try:
+        con = sqlite3.connect(f"file:{OWUI_DB}?mode=ro", uri=True, timeout=2)
+        try:
+            marks = ",".join("?" * len(ids))
+            rows = con.execute(f"select id, user_id from file where lower(id) in ({marks})",
+                               list(ids)).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        log.warning("cannot read upload ownership from %s: %s", OWUI_DB, e)
+        return None
+    return {ids[str(fid).lower()]: str(uid) for fid, uid in rows if uid}
+
+
+def pick_upload(window_s: int = UPLOAD_WINDOW_S, user_id: Optional[str] = None,
+                name_hint: str = "") -> tuple[Optional[str], list[str], str]:
+    """(chosen path, ambiguous candidates, reason).
+
+    Only uploads belonging to `user_id` are considered. reason is UNBOUND when
+    the requester or the uploader cannot be identified: the caller must say so
+    rather than read someone's document. Among the requester's own files the
+    newest wins when it is clearly the one just attached; two within a minute
+    are settled by a file name in `name_hint`, else the caller must ASK.
     """
     recent = recent_uploads(window_s)
     if not recent:
-        return None, []
+        return None, [], ""
+    if not ALLOW_UNBOUND_UPLOADS:
+        owners = upload_owners([p for p, _ in recent])
+        if not user_id or owners is None:
+            return None, [], UNBOUND
+        recent = [(p, m) for p, m in recent if owners.get(p) == str(user_id)]
+        if not recent:
+            return None, [], ""
     if len(recent) == 1:
-        return recent[0][0], []
+        return recent[0][0], [], ""
     newest_path, newest_mtime = recent[0]
     contenders = [p for p, m in recent if newest_mtime - m <= 60]
     if len(contenders) > 1:
-        return None, [display_name(p) for p in contenders]
-    return newest_path, []
+        named = [p for p in contenders if display_name(p).lower() in (name_hint or "").lower()]
+        if len(named) == 1:
+            return named[0], [], ""
+        return None, [display_name(p) for p in contenders], ""
+    return newest_path, [], ""
 
 
 @dataclass

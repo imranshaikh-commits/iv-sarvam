@@ -154,8 +154,23 @@ run_tests(globals(), "RFP INTAKE TESTS")
 # own upload directory, mounted read-only.
 # ---------------------------------------------------------------------------
 
-def _uploads_dir(tmp_path, monkeypatch):
+ALICE, BOB = "user-alice", "user-bob"
+A_FILE = "a43c7f9c-ae47-47de-8c16-ac0d9c53f958"
+B_FILE = "b289b94e-d909-4141-8087-6e0a2f01f0a7"
+
+
+def _uploads_dir(tmp_path, monkeypatch, owners=None):
+    """A temp uploads directory plus an Open WebUI file table saying who
+    uploaded what (default: both test files are Alice's)."""
+    import sqlite3
     monkeypatch.setattr(R, "OWUI_UPLOADS", str(tmp_path))
+    db = tmp_path / "webui.db"
+    con = sqlite3.connect(db)
+    con.execute("create table file (id text primary key, user_id text, filename text)")
+    for fid, uid in (owners or {A_FILE: ALICE, B_FILE: ALICE}).items():
+        con.execute("insert into file values (?, ?, ?)", (fid, uid, "SOW.pdf"))
+    con.commit(); con.close()
+    monkeypatch.setattr(R, "OWUI_DB", str(db))
     return tmp_path
 
 
@@ -164,7 +179,7 @@ def test_a_missing_mount_is_visible_not_silent(monkeypatch):
     document, which sends the user looking in the wrong place."""
     monkeypatch.setattr(R, "OWUI_UPLOADS", "/does/not/exist")
     assert R.uploads_available() is False
-    assert R.pick_upload() == (None, [])
+    assert R.pick_upload(user_id=ALICE) == (None, [], "")
 
 
 def test_the_uuid_prefix_is_stripped_for_display(monkeypatch):
@@ -176,7 +191,7 @@ def test_the_uuid_prefix_is_stripped_for_display(monkeypatch):
 def test_a_single_recent_upload_is_chosen(tmp_path, monkeypatch):
     _uploads_dir(tmp_path, monkeypatch)
     (tmp_path / "a43c7f9c-ae47-47de-8c16-ac0d9c53f958_SOW.pdf").write_text("x")
-    path, ambiguous = R.pick_upload()
+    path, ambiguous, _ = R.pick_upload(user_id=ALICE)
     assert path and R.display_name(path) == "SOW.pdf"
     assert ambiguous == []
 
@@ -187,7 +202,7 @@ def test_two_uploads_seconds_apart_are_not_guessed_between(tmp_path, monkeypatch
     _uploads_dir(tmp_path, monkeypatch)
     (tmp_path / "a43c7f9c-ae47-47de-8c16-ac0d9c53f958_SOW.pdf").write_text("x")
     (tmp_path / "b289b94e-d909-4141-8087-6e0a2f01f0a7_SOW.pdf").write_text("x")
-    path, ambiguous = R.pick_upload()
+    path, ambiguous, _ = R.pick_upload(user_id=ALICE)
     assert path is None
     assert len(ambiguous) == 2
 
@@ -200,14 +215,46 @@ def test_stale_uploads_are_ignored(tmp_path, monkeypatch):
     old.write_text("x")
     stale = time.time() - 86400
     os.utime(old, (stale, stale))
-    assert R.pick_upload() == (None, [])
+    assert R.pick_upload(user_id=ALICE) == (None, [], "")
 
 
 def test_non_documents_are_ignored(tmp_path, monkeypatch):
     """A pasted client logo is not an RFP."""
     _uploads_dir(tmp_path, monkeypatch)
     (tmp_path / "logo.png").write_text("x")
-    assert R.pick_upload() == (None, [])
+    assert R.pick_upload(user_id=ALICE) == (None, [], "")
+
+
+def test_another_users_newer_upload_is_never_read(tmp_path, monkeypatch):
+    """Audit 2026-10-12 finding 2: Alice's file 180 s old, Bob's 10 s old, and
+    Alice's extraction read Bob's tender."""
+    import os, time
+    _uploads_dir(tmp_path, monkeypatch, owners={A_FILE: ALICE, B_FILE: BOB})
+    alice = tmp_path / f"{A_FILE}_Alice_RFP.pdf"
+    bob = tmp_path / f"{B_FILE}_Bob_Tender.pdf"
+    alice.write_text("x"); bob.write_text("x")
+    now = time.time()
+    os.utime(alice, (now - 180, now - 180)); os.utime(bob, (now - 10, now - 10))
+    path, ambiguous, reason = R.pick_upload(user_id=ALICE)
+    assert path == str(alice) and not ambiguous and not reason
+    assert R.pick_upload(user_id=BOB)[0] == str(bob)
+    assert R.pick_upload(user_id="user-carol") == (None, [], "")
+
+
+def test_without_identity_nothing_is_guessed(tmp_path, monkeypatch):
+    _uploads_dir(tmp_path, monkeypatch)
+    (tmp_path / f"{A_FILE}_SOW.pdf").write_text("x")
+    assert R.pick_upload() == (None, [], R.UNBOUND)                 # no requester
+    monkeypatch.setattr(R, "OWUI_DB", str(tmp_path / "missing.db"))
+    assert R.pick_upload(user_id=ALICE) == (None, [], R.UNBOUND)    # no uploader record
+
+
+def test_a_named_file_settles_two_of_my_own_uploads(tmp_path, monkeypatch):
+    _uploads_dir(tmp_path, monkeypatch)
+    (tmp_path / f"{A_FILE}_SOW.pdf").write_text("x")
+    (tmp_path / f"{B_FILE}_Annex.pdf").write_text("x")
+    path, ambiguous, _ = R.pick_upload(user_id=ALICE, name_hint="read annex.pdf please")
+    assert path.endswith("_Annex.pdf") and not ambiguous
 
 
 # ---------------------------------------------------------------------------

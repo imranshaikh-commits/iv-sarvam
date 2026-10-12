@@ -2272,6 +2272,18 @@ async def generate_proposal_from_chat(session_id: str | None,
         lines += ["", f"**Compliance matrix:** {len(confirm)} requirement(s) need a "
                       f"bid-team check before submission (no full IV precedent, or no "
                       f"section of this proposal addresses them): {', '.join(confirm)}."]
+    # An approved diagram that is not in the document must be named, not found
+    # missing by the reader.
+    left_out = (data or {}).get("diagrams_left_out") or []
+    duplicates = [d.get("title") for d in left_out if d.get("why") == "duplicate"]
+    not_drawn = [d.get("title") for d in left_out if d.get("why") == "not_drawn"]
+    if duplicates:
+        lines += ["", f"**Approved but left out as duplicates:** {', '.join(duplicates)} "
+                      "(each repeats a picture already in the document)."]
+    if not_drawn:
+        lines += ["", f"**Approved but not embedded:** {', '.join(not_drawn)} could not be "
+                      "drawn at drafting time, so it was left out rather than redrawn "
+                      "differently from what you approved."]
     # How much of the matrix rests on no IV precedent at all. Those rows read
     # "Compliant, subject to confirmation" only because a section of this
     # proposal mentions the topic, which proves nothing about the requirement.
@@ -3132,16 +3144,27 @@ async def _generate_proposal(request: Request, body: dict):
                 {"error": f"the architecture review is not finished: {done} of {len(plan)} "
                           f"planned diagram(s) are approved or skipped. Go through the "
                           f"rest (approve or skip each), then draft."}, status_code=409)
+    # At draft time an approved diagram is drawn by the engine it was reviewed
+    # with or not at all (audit F53). render_spec's Graphviz fallback draws
+    # every node as a box, so a D2 error or timeout here used to put a
+    # different picture in the document from the one that was approved. The
+    # fallback remains for previews, and for a host with no D2 at all.
+    draft_renderer = "d2" if diagram_engine.d2_available() else None
+    diagrams_left_out: list[dict] = []
     if diagram_rows:
         for drow in diagram_rows:
             if (drow.get("status") or "") != "approved":
                 continue
             try:
                 spec = DiagramSpec.model_validate(drow.get("spec_json") or {})
-                image = await asyncio.to_thread(diagram_engine.render_spec, spec, fmt="png")
+                image = await asyncio.to_thread(diagram_engine.render_spec, spec,
+                                                fmt="png", renderer=draft_renderer)
             except Exception as e:  # noqa: BLE001 — fail soft per diagram
                 log.error("approved diagram render failed (skipping embed): %s", e)
                 image = None
+            if not image:
+                diagrams_left_out.append({"title": drow.get("title") or "Architecture Diagram",
+                                          "why": "not_drawn"})
             if image:
                 embed_diagrams.append(
                     {"title": drow.get("title") or "Architecture Diagram",
@@ -3159,7 +3182,7 @@ async def _generate_proposal(request: Request, body: dict):
         try:
             stack = _stack_spec(intake_answers,
                                 f"{client_name or 'Client'} — Solution Stack")
-            image = diagram_engine.render_spec(stack, fmt="png")
+            image = diagram_engine.render_spec(stack, fmt="png", renderer=draft_renderer)
             if image and len(stack.nodes) >= 3:
                 embed_diagrams.insert(0, {
                     "title": stack.title, "status": "approved", "image_bytes": image,
@@ -3270,6 +3293,8 @@ async def _generate_proposal(request: Request, body: dict):
         compliance_to_confirm=result.get("compliance_to_confirm") or [],
         compliance_unassessed=result.get("compliance_unassessed") or 0,
         compliance_breakdown=result.get("compliance_breakdown") or {},
+        diagrams_left_out=diagrams_left_out + [
+            {"title": t, "why": "duplicate"} for t in result.get("diagrams_left_out") or []],
     )
 
 
@@ -3284,6 +3309,7 @@ async def _build_export_response(
     compliance_to_confirm: list | None = None,
     compliance_unassessed: int = 0,
     compliance_breakdown: dict | None = None,
+    diagrams_left_out: list | None = None,
 ) -> JSONResponse:
     """Apply the opt-in export steps and return JSON export metadata.
 
@@ -3321,6 +3347,9 @@ async def _build_export_response(
         "compliance_unassessed": compliance_unassessed,
         # {status: {"rows", "with_reference"}}: what the matrix wording rests on.
         "compliance_breakdown": compliance_breakdown or {},
+        # Approved diagrams that did NOT reach the document, and why:
+        # [{"title", "why": "duplicate" | "not_drawn"}].
+        "diagrams_left_out": diagrams_left_out or [],
     }
 
     if return_signed_urls:

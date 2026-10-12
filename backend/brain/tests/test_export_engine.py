@@ -847,3 +847,97 @@ def test_asking_for_the_links_again_signs_the_stored_files_without_drafting(monk
     stored["has_files"] = False
     reply = ask("links")
     assert drafted == [] and "generate the proposal" in reply.lower()
+
+
+# ---------------------------------------------------------------------------
+# Deep audit F57 and F53: an approved diagram that does not reach the document
+# is named in the chat reply, whatever the reason.
+# ---------------------------------------------------------------------------
+
+def test_an_approved_diagram_left_out_as_a_duplicate_is_named(monkeypatch):
+    """F57: de-duplication dropped an approved diagram with only a log line."""
+    import document_engine
+    img = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+    same = ["Firewall", "Application", "Database"]
+    diagrams = [
+        {"status": "approved", "image_bytes": img, "diagram_type": "architecture",
+         "title": "Solution Architecture", "nodes": same},
+        {"status": "approved", "image_bytes": img, "diagram_type": "component",
+         "title": "Integration View", "nodes": same}]
+    dropped: list[str] = []
+    kept = document_engine._embeddable_diagrams(diagrams, None, dropped)
+    assert [d["title"] for d in kept] == ["Solution Architecture"]
+    assert dropped == ["Integration View"]
+
+    # ...and the list reaches the consultant.
+    reply = _chat_reply_for(monkeypatch, {
+        "filename": "Shilpi_Proposal_X.docx", "signed_urls": {"docx": "https://e/d"},
+        "diagrams_left_out": [{"title": "Integration View", "why": "duplicate"},
+                              {"title": "Network", "why": "not_drawn"}]})
+    assert "Integration View" in reply and "duplicat" in reply.lower()
+    assert "Network" in reply and "could not be drawn" in reply
+
+
+def test_left_out_diagrams_travel_from_drafting_to_the_endpoint(monkeypatch):
+    async def generate_reporting(client, **kwargs):
+        return {**await _fake_generate_proposal(client, **kwargs),
+                "diagrams_left_out": ["Integration View"]}
+
+    async def fake_upload(client, path, data, content_type):
+        return path
+
+    async def fake_sign(client, path, expires_in=3600, bucket=None):
+        return "https://example.supabase.co/x"
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(app_module, "generate_proposal", generate_reporting)
+    monkeypatch.setattr(app_module.supabase_client, "upload_generated_draft", fake_upload)
+    monkeypatch.setattr(app_module.supabase_client, "create_signed_url", fake_sign)
+    with TestClient(app_module.app) as tc:
+        data = tc.post("/v1/generate-proposal",
+                       json={**_base_body(), "return_signed_urls": True}).json()
+    assert data["diagrams_left_out"] == [{"title": "Integration View", "why": "duplicate"}]
+
+
+def test_an_approved_diagram_is_not_redrawn_by_another_engine_at_draft_time(monkeypatch):
+    """F53: when D2 failed at draft time the approved diagram was silently
+    redrawn by Graphviz, which draws every node as a box. The picture in the
+    document must be the kind of picture that was reviewed, or be left out
+    and named."""
+    seen = {}
+
+    async def spying_generate(client, **kwargs):
+        seen["diagrams"] = kwargs.get("diagrams")
+        return await _fake_generate_proposal(client, **kwargs)
+
+    async def fake_upload(client, path, data, content_type):
+        return path
+
+    async def fake_sign(client, path, expires_in=3600, bucket=None):
+        return "https://example.supabase.co/x"
+
+    renderers = []
+
+    def d2_is_down(spec, fmt="png", timeout=25.0, renderer=None):
+        renderers.append(renderer)
+        return None if renderer == "d2" else b"\x89PNG graphviz boxes"
+
+    spec = {"diagram_type": "flow", "title": "X — Joiner Flow",
+            "nodes": [{"id": "a", "label": "Start", "shape": "start"},
+                      {"id": "b", "label": "Approved?", "shape": "decision"}],
+            "edges": [{"source": "a", "target": "b"}]}
+    _patch_common(monkeypatch, direct=False)
+    _reviewed_session(monkeypatch, [{"id": "d1", "title": "X — Joiner Flow",
+                                    "status": "approved", "spec_json": spec}],
+                      [("Joiner Flow", "flow")])
+    monkeypatch.setattr(app_module, "generate_proposal", spying_generate)
+    monkeypatch.setattr(app_module.diagram_engine, "render_spec", d2_is_down)
+    monkeypatch.setattr(app_module.diagram_engine, "d2_available", lambda: True)
+    monkeypatch.setattr(app_module.supabase_client, "upload_generated_draft", fake_upload)
+    monkeypatch.setattr(app_module.supabase_client, "create_signed_url", fake_sign)
+    with TestClient(app_module.app) as tc:
+        data = tc.post("/v1/generate-proposal", json={
+            **_base_body(), "intake_session_id": "s1", "return_signed_urls": True}).json()
+    assert renderers and set(renderers) == {"d2"}            # never asked for a fallback
+    assert not seen["diagrams"]                              # nothing redrawn went in
+    assert {"title": "X — Joiner Flow", "why": "not_drawn"} in data["diagrams_left_out"]

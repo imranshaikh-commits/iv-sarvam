@@ -2257,7 +2257,8 @@ def _is_duplicate(d: dict, kit_ids: set, kept: list[dict]) -> bool:
 
 
 def _embeddable_diagrams(diagrams: Optional[list[dict]],
-                         sections: Optional[list[dict]] = None) -> list[dict]:
+                         sections: Optional[list[dict]] = None,
+                         dropped: Optional[list] = None) -> list[dict]:
     """Diagrams that will actually be embedded: approved AND carrying an image,
     minus duplicates of a kit picture or of another diagram.
 
@@ -2275,6 +2276,10 @@ def _embeddable_diagrams(diagrams: Optional[list[dict]],
         if _is_duplicate(d, kit_ids, kept):
             log.info("diagram '%s' left out: duplicates a kit picture or another diagram",
                      d.get("title"))
+            # An APPROVED diagram is being dropped: the caller reports it (audit
+            # F57). The log line was the only trace of it.
+            if dropped is not None:
+                dropped.append(d.get("title") or "Architecture Diagram")
             continue
         kept.append(d)
         title = d.get("title") or "Architecture Diagram"
@@ -3254,6 +3259,9 @@ async def generate_proposal(
     # filter was supposed to avoid.
     metadata = dict(metadata)
     metadata["dropped_sections"] = _dropped_sections
+    # Approved diagrams the assembler will leave out as duplicates, by title.
+    diagrams_left_out: list[str] = []
+    _embeddable_diagrams(diagrams, list(drafted), diagrams_left_out)
 
     docx_bytes = assemble_docx(
         metadata, list(drafted), compliance_markdown,
@@ -3296,6 +3304,7 @@ async def generate_proposal(
         "compliance_to_confirm": compliance_to_confirm,
         "compliance_unassessed": compliance_unassessed,
         "compliance_breakdown": compliance_breakdown,
+        "diagrams_left_out": diagrams_left_out,
         "stripped_asides": stripped_asides,
         "proposal_depth": tier.name,
         "included_appendices": tier.include_appendices,

@@ -2564,3 +2564,35 @@ def test_a_draft_still_cut_off_after_the_retry_is_marked_all_the_way_to_the_docx
         assert SME_MARKER not in _extract_text(asyncio.run(run())["docx_bytes"])
     finally:
         document_engine._post_once, document_engine.draft_with_openrouter = saved
+
+
+def test_stripped_review_asides_are_counted_per_section_not_lost():
+    """Deep audit F10: "(needs SME confirmation)" is removed from the client
+    text and the claim it qualified stays. Nothing recorded that it happened.
+    The count per section now reaches the stored section metadata, so the next
+    run can decide between marking and listing them."""
+    calls = []
+
+    async def draft_with_two_asides(client, system_prompt, user_prompt, max_tokens=None):
+        calls.append(1)
+        return ("Availability is guaranteed at 99.99% (needs SME confirmation). "
+                "Recovery completes in one hour [to be confirmed by the client].")
+
+    async def run():
+        async with httpx.AsyncClient() as client:
+            return await generate_proposal(
+                client, rfp_text="Deliver IAM.", client_name=CLIENT_NAME,
+                proposal_type="implementation", iam_vendor="SailPoint",
+                embed_fn=stub_embed, retrieve_fn=stub_retrieve,
+                build_grounded_system_fn=stub_build_system, sections=["executive_summary"])
+
+    saved = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = draft_with_two_asides
+    try:
+        result = asyncio.run(run())
+    finally:
+        document_engine.draft_with_openrouter = saved
+    meta = result["sections_meta"][0]
+    assert meta["stripped_asides"] == 2 * len(calls) > 0
+    assert result["stripped_asides"] == meta["stripped_asides"]
+    assert "needs SME confirmation" not in result["draft_markdown"]      # still stripped

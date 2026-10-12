@@ -49,6 +49,15 @@ _CITATION_RE = re.compile(rf"\s*{_CITE_ONE}(?:\s*[,;]?\s*{_CITE_ONE})*")
 # "[6-Saviynt refs]" (both shipped in ESNAD 09-24). Short, bracketed, holds a
 # digit, and is not a markdown link.
 _LABELLED_CITATION_RE = re.compile(r"\s*\[[^\[\]\n]{0,30}?\d[^\[\]\n]{0,30}?\](?!\()")
+# ...but a bracket holding a real value is content, not a citation (audit F10:
+# "[90 days]" and "[7.3, 7.4]" were deleted from the sentences stating them).
+# A citation index is a small bare number; these are not: a quantity with a
+# unit, a dotted or v-prefixed version, or a number too big to be an index.
+_BRACKETED_VALUE_RE = re.compile(
+    r"\d[\d,.]*\s*(?:%|(?:days?|hours?|hrs?|minutes?|mins?|seconds?|secs?|weeks?|"
+    r"months?|years?|yrs?|[kmgt]b|vcpus?|cpus?|cores?|users?|accounts?|identities|"
+    r"applications?|apps?|nodes?|servers?|instances?|environments?|licen[cs]es?|ms)\b)"
+    r"|\bv?\d+(?:\.\d+)+|\bv\d+\b|\d{4,}|\d{1,3}(?:,\d{3})+", re.I)
 
 
 def strip_citations(text: str) -> str:
@@ -56,7 +65,8 @@ def strip_citations(text: str) -> str:
     if not text:
         return text
     out = _CITATION_RE.sub("", text)
-    out = _LABELLED_CITATION_RE.sub("", out)
+    out = _LABELLED_CITATION_RE.sub(
+        lambda m: m.group(0) if _BRACKETED_VALUE_RE.search(m.group(0)) else "", out)
     out = re.sub(r",\s*([.;:!?])", r"\1", out)
     out = re.sub(r",[ \t]*(\||$)", r" \1", out, flags=re.M)
     # "...unified architecture ." -> "...unified architecture."

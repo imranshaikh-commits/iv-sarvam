@@ -1251,6 +1251,14 @@ def _is_blank(text: Optional[str]) -> bool:
     return text is None or not str(text).strip()
 
 
+# Review asides the QA pass removed from the section being drafted ("(needs SME
+# confirmation)" and the like). The aside goes and the claim it qualified
+# stays, and nothing used to record that it had happened (audit F10). Counted
+# per section so a run can show how many there are before deciding whether to
+# leave a marker in their place or list the sections for the consultant.
+_ASIDES: contextvars.ContextVar = contextvars.ContextVar("stripped_asides", default=None)
+
+
 async def _draft_with_retry(
     client: httpx.AsyncClient,
     system_prompt: str,
@@ -1314,6 +1322,9 @@ async def _draft_with_retry(
         log.info("QA: %s", "; ".join(issues))
 
     cleaned = _trim_mid_sentence_end(cleaned)
+    tally = _ASIDES.get()
+    if tally is not None:
+        tally["n"] += document_qa.count_review_markers(strip_model_artifacts(source or ""))
     if not _is_blank(cleaned) and (source or "").rstrip().endswith(SME_REVIEW_MARKER):
         cleaned = _mark_cut_off(cleaned)
     return cleaned if not _is_blank(cleaned) else None
@@ -1481,6 +1492,8 @@ async def draft_section(
     # (real sizing, real environment counts) are grounded. Blending the two
     # into one signal risks a well-marketed product masking a genuine need
     # for client-specific review.
+    asides = {"n": 0}
+    _ASIDES.set(asides)
     weak_corpus = (not chunks) or (max_similarity < WEAK_EVIDENCE_THRESHOLD)
     discovery_ctx = discovery_context_for(section_spec.id,
                                           context.get("discovery_answers"))
@@ -1686,6 +1699,7 @@ async def draft_section(
         "product_citations": product_chunks,
         "max_similarity": max_similarity,
         "needs_sme_review": needs_sme_review,
+        "stripped_asides": asides["n"],
     }
 
 
@@ -3225,9 +3239,15 @@ async def generate_proposal(
             "max_similarity": d["max_similarity"],
             "needs_sme_review": d["needs_sme_review"],
             "citation_count": len(d.get("citations") or []),
+            "stripped_asides": d.get("stripped_asides", 0),
         }
         for d in drafted
     ]
+    stripped_asides = sum(m["stripped_asides"] for m in sections_meta)
+    if stripped_asides:
+        log.info("review asides stripped: %d in total (%s)", stripped_asides,
+                 ", ".join(f"{m['id']} {m['stripped_asides']}" for m in sections_meta
+                           if m["stripped_asides"]))
     draft_markdown = "\n\n".join(
         f"## {d['title']}\n\n{d.get('content', '')}".rstrip() for d in drafted
     )
@@ -3241,6 +3261,7 @@ async def generate_proposal(
         "included_compliance_matrix": compliance_markdown is not None,
         "compliance_to_confirm": compliance_to_confirm,
         "compliance_unassessed": compliance_unassessed,
+        "stripped_asides": stripped_asides,
         "proposal_depth": tier.name,
         "included_appendices": tier.include_appendices,
     }

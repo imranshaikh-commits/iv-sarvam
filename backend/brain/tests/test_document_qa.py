@@ -318,3 +318,21 @@ def test_comma_separated_citation_runs_leave_no_comma_debris():
     out = qa.strip_citations("Consulting firm (IAM) [1], [3]. Pune [2, 4]. Cell [5], | next")
     assert ",." not in out and ", |" not in out, out
     assert "(IAM)." in out and "Pune." in out
+
+
+def test_bracketed_values_are_not_deleted_as_citations():
+    """Deep audit F10: any short bracket holding a digit was treated as a
+    labelled citation, so a retention period or a version list vanished from
+    the sentence that stated it."""
+    kept = qa.strip_citations(
+        "Logs are retained [90 days] and the platform runs on [7.3, 7.4]. "
+        "Availability is [99.9%] across [2 nodes], certified to [ISO 27001] "
+        "for [5,000 users] on release [v8].")
+    for value in ("[90 days]", "[7.3, 7.4]", "[99.9%]", "[2 nodes]", "[ISO 27001]",
+                  "[5,000 users]", "[v8]"):
+        assert value in kept, value
+    # Citations still go: plain, ranged and model-labelled (ESNAD 09-24).
+    gone = qa.strip_citations(
+        "Access reviews run quarterly [3]. Roles are mined [1, 4-6] "
+        "[Saviynt EIC 1] and certified [6-Saviynt refs].")
+    assert "[" not in gone, gone

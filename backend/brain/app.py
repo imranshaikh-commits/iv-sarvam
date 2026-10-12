@@ -3065,6 +3065,22 @@ async def _generate_proposal(request: Request, body: dict):
             {"error": f"the architecture is not approved yet: {len(pending)} diagram(s) "
                       f"still await review ({', '.join(pending)}). Approve or regenerate "
                       f"them, then draft."}, status_code=409)
+    if intake_session_id:
+        # "Nothing awaiting review" is also true of a session that never reviewed
+        # anything (audit F17). The step is finished when every PLANNED diagram
+        # is approved or was explicitly skipped. Skipping all of them is a
+        # finished review: a renderer that keeps failing must not lock a
+        # consultant out. The automatic solution stack does not count; nobody
+        # reviews it.
+        plan = await load_plan(intake_session_id, intake_answers)
+        recorded = set(t for t in (intake_answers.get(SKIP_KEY) or []) if isinstance(t, str))
+        done = (sum(1 for d in diagram_rows if (d.get("status") or "") == "approved")
+                + sum(1 for title, _ in plan if title in recorded))
+        if done < len(plan):
+            return JSONResponse(
+                {"error": f"the architecture review is not finished: {done} of {len(plan)} "
+                          f"planned diagram(s) are approved or skipped. Go through the "
+                          f"rest (approve or skip each), then draft."}, status_code=409)
     if diagram_rows:
         for drow in diagram_rows:
             if (drow.get("status") or "") != "approved":

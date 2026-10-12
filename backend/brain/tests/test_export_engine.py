@@ -410,9 +410,16 @@ def test_generation_is_refused_while_a_diagram_awaits_review(monkeypatch):
     assert resp.status_code == 409 and "X — Solution" in resp.json()["error"]
 
 
+_ONE_APPROVED = [{"id": "d1", "title": "X — Solution Architecture", "status": "approved",
+                  "spec_json": {}}]
+_ONE_PLANNED = [("Solution Architecture", "architecture")]
+
+
 def test_generation_proceeds_from_a_reviewed_session(monkeypatch):
     _patch_common(monkeypatch, direct=False)
-    _session_with_diagrams(monkeypatch, [])
+    # Reviewed means every planned diagram approved or skipped (deep audit F17);
+    # this used to pass a session with no diagrams at all.
+    _reviewed_session(monkeypatch, _ONE_APPROVED, _ONE_PLANNED)
     with TestClient(app_module.app) as tc:
         resp = tc.post("/v1/generate-proposal", json={**_base_body(), "intake_session_id": "s1"})
     assert resp.status_code == 200
@@ -467,7 +474,7 @@ def test_forwarded_identity_reaches_the_work_of_every_route(monkeypatch):
 def test_a_second_draft_of_the_same_proposal_is_not_started(monkeypatch):
     """Audit 2026-10-12 finding 10: a retry started another paid generation."""
     _patch_common(monkeypatch, direct=False)
-    _session_with_diagrams(monkeypatch, [])
+    _reviewed_session(monkeypatch, _ONE_APPROVED, _ONE_PLANNED)
     body = {**_base_body(), "intake_session_id": "s1"}
     with TestClient(app_module.app) as tc:
         monkeypatch.setattr(app_module, "_DRAFTS_IN_FLIGHT", {"s1"})
@@ -670,3 +677,57 @@ def test_a_chat_marker_naming_someone_elses_proposal_is_refused(monkeypatch):
     assert approved == [] and "start over" in reply.lower()
     reply = turn("alice@iv.test", "s-alice", "p-bob")              # proposal of another session
     assert approved == [] and "start over" in reply.lower()
+
+
+# ---------------------------------------------------------------------------
+# Deep audit F17: drafting needs the architecture step FINISHED: every planned
+# diagram approved or explicitly skipped. "Nothing pending" was not enough.
+# ---------------------------------------------------------------------------
+
+def _reviewed_session(monkeypatch, rows, plan, skipped=()):
+    async def fake_session(client, sid):
+        return {"id": sid, "client_name": "Test Client", "proposal_type": "implementation",
+                "answers": {app_module.PLAN_KEY: [list(p) for p in plan],
+                            app_module.SKIP_KEY: list(skipped)}}
+
+    async def fake_diagrams(client, sid):
+        return rows
+
+    async def fake_link(*a, **k):
+        return None
+    monkeypatch.setattr(app_module.supabase_client, "get_intake_session", fake_session)
+    monkeypatch.setattr(app_module.supabase_client, "list_diagrams_for_session", fake_diagrams)
+    monkeypatch.setattr(app_module.supabase_client, "link_intake_to_proposal", fake_link)
+
+
+_TWO = [("Solution Architecture", "architecture"), ("Network", "network")]
+
+
+def _draft(monkeypatch, rows, plan=_TWO, skipped=()):
+    _patch_common(monkeypatch, direct=False)
+    _reviewed_session(monkeypatch, rows, plan, skipped)
+    with TestClient(app_module.app) as tc:
+        return tc.post("/v1/generate-proposal", json={**_base_body(), "intake_session_id": "s1"})
+
+
+def test_a_session_that_never_reviewed_its_diagrams_cannot_draft(monkeypatch):
+    resp = _draft(monkeypatch, [])
+    assert resp.status_code == 409
+    assert "0 of 2" in resp.json()["error"]
+
+
+def test_one_approved_diagram_is_not_a_finished_review(monkeypatch):
+    resp = _draft(monkeypatch, [{"id": "d1", "title": "X — Solution Architecture",
+                                "status": "approved", "spec_json": {}}])
+    assert resp.status_code == 409 and "1 of 2" in resp.json()["error"]
+
+
+def test_every_diagram_approved_or_skipped_can_draft(monkeypatch):
+    approved = {"id": "d1", "title": "X — Solution Architecture", "status": "approved",
+                "spec_json": {}}
+    assert _draft(monkeypatch, [approved], skipped=["Network"]).status_code == 200
+    # Skipping everything is a finished review too: a failed renderer must not
+    # lock a consultant out of drafting.
+    assert _draft(monkeypatch, [], skipped=["Solution Architecture", "Network"]).status_code == 200
+    # A skip recorded for a diagram that is not in the plan counts for nothing.
+    assert _draft(monkeypatch, [approved], skipped=["Something Else"]).status_code == 409

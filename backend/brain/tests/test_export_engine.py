@@ -446,3 +446,19 @@ def test_a_session_opened_by_someone_else_reads_as_not_found():
     assert asyncio.run(read("bob@iv.test")) is None
     assert asyncio.run(read("Alice@IV.test"))["id"] == "s1"
     assert asyncio.run(read(None))["id"] == "s1"            # no identity forwarded: prior behaviour
+
+
+def test_forwarded_identity_reaches_the_work_of_every_route(monkeypatch):
+    """The dependency sets who is asking; the endpoint's own work must see it."""
+    _patch_common(monkeypatch)
+    seen = {}
+
+    async def spying_generate(*a, **k):
+        seen["user"] = app_module.supabase_client.REQUEST_USER.get()
+        seen["uid"] = app_module.rfp_intake.REQUEST_USER_ID.get()
+        return await _fake_generate_proposal(*a, **k)
+    monkeypatch.setattr(app_module, "generate_proposal", spying_generate)
+    with TestClient(app_module.app) as tc:
+        tc.post("/v1/generate-proposal", json=_base_body(),
+                headers={"X-OpenWebUI-User-Email": "imran@iv.test", "X-OpenWebUI-User-Id": "u-1"})
+    assert seen == {"user": "imran@iv.test", "uid": "u-1"}

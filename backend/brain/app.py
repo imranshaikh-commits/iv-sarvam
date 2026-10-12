@@ -124,6 +124,10 @@ ALLOW_DIRECT_GENERATE = os.environ.get("SHILPI_ALLOW_DIRECT_GENERATE") == "1"
 
 
 async def _require_service_key(request: Request) -> None:
+    # Who is asking, for EVERY route (chat, generation, intake, diagrams), so
+    # ownership checks and actor stamps apply wherever a row is read or written.
+    supabase_client.REQUEST_USER.set(request.headers.get("x-openwebui-user-email") or None)
+    rfp_intake.REQUEST_USER_ID.set(request.headers.get("x-openwebui-user-id") or None)
     if not SERVICE_KEY or request.url.path in _OPEN_PATHS:
         return
     supplied = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
@@ -2809,7 +2813,6 @@ async def generate_proposal_endpoint(request: Request):
     persisted to generated_proposals (fail-soft — persistence failure never
     blocks the download) and linked back to the intake session.
     """
-    supabase_client.REQUEST_USER.set(request.headers.get(_USER_HEADER) or None)
     body = await request.json()
     ledger = document_engine.start_ledger()
     rfp_text = (body.get("rfp_text") or "").strip()
@@ -3333,8 +3336,6 @@ _USER_HEADER = "x-openwebui-user-email"
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
-    supabase_client.REQUEST_USER.set(request.headers.get(_USER_HEADER) or None)
-    rfp_intake.REQUEST_USER_ID.set(request.headers.get("x-openwebui-user-id") or None)
     body = await request.json()
     messages = body.get("messages", [])
     stream = bool(body.get("stream", False))

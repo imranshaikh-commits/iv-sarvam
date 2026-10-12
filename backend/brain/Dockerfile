@@ -25,13 +25,23 @@ RUN apt-get update \
 # the fallback, so a failed D2 fetch never breaks diagram rendering.
 # 0.9.0 matches the version diagrams are checked against locally (the solution
 # stack uses grid layout).
+# The download is checked against the SHA-256 the release publishes for that
+# exact file (read from the GitHub release metadata on 2026-10-12). A different
+# file under the same name fails the build. Change both sums with D2_VERSION.
 ARG D2_VERSION=0.9.0
+ARG D2_SHA256_AMD64=5669ddc46b99e942cc96078f4a4e36d5e62103348f4c05179ede27802fdd87a9
+ARG D2_SHA256_ARM64=ac2c028697199479acb321db1e3d68caee9f2ba492ed73caa3cd13f3829bf913
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
-    case "$arch" in amd64) d2arch=amd64 ;; arm64) d2arch=arm64 ;; *) d2arch="" ;; esac; \
+    case "$arch" in \
+        amd64) d2arch=amd64; d2sum="$D2_SHA256_AMD64" ;; \
+        arm64) d2arch=arm64; d2sum="$D2_SHA256_ARM64" ;; \
+        *) d2arch="" ;; \
+    esac; \
     if [ -n "$d2arch" ]; then \
         curl -fsSL "https://github.com/terrastruct/d2/releases/download/v${D2_VERSION}/d2-v${D2_VERSION}-linux-${d2arch}.tar.gz" \
             -o /tmp/d2.tgz \
+        && echo "${d2sum}  /tmp/d2.tgz" | sha256sum -c - \
         && tar -xzf /tmp/d2.tgz -C /tmp \
         && install -m 0755 "$(find /tmp -path '*/bin/d2' -type f | head -1)" /usr/local/bin/d2 \
         && rm -rf /tmp/d2.tgz /tmp/d2-v* \

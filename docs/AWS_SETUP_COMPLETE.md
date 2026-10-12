@@ -99,4 +99,4 @@ To add later, we'll create an A record at whatever service manages `inspiritvisi
 
 ## Rotation reminder
 
-Old IAM access key `AKIAWIRYYQK6HHTMC5W7` still in vault, safe but unused. Delete when convenient at IAM → Users → sarvam → Security credentials.
+An old IAM access key for the `sarvam` user was left in the vault, unused (its id was removed from this file on 2026-10-12). Confirm it is deleted at IAM → Users → sarvam → Security credentials.

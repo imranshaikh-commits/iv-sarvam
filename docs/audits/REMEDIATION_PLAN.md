@@ -35,7 +35,7 @@ This file only tracks progress against it.
 
 | Phase | Findings | Branch | State |
 |---|---|---|---|
-| 0: can be rebuilt, tells no secrets | F01 F43 F60 F02 F06 F50 F48 F70 F51 F71 F41 F52 F49 | `audit/phase-0` | in progress; report in `PHASE_0_REPORT.md` |
+| 0: can be rebuilt, tells no secrets | F01 F43 F60 F02 F06 F50 F48 F70 F51 F71 F41 F52 F49 | `audit/phase-0` | built 2026-10-12, committed locally, NOT yet pushed; awaiting push, CI, main-session review and merge. Report: `PHASE_0_REPORT.md` |
 | 1: the document tells the truth | F14 F61 F72 F54 F56 F42 F10 F24 F08 F13 F31 | `audit/phase-1` | not started |
 | 2: the chat tells the truth, each colleague sees their own | F19 F21 F18 F69 F17 F03 F39 F40 F57 F53 F55 | `audit/phase-2` | not started |
 | 3: reading the tender and the evidence | F11 F12 F15 F16 F28 F30 F26 F27 F62 F67 F09 F29 F22 | `audit/phase-3` | not started |

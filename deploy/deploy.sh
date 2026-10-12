@@ -25,7 +25,9 @@ echo "built sarvam-brain:$TAG; running the test suite inside it (about a minute,
 # No pipe after pytest: `pytest | tail -1` exits with tail's status, so a failing
 # suite deployed anyway (audit 2026-10-12, finding 3). Output goes to a log; the
 # exit status is pytest's own, and set -e stops the script here.
-if ! docker run --rm -v "$PWD/backend/brain/tests:/app/tests:ro" --entrypoint sh "sarvam-brain:$TAG" \
+# SHILPI_REQUIRE_STACK=1: in this image a missing d2/soffice/pdftoppm FAILS the
+# run instead of skipping (tests/test_production_stack.py).
+if ! docker run --rm -e SHILPI_REQUIRE_STACK=1 -v "$PWD/backend/brain/tests:/app/tests:ro" --entrypoint sh "sarvam-brain:$TAG" \
      -c "pip install -q pytest >/dev/null 2>&1 && python -m pytest -q -p no:cacheprovider tests" \
      > /tmp/shilpi-deploy-tests.log 2>&1; then
   tail -30 /tmp/shilpi-deploy-tests.log

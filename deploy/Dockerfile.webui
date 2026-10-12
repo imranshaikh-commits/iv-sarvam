@@ -1,6 +1,6 @@
 # Sarvam — Open WebUI with IV branding baked in.
 #
-# Thin layer on top of ghcr.io/open-webui/open-webui:main that:
+# Thin layer on top of a pinned Open WebUI release (see FROM) that:
 #   - replaces the logo/favicon assets with the Inspirit Vision icon mark
 #   - runs deploy/patch-webui.py to (a) strip the forced " (Open WebUI)"
 #     brand suffix from WEBUI_NAME and (b) force the sign-in logo to render
@@ -8,7 +8,16 @@
 #
 # The custom name itself is set via the WEBUI_NAME env var in
 # docker-compose.yml. Rebuild with:  docker compose up -d --build
-FROM ghcr.io/open-webui/open-webui:main
+#
+# PINNED (audit 2026-10-12, finding 12). This used to follow the moving `:main`
+# tag, so any rebuild could pull a new Open WebUI. Shilpi depends on its
+# internals in three places: patch-webui.py edits its source, the brain reads
+# attachments from its uploads directory, and the brain reads the `file` table
+# of its database to tell whose upload is whose. 0.10.2 is the release that was
+# running in production on 2026-10-12, when all three were verified.
+# To upgrade: change tag AND digest together, rebuild, then check the patch
+# output below, an RFP upload in chat, and `select count(*) from file`.
+FROM ghcr.io/open-webui/open-webui:v0.10.2@sha256:9fcea9c6e32ab60b0498f3986c6cdf651ddbe61db48d2213a3d28048ddd673d4
 
 # --- IV logo + favicon assets (served from /static/...) --------------------
 # /static/favicon.png      -> sign-in page logo AND browser tab icon (app.html <link rel="icon">)

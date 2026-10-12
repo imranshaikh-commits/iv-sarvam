@@ -26,17 +26,28 @@ identifier was or wasn't touched: `06_PRODUCT_DECISIONS.md`.
 
 - **Backend** (`backend/brain/`) — FastAPI, Python 3.12. Exposes an
   OpenAI-compatible chat endpoint that Open WebUI calls. No job queue, no
-  cache — per-request `asyncio` concurrency only.
-- **Frontend** — Open WebUI (upstream image plus a thin branding layer,
-  `deploy/Dockerfile.webui`).
+  cache — per-request `asyncio` concurrency only; one draft per intake
+  session and `SHILPI_MAX_CONCURRENT_DRAFTS` (2) overall, held in process.
+- **Frontend** — Open WebUI, **pinned to a release by digest** in
+  `deploy/Dockerfile.webui` plus a thin branding layer. Caddy terminates
+  HTTPS in front of it; Open WebUI and the brain listen on loopback only.
+  Do not bump the pin casually: the brain reads Open WebUI's uploads
+  directory and its `file` table.
 - **Data** — Supabase: Postgres 17 + pgvector for the proposal corpus and
-  the (currently empty) partner-product corpus, five private Storage
-  buckets, no Edge Functions.
-- **LLM** — OpenRouter. Drafting: Claude Sonnet 5 → GLM 5.2 fallback.
-  Diagram specs and embeddings use their own model/chain — see
-  `01_OPERATING_MANUAL.md`.
-- **Deploy** — manual, no CI. `docker compose` on one EC2 instance; exact
-  sequence in `01_OPERATING_MANUAL.md`.
+  the partner-product corpus, six private Storage buckets, no Edge
+  Functions. Row Level Security is on for every public table; the brain
+  uses the service-role key, which bypasses it.
+- **LLM** — OpenRouter. The defaults live in ONE place,
+  `document_engine.PRIMARY_LLM_MODEL` / `FALLBACK_LLM_MODEL` (Gemini 3.8
+  Flash, Qwen fallback, env-overridable); classification and diagram specs
+  have their own chains in `app.py`. `GET /health` reports what is actually
+  in effect. Read the code or `/health`, not a document, for model names.
+- **Deploy** — `deploy/deploy.sh` on the one EC2 instance: builds
+  `sarvam-brain:<commit>`, runs the suite inside that image, swaps, checks
+  health, rolls back by itself. `deploy/rollback.sh` undoes it. CI (GitHub
+  Actions) runs the suite on every push, plus the brain image with its real
+  renderer stack and the Open WebUI image build. Operations:
+  `docs/RUNBOOK.md`.
 
 ```bash
 cd backend/brain
@@ -48,15 +59,11 @@ Requires `OPENROUTER_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY` in the
 environment — get these from whoever holds `scripts/sarvam.env` on the
 host; never commit them.
 
-Run the suite before any change and before calling anything done:
+Run the suite before any change and before calling anything done (the same
+command CI runs; it needs no keys and `tests/conftest.py` blocks the network):
 
 ```bash
-cd backend/brain
-for t in test_chat_state test_chat_interview_gating test_proposal_depth \
-         test_intake_template test_export_engine test_document_qa; do
-  python3 tests/$t.py
-done
-python3 -m pytest tests/ -q
+python -m pytest -q backend/brain/tests scripts
 ```
 
 ## Conventions and constraints
@@ -78,15 +85,23 @@ python3 -m pytest tests/ -q
 - **One variable at a time.** Isolate changes so cause and effect stay
   legible; run a scored baseline before changing anything that touches
   drafting quality or retrieval.
-- **Never disable Row Level Security**, even to unblock local testing. One
-  table (`visual_assets`) already has it off by accident — see
-  `03_CURRENT_STATE.md` — that is a bug to fix, not a pattern to extend.
+- **Never disable Row Level Security**, even to unblock local testing. It
+  is on for every public table (the last one, `visual_assets`, was closed
+  by `sarvam_018`); keep it that way.
 - **Never read or edit `scripts/sarvam.env`.** Secrets stay host-only.
-- **The repo is PUBLIC.** No client content, credentials, or infra secrets
-  ever — including in eval fixtures, corpus manifests, or debug output.
-  Verify a new ignore rule actually works with
-  `git check-ignore -v <path>` before trusting it; a drafted-but-
-  never-added rule has leaked client data once already.
+- **No client content, credentials, or infra secrets in the repo, ever** —
+  including eval fixtures, corpus manifests and debug output. The repo is
+  private since 2026-09-28, but it was public before and its history is
+  what it is; treat it as if it still were. Verify a new ignore rule
+  actually works with `git check-ignore -v <path>` before trusting it; a
+  drafted-but-never-added rule has leaked client data once already.
+- **Uncertain is not success.** "Fail-soft" is for optional things (a
+  decorative image, a logo). A failed approval write, an unidentified
+  uploader, an incomplete requirement read or an unmet precondition must be
+  reported as such, never rendered as done (independent audit, 2026-10-12).
+- **Authority lives in the database, not in the chat.** Session and
+  proposal ids arrive inside chat markers a user can edit; check ownership
+  and workflow state from stored rows before acting on them.
 - **Citations never reach a client-facing document.** Numbered markers are
   for internal grounding only, stripped before export — not just hidden in
   an "internal" variant.
@@ -101,13 +116,21 @@ python3 -m pytest tests/ -q
 
 ## Reference docs (`docs/`)
 
-Read `01`, `05`, and `09` before your first change — the last one is the
-actual pending-work plan. The rest, as needed — each
-line below says what's inside and when to open it.
+Read `11_PRODUCTION_PLAN.md` (the canonical plan), `RUNBOOK.md` (how the
+service is operated) and `02_LESSONS.md` before your first change. Several
+older documents below are history and say so; where a document and the code
+disagree, the code and `GET /health` are right. Each line says what is inside
+and when to open it.
 
-- **`01_OPERATING_MANUAL.md`** — infra map, containers, env vars, the exact
-  deploy sequence, gotchas, how to run the test suite. Read before
-  deploying or debugging infra.
+- **`11_PRODUCTION_PLAN.md`** — release gate, sprint plan and status. The
+  current plan; supersedes `09` and `PHASES.md` for anything it covers.
+- **`RUNBOOK.md`** — deploy, rollback, restore, key rotation, access
+  control, vendor kits, where to look when something breaks.
+- **`USER_GUIDE.md`** — the one page a consultant reads.
+
+- **`01_OPERATING_MANUAL.md`** — infra map, env vars and gotchas from the
+  build phase. `RUNBOOK.md` is the current operating guide; use this for
+  background on why things are the way they are.
 - **`02_LESSONS.md`** — 12 recurring failure patterns from this project's
   history (built-but-never-wired, silent truncation, asserting instead of
   measuring, and others). Read before touching retrieval, diagram
@@ -134,11 +157,8 @@ line below says what's inside and when to open it.
   tooling-choice table (D2 over Graphviz, why hybrid search was rejected,
   and others) with the reasoning behind each. Read before swapping a
   library or reversing a prior technical decision.
-- **`09_NEAR_TERM_SPRINTS.md`** — the actual current sprint plan,
-  rewritten 2026-09-21. What Sprints 1-4 closed, exact recommended order
-  for everything pending (Sprint 7 content gathering, Sprints 5/6/8, the
-  held-back validation run), and what's still unresolved and needs a
-  person rather than code. Read this before picking up any new work.
+- **`09_NEAR_TERM_SPRINTS.md`** — the sprint plan as of 2026-09-21.
+  History: `11_PRODUCTION_PLAN.md` replaced it on 2026-09-25.
 - **`10_FUTURE_VISION.md`** — speculative future state (multi-tenancy,
   outcome-weighted retrieval, regional/linguistic reach). Direction, not
   commitment — nothing here is scheduled.

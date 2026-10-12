@@ -1,6 +1,7 @@
 # Every push runs the full keyless test suite. No secrets are needed: tests
-# never reach Supabase or OpenRouter. deploy/deploy.sh runs the brain suite
-# again inside the built image on the host, so a red build cannot ship.
+# never reach Supabase or OpenRouter (tests/conftest.py blocks the network).
+# deploy/deploy.sh runs the brain suite again inside the built image on the
+# host, so a red build cannot ship.
 name: tests
 on: [push, pull_request]
 jobs:
@@ -14,3 +15,24 @@ jobs:
           cache: pip
       - run: pip install -r backend/brain/requirements.txt -r scripts/requirements.txt pytest
       - run: python -m pytest -q backend/brain/tests scripts
+
+  # The image that ships, with its real renderer stack (D2, Graphviz,
+  # LibreOffice, poppler). The job above mocks or skips those; here a missing
+  # binary fails (SHILPI_REQUIRE_STACK=1) and a diagram and a PDF are really made.
+  brain-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t sarvam-brain:ci backend/brain
+      - run: >
+          docker run --rm -e SHILPI_REQUIRE_STACK=1
+          -v "$PWD/backend/brain/tests:/app/tests:ro" --entrypoint sh sarvam-brain:ci
+          -c "pip install -q pytest && python -m pytest -q -p no:cacheprovider tests"
+
+  # The pinned Open WebUI release still resolves and deploy/patch-webui.py
+  # still applies to it (the build greps for both patches and fails if absent).
+  webui-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f deploy/Dockerfile.webui deploy

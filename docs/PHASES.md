@@ -7,6 +7,10 @@
 > `git log` and the live Supabase project actually show, not what was
 > planned in July.
 >
+> **History since 2026-09-25:** `docs/11_PRODUCTION_PLAN.md` is the current
+> plan and `docs/RUNBOOK.md` the current operating guide. Where this file
+> disagrees with them or with the code, they are right.
+>
 > This file stays the long-horizon layer above `docs/09_NEAR_TERM_SPRINTS.md`.
 > For what to actually do next, read `09` — it is more current and more
 > detailed. This file is for phases 7 onward, which `09` doesn't cover.
@@ -54,10 +58,10 @@ Goal: make it safe for people other than the builder to use.
 
 ### 7.1 — Network exposure and TLS
 
-`deploy/docker-compose.yml` still binds Open WebUI as `8080:8080` — all
-interfaces, plain HTTP, public EC2 IP. IV's proposal bank and any client
-document viewed through the UI are served unencrypted over the internet.
-Unchanged since July.
+**Done 2026-09-28.** Caddy terminates HTTPS on 80/443; Open WebUI and the
+brain are bound to loopback; the security group no longer opens 8080. (This
+section used to describe 8080 as public plain HTTP; that was true until
+then.) The steps below are kept as the record of what was planned.
 
 - Restrict the security group to known IPs — minutes of console work, does
   not need to wait for this phase.

@@ -9,9 +9,9 @@
 ![Retrieval](https://img.shields.io/badge/retrieval-Supabase%20pgvector-3ECF8E)
 ![Frontend](https://img.shields.io/badge/frontend-Open%20WebUI-9333EA)
 ![Infra](https://img.shields.io/badge/infra-AWS%20EC2%20(Mumbai)-FF9900)
-![Tests](https://img.shields.io/badge/tests-670%20passing%20(manual)-555555)
+![Tests](https://img.shields.io/badge/tests-CI%20on%20every%20push-2ea44f)
 
-> **Internal use only.** Proprietary to Inspirit Vision. This repository is public for collaboration; no client content, credentials, or infrastructure secrets are committed. **It should be made private before a second person clones it** (see [Known gaps](#known-gaps)). See [Security posture](#security-posture).
+> **Internal use only.** Proprietary to Inspirit Vision. The repository is private (since 2026-09-28; it was public before, so no client content, credentials or infrastructure secrets are committed, then or now). See [Security posture](#security-posture).
 
 ---
 
@@ -78,18 +78,18 @@ are budgeted per sprint.
 
 Decisions needed from Imran before Sprint 1 are listed at the end of the plan.
 
-Eval fixtures live in `docs/evals/` and are **not committed**. They contain client-confidential proposal content and this repository is public. See [`docs/evals/README.md`](docs/evals/README.md).
+Eval fixtures live in `docs/evals/` and are **not committed**. They contain client-confidential proposal content, and the repository's history was public until 2026-09-28. See [`docs/evals/README.md`](docs/evals/README.md).
 
 ### Known gaps
 
-Checked against the code and the live database on 2026-09-25. Items fixed since the previous README are listed at the end of this section.
+Security, access and engineering items re-checked 2026-10-12, after the Sprint 1 and 3 work and an independent code audit (findings 1-12 fixed; see [`docs/RUNBOOK.md`](docs/RUNBOOK.md)). Validation and output-quality items are as of 2026-09-25.
 
 **Security and access**
-- **The repository is public.** Client review artefacts were published from it once already (see [Incidents](#incidents)). Make it private before anyone else clones it.
-- **`visual_assets` has Row Level Security disabled.** This was re-verified on 2026-09-25 and it is the only public table with RLS off. The Supabase anon key can read or write all 939 rows. Every reader and writer (brain, scripts) uses the service-role key, which bypasses RLS, so enabling RLS with no policies closes the exposure without breaking anything. Waiting on Imran's yes (production plan item 1.2).
-- **Port 8080 is plain HTTP**, with the whole proposal bank behind it. It has been open since the first session.
-- **RLS is present but not load-bearing.** `auth.users` and `org_members` are both empty, so every `is_org_member()` policy is false for everyone and the brain works only through the service-role key. Tested on 2026-09-25 as the `anon` role: every public table returns 0 rows except `visual_assets` (939). Storage buckets are all private. `sarvam_018` (written, awaiting approval to apply) removes anon execute on the two SECURITY DEFINER functions and pins `search_path` on the retrieval RPCs, which clears three Supabase advisor warnings. Making RLS load-bearing needs real users (Supabase Auth, Phase 7.2). `approved_by` on diagrams stays NULL until then.
-- **Backups are table-level only, and on the same host.** `scripts/backup_tables.py` dumps every irreplaceable table nightly through PostgREST (gzip JSONL, 14 kept) and can restore by upsert. The 173 MB `proposal_chunks` table is a weekly `--with-proposal-chunks` run. Storage buckets (rendered diagrams, generated DOCX) are not covered, and there is no off-host copy yet. Cron installed on the host 2026-09-25 (nightly, plus weekly with chunks); the first backup matched live row counts.
+- **Closed:** the repository is private (2026-09-28); `visual_assets` has RLS on and `sarvam_018` is applied, so the anon key reads 0 rows in every public table; the frontend is HTTPS through Caddy with Open WebUI and the brain on loopback.
+- **The brain trusts its network until a service key is set.** With `SHILPI_API_KEY` in `sarvam.env` and the same key on Open WebUI's connection, every route but the liveness probes requires it. Unset, any caller on the Docker network is accepted. Sessions and uploaded RFPs are bound to the signed-in Open WebUI user; rows created before 2026-10-12 have no owner and stay readable by all.
+- **An approval is not invalidated by later answer changes.** Generation refuses while a diagram awaits review, but editing discovery answers after approving does not reopen the architecture. Needs a revision on the session.
+- **RLS is present but not load-bearing.** `auth.users` and `org_members` are empty, so every `is_org_member()` policy is false for everyone and the brain works only through the service-role key, which bypasses RLS. Access control between users is therefore the brain's own (the previous item), not the database's. Making RLS load-bearing needs Supabase Auth users.
+- **A full restore has not been rehearsed.** Tables back up nightly, `proposal_chunks` and the Storage buckets weekly, the Open WebUI volume nightly, all copied to S3 (30 days). Reading a backup back was checked against live row counts; restoring into a fresh Supabase project end to end has not been done. `sarvam.env` is in no backup.
 
 **Validation**
 - **No verdict from a reviewer other than the builder.** Every quality judgement here rests on one reader.
@@ -107,8 +107,8 @@ Checked against the code and the live database on 2026-09-25. Items fixed since 
 - **Diagram visual parity.** D2 output is accurate and legible but visibly machine-laid-out next to IV's hand-drawn decks. Closing that needs editable export (`.drawio`/`.pptx`) or a designer template set. The durable per-vendor spec-template store is also deferred.
 
 **Engineering**
-- **No CI.** 670 tests (665 brain, 5 backup-script) run only by hand. Production plan item 3.1.
-- **Cost is not recorded per proposal.** Cost is measured from the OpenRouter activity CSV after the fact, and nothing is stored with the generated proposal.
+- **A draft is not resumable.** One draft per intake session and two overall are enforced in process, so a retry no longer starts a second paid run, but a restart ends drafts in flight. Needs a job table and a worker.
+- **Cost is recorded for the generation request only** (`generated_proposals.llm_usage`). The chat turns before it (RFP reading, diagram specs) are separate requests and are not summed per deal.
 - **Reranking is built, off, and unmeasured.** The retrieval harness talks to the database directly, so the brain's post-retrieval steps have never been scored.
 - **Canonical status settled.** The README dashboard is canonical for status and `docs/11_PRODUCTION_PLAN.md` for the plan; `03_CURRENT_STATE.md`, `PHASES.md` and `09_NEAR_TERM_SPRINTS.md` are history.
 
@@ -469,8 +469,8 @@ Persistence is fail-soft: if a Supabase write fails, the generated DOCX is still
 
 | Layer | Control |
 |---|---|
-| Network | EC2 security group restricts inbound to SSH (from known IPs) and the frontend port. The brain is bound to localhost — never exposed publicly. **Open gap: the frontend is served over plain HTTP on port 8080**, so session cookies and every proposal rendered in the browser cross the network unencrypted |
-| Database | Row-Level Security enabled at the Postgres layer on every public table **except `visual_assets`** (open gap, policy decision pending, see Known gaps). All writes use a server-side key. RLS is never disabled without an explicit go-ahead |
+| Network | The EC2 security group opens 22, 80 and 443. Caddy terminates HTTPS (certificate renewed automatically); Open WebUI (8080) and the brain (8000) are bound to loopback and are not reachable from outside. Server-side fetches of user-supplied URLs (the client logo) are limited to public addresses |
+| Database | Row-Level Security is enabled on every public table. All reads and writes use a server-side key that bypasses it, so the brain enforces who may see what (see Known gaps). RLS is never disabled without an explicit go-ahead |
 | Secrets | API keys live only in the server's local environment file (restricted permissions). `.gitignore` blocks `.env`, `*.env`, `*.pem`, `*.key`. **The `.env` pattern never matched `sarvam.env`** — caught before it was committed, but only by chance. Ignore rules for anything touching client data are now verified with `git check-ignore`, not assumed |
 | Client data | Source proposals under NDA live under `data/raw/` (gitignored, never committed). Only anonymised metadata is version-controlled. **This was violated once** — see Incidents. Gitignored: corpus manifests (client names and engagements), retrieval scorecards (client names in probe results), the asset review sheet (client imagery), ingestion run output |
 | Frontend | Open WebUI open sign-ups disabled; only the Shilpi Architect model is exposed (all other LLM connections removed) |

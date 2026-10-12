@@ -29,8 +29,12 @@ break every existing clone and remote for zero functional benefit.
 
 | Container | Port | Exposure |
 |---|---|---|
-| `sarvam-webui` (Open WebUI) | 8080 | **PUBLIC, plain HTTP** — known gap, Phase 7 |
+| `sarvam-caddy` (Caddy) | 80, 443 | Public HTTPS front door (since 2026-09-28) |
+| `sarvam-webui` (Open WebUI) | 8080 | `127.0.0.1` only; reached through Caddy |
 | `sarvam-brain` (FastAPI) | 8000 | `127.0.0.1` only (correct) |
+
+> Current operations (deploy, rollback, restore, access control) are in
+> `RUNBOOK.md`. This manual is build-phase background.
 
 ### Environment variables (host, in `scripts/sarvam.env`)
 
@@ -40,8 +44,10 @@ All prefixed `SHILPI_` after the rename. The important one:
 SHILPI_DIAGRAM_MODELS=anthropic/claude-sonnet-4.6,google/gemini-2.5-flash,z-ai/glm-5.2
 ```
 
-This routes **only** diagram-spec generation to a stronger model. General
-drafting and chat stay on the default chain (GLM 5.2 primary, Qwen fallback).
+This routes **only** diagram-spec generation to its own chain (the value
+above is an old example). General drafting and chat use
+`document_engine.PRIMARY_LLM_MODEL` / `FALLBACK_LLM_MODEL` (Gemini 3.8 Flash,
+Qwen fallback); `GET /health` shows what is in effect.
 Diagram specs are the hardest structured output in the system and GLM proved
 marginal at them — it returned empty and edgeless specs that were schema-valid.
 

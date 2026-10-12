@@ -2792,8 +2792,36 @@ async def complete_intake_session_endpoint(session_id: str):
     return JSONResponse(result)
 
 
+# Drafts in flight, by intake session (audit 2026-10-12, finding 10). A draft
+# runs for most of an hour inside one request; a retry or a second tab used to
+# start a second paid generation of the same proposal, and nothing bounded how
+# many ran at once.
+# ponytail: in-process only. A restart forgets these (and kills the drafts with
+# it); resumable jobs need a job table and a worker, which this is not.
+_DRAFTS_IN_FLIGHT: set[str] = set()
+MAX_CONCURRENT_DRAFTS = int(os.environ.get("SHILPI_MAX_CONCURRENT_DRAFTS", "2"))
+
+
 @app.post("/v1/generate-proposal")
 async def generate_proposal_endpoint(request: Request):
+    """Admit one draft per intake session and a bounded number overall, then draft."""
+    body = await request.json()
+    token = (body.get("intake_session_id") or "").strip() or f"direct-{id(request)}"
+    if token in _DRAFTS_IN_FLIGHT:
+        return JSONResponse({"error": "a draft of this proposal is already being generated; "
+                                      "wait for it to finish"}, status_code=409)
+    if len(_DRAFTS_IN_FLIGHT) >= MAX_CONCURRENT_DRAFTS:
+        return JSONResponse({"error": f"{len(_DRAFTS_IN_FLIGHT)} proposals are being drafted "
+                                      f"right now, which is the limit; try again in a few "
+                                      f"minutes"}, status_code=409)
+    _DRAFTS_IN_FLIGHT.add(token)
+    try:
+        return await _generate_proposal(request, body)
+    finally:
+        _DRAFTS_IN_FLIGHT.discard(token)
+
+
+async def _generate_proposal(request: Request, body: dict):
     """Sprint 5 — turn an RFP + context into a downloadable DOCX proposal draft.
 
     Body: {"rfp_text","client_name","proposal_type":"implementation|mss",
@@ -2813,7 +2841,6 @@ async def generate_proposal_endpoint(request: Request):
     persisted to generated_proposals (fail-soft — persistence failure never
     blocks the download) and linked back to the intake session.
     """
-    body = await request.json()
     ledger = document_engine.start_ledger()
     rfp_text = (body.get("rfp_text") or "").strip()
     client_name = (body.get("client_name") or "").strip()
@@ -2930,7 +2957,7 @@ async def generate_proposal_endpoint(request: Request):
                 continue
             try:
                 spec = DiagramSpec.model_validate(drow.get("spec_json") or {})
-                image = diagram_engine.render_spec(spec, fmt="png")
+                image = await asyncio.to_thread(diagram_engine.render_spec, spec, fmt="png")
             except Exception as e:  # noqa: BLE001 — fail soft per diagram
                 log.error("approved diagram render failed (skipping embed): %s", e)
                 image = None
@@ -3084,14 +3111,15 @@ async def _build_export_response(
     """
     docx_meta: dict = {"lite": lite}
     if lite:
-        docx_bytes, lite_meta = export_engine.compress_docx_lite(docx_bytes)
+        # CPU and subprocess work: off the event loop, so other users' chats keep answering.
+        docx_bytes, lite_meta = await asyncio.to_thread(export_engine.compress_docx_lite, docx_bytes)
         docx_meta.update(lite_meta)
     docx_meta["size"] = len(docx_bytes)
 
     pdf_bytes: bytes | None = None
     pdf_meta: dict | None = None
     if include_pdf:
-        pdf_bytes, pdf_error = export_engine.export_pdf(docx_bytes)
+        pdf_bytes, pdf_error = await asyncio.to_thread(export_engine.export_pdf, docx_bytes)
         if pdf_bytes is not None:
             pdf_meta = {"size": len(pdf_bytes)}
         else:

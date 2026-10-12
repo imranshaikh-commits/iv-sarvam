@@ -462,3 +462,20 @@ def test_forwarded_identity_reaches_the_work_of_every_route(monkeypatch):
         tc.post("/v1/generate-proposal", json=_base_body(),
                 headers={"X-OpenWebUI-User-Email": "imran@iv.test", "X-OpenWebUI-User-Id": "u-1"})
     assert seen == {"user": "imran@iv.test", "uid": "u-1"}
+
+
+def test_a_second_draft_of_the_same_proposal_is_not_started(monkeypatch):
+    """Audit 2026-10-12 finding 10: a retry started another paid generation."""
+    _patch_common(monkeypatch, direct=False)
+    _session_with_diagrams(monkeypatch, [])
+    body = {**_base_body(), "intake_session_id": "s1"}
+    with TestClient(app_module.app) as tc:
+        monkeypatch.setattr(app_module, "_DRAFTS_IN_FLIGHT", {"s1"})
+        resp = tc.post("/v1/generate-proposal", json=body)
+        assert resp.status_code == 409 and "already being generated" in resp.json()["error"]
+        # A different proposal is refused only at the overall limit.
+        monkeypatch.setattr(app_module, "_DRAFTS_IN_FLIGHT", {"s8", "s9"})
+        assert tc.post("/v1/generate-proposal", json=body).status_code == 409
+        monkeypatch.setattr(app_module, "_DRAFTS_IN_FLIGHT", set())
+        assert tc.post("/v1/generate-proposal", json=body).status_code == 200
+        assert app_module._DRAFTS_IN_FLIGHT == set()      # released when it finishes

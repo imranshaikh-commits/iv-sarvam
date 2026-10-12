@@ -3650,8 +3650,20 @@ async def chat_completions(request: Request):
             # is a genuine disqualification concern the gate exists to catch --
             # advancing past it would be worse than the original bug, not a
             # fix of it.
-            if (chat_state.is_force(q) or re.search(r"\bcontinue\b", q, re.I)
-                    or re.search(r"(?<!not )\ball met\b", q, re.I)):
+            wants_on = bool(chat_state.is_force(q) or re.search(r"\bcontinue\b", q, re.I)
+                            or re.search(r"\ball met\b", q, re.I))
+            # A reply that says to go on AND carries a negation is not a go-ahead
+            # (audit F14: "Do not continue; mandatory qualification is not met"
+            # advanced, because it contains the word "continue"). It is held
+            # here rather than guessed at. "No issues, continue" is held too:
+            # the way on is one plain word.
+            if wants_on and scope_filter.NEGATION_RE.search(q):
+                return _emit_chat(
+                    "I read a **no** or **not** in that, so I have **not** moved past "
+                    "the eligibility conditions. If one of them is not met, tell me "
+                    "which. If every condition is met, reply with just **continue**."
+                    "\n\n" + chat_state.encode_marker(state), stream)
+            if wants_on:
                 try:
                     async with httpx.AsyncClient() as sclient:
                         row = await supabase_client.get_intake_session(sclient, state.session)

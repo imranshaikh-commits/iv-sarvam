@@ -2271,6 +2271,67 @@ def test_continue_moves_from_rfp_review_to_the_diagram_plan(monkeypatch):
     assert cs.decode_marker(content).mode == cs.MODE_DIAGRAM_PLAN
 
 
+def _rfp_review_turn(monkeypatch, text):
+    """One user turn at the eligibility gate. Returns (reply, sessions completed)."""
+    completed = []
+
+    async def fake_get_session(client_, sid):
+        return {"answers": {
+            "client_name": "ESNAD", "industry": "Mining", "iam_vendor": "SailPoint",
+            "proposal_type": "implementation", "business_objectives": "x",
+            "proposal_depth": "full"}}
+
+    async def fake_complete(client_, sid):
+        completed.append(sid)
+        return {}
+
+    async def fake_load_plan(session, answers=None):
+        return [("Solution Architecture", "architecture")]
+
+    async def fake_save_plan(session, plan):
+        return None
+
+    async def no_answers(bucket, text_, ptype):
+        return {}
+
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "complete_intake_session", fake_complete)
+    monkeypatch.setattr(app, "load_plan", fake_load_plan)
+    monkeypatch.setattr(app, "save_plan", fake_save_plan)
+    monkeypatch.setattr(app, "resolve_bucket_answers", no_answers)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "ok " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_RFP_REVIEW, session="sess-gate"))},
+            {"role": "user", "content": text},
+        ],
+        "stream": False,
+    })
+    return resp.json()["choices"][0]["message"]["content"], completed
+
+
+def test_a_negative_reply_never_passes_the_eligibility_gate(monkeypatch):
+    """Deep audit F14: any message containing the word "continue" advanced, so
+    "Do not continue; mandatory qualification is not met" moved a tender IV
+    cannot win on to the diagram plan."""
+    for text in ("Do not continue; mandatory qualification is not met.",
+                 "We can't continue, there is no ISO 27001 certificate",
+                 "not all met, we lack local presence",
+                 "continue? No. We never held that licence."):
+        reply, completed = _rfp_review_turn(monkeypatch, text)
+        assert cs.decode_marker(reply).mode == cs.MODE_RFP_REVIEW, text
+        assert completed == [], text
+        # Says it did not move on, and how to move on in one word.
+        assert "not" in reply.lower() and "**continue**" in reply, text
+
+
+def test_a_plain_go_ahead_still_passes_the_eligibility_gate(monkeypatch):
+    for text in ("continue", "All met", "all met, continue"):
+        reply, completed = _rfp_review_turn(monkeypatch, text)
+        assert cs.decode_marker(reply).mode == cs.MODE_DIAGRAM_PLAN, text
+        assert completed == ["sess-gate"], text
+
+
 def test_continue_blocks_on_ivs_own_missing_decisions(monkeypatch):
     """iam_vendor cannot come from the RFP. "continue" must not silently
     proceed to a diagram plan for a vendor nobody chose."""

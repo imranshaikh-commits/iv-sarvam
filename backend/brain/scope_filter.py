@@ -137,6 +137,15 @@ _NEGATIVE_ANSWER_RE = re.compile(
     r"out\s+of\s+scope|excluded)", re.I)
 
 
+# A negation anywhere in a short reply or a clause. Matched on shape (any
+# negating word), not on a list of phrasings: "do not continue", "can't
+# continue", "SaaS is not permitted", "no SaaS" and "non-SaaS" are one failure,
+# and a phrase list fixes only the one that broke last (lesson 3).
+NEGATION_RE = re.compile(
+    r"\b(?:no|not|never|none|nor|cannot|without|unable|unmet|prohibit\w*|forbid\w*|"
+    r"forbade|disallow\w*|exclud\w*|reject\w*|ruled\s+out)\b|n['\u2019]t\b|\bnon[- ]", re.I)
+
+
 def _upgrade_in_place(answers: dict) -> bool:
     """An in-place version upgrade, as opposed to a platform replacement.
 

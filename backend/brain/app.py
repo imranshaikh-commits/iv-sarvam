@@ -1737,15 +1737,49 @@ async def load_plan(session_id: str | None, answers: dict | None = None
     return chat_state.plan_diagrams(answers)
 
 
-async def save_plan(session_id: str | None, plan: list[tuple[str, str]]) -> None:
+async def save_plan(session_id: str | None, plan: list[tuple[str, str]]) -> bool:
+    """Store the diagram plan. False when the write did not land.
+
+    A DERIVED plan that fails to save does no harm: load_plan derives the same
+    one again. An EDITED plan that fails to save is lost, and the caller must
+    say so rather than show the edit as agreed (audit F19)."""
     if not session_id:
-        return
+        return True
     try:
         async with httpx.AsyncClient() as c:
-            await supabase_client.patch_intake_answers(
+            saved = await supabase_client.patch_intake_answers(
                 c, session_id, {PLAN_KEY: [list(p) for p in plan]})
-    except Exception as e:  # noqa: BLE001 — plan is re-derivable, never fatal
+    except Exception as e:  # noqa: BLE001 — never fatal; the caller decides what to say
         log.warning("could not persist diagram plan for %s: %s", session_id, e)
+        return False
+    if saved is None:
+        log.warning("could not persist diagram plan for %s", session_id)
+    return saved is not None
+
+
+async def _mark_discovery_complete(session_id: str | None) -> tuple[bool, list[str]]:
+    """(marked or checked, required answers still missing). One retry.
+
+    (False, []) when the database could not be asked: the caller must not then
+    say discovery is "complete and saved", nor treat the required answers as
+    checked (audit F19: the exception was swallowed and both happened)."""
+    if not session_id:
+        return True, []
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient() as c:
+                result = await supabase_client.complete_intake_session(c, session_id)
+            return True, list((result or {}).get("missing") or [])
+        except Exception as e:  # noqa: BLE001
+            log.warning("complete_intake_session failed for %s (attempt %d): %s",
+                        session_id, attempt + 1, e)
+    return False, []
+
+
+def _discovery_saved_line(marked: bool) -> str:
+    return ("Discovery is complete and saved." if marked else
+            "Your discovery answers are saved, but I could not mark the session complete "
+            "in the database. That does not hold up the next step.")
 
 
 async def propose_one_diagram(
@@ -1821,6 +1855,13 @@ async def propose_one_diagram(
             client, org_id=IV_ORG_ID, generated_proposal_id=proposal_id,
             diagram_type=spec.diagram_type, title=spec.title, spec_json=spec_json,
             status="needs_review", intake_session_id=session_id)
+        if not row:
+            # Not stored means not reviewable: it used to be shown with the
+            # usual "approve" prompt, and the approval then found nothing.
+            return (f"I produced **{title}** but could not save it (the database did "
+                    "not respond), so it cannot be reviewed yet. Say **regenerate** to "
+                    "try again, or **skip** to move to the next diagram.",
+                    proposal_id, total)
 
         url = None
         if row:
@@ -3704,11 +3745,11 @@ async def chat_completions(request: Request):
                 try:
                     async with httpx.AsyncClient() as sclient:
                         row = await supabase_client.get_intake_session(sclient, state.session)
-                        answers = (row or {}).get("answers") or {}
-                        await supabase_client.complete_intake_session(sclient, state.session)
+                    answers = (row or {}).get("answers") or {}
                 except Exception as e:  # noqa: BLE001
-                    log.warning("completing RFP-derived session failed: %s", e)
+                    log.warning("reading the RFP-derived session failed: %s", e)
                     answers = {}
+                marked, _ = await _mark_discovery_complete(state.session)
                 ptype = answers.get("proposal_type")
                 missing_now = missing_required(answers, ptype)
                 if missing_now:
@@ -3745,7 +3786,7 @@ async def chat_completions(request: Request):
                 plan = await load_plan(state.session, answers)
                 await save_plan(state.session, plan)
                 return _emit_chat(
-                    "Discovery is complete and saved.\n\n"
+                    _discovery_saved_line(marked) + "\n\n"
                     + chat_state.build_plan_message(plan, answers) + "\n\n"
                     + chat_state.encode_marker(chat_state.ChatState(
                         mode=chat_state.MODE_DIAGRAM_PLAN, session=state.session)),
@@ -3907,18 +3948,12 @@ async def chat_completions(request: Request):
                                   "architecture proposal.\n\n"
                                 + chat_state.encode_marker(state))
 
-                    if state.session:
-                        try:
-                            async with httpx.AsyncClient() as sclient:
-                                await supabase_client.complete_intake_session(
-                                    sclient, state.session)
-                        except Exception as e:  # noqa: BLE001
-                            log.warning("complete_intake_session failed: %s", e)
+                    marked, _ = await _mark_discovery_complete(state.session)
 
                     plan = await load_plan(state.session)
                     await save_plan(state.session, plan)
                     return (chat_state.build_recap_line(recorded) + "\n\n"
-                            + "Discovery is complete and saved.\n\n"
+                            + _discovery_saved_line(marked) + "\n\n"
                             + chat_state.build_plan_message(plan, answers) + "\n\n"
                             + chat_state.encode_marker(chat_state.ChatState(
                                 mode=chat_state.MODE_DIAGRAM_PLAN,
@@ -4022,16 +4057,17 @@ async def chat_completions(request: Request):
 
                 # Last area answered -> validate required fields, then either
                 # chase the gaps or move to the architecture approval gate.
-                missing: list[str] = []
-                if state.session:
-                    try:
-                        async with httpx.AsyncClient() as sclient:
-                            result = await supabase_client.complete_intake_session(
-                                sclient, state.session)
-                        missing = list(result.get("missing") or [])
-                    except Exception as e:  # noqa: BLE001
-                        log.warning("complete_intake_session failed for %s: %s",
-                                    state.session, e)
+                checked, missing = await _mark_discovery_complete(state.session)
+                if not checked:
+                    # Could not be asked, so the required answers are NOT
+                    # validated: stay in the gap-fill loop, which re-reads them.
+                    return (chat_state.build_recap_line(recorded) + "\n\n"
+                            "I could not confirm that discovery is complete (the database "
+                            "did not answer), so I have not moved on. Reply **continue** "
+                            "to try again.\n\n"
+                            + chat_state.encode_marker(chat_state.ChatState(
+                                mode=chat_state.MODE_INTERVIEW, session=state.session,
+                                bucket=next_index, proposal=state.proposal)))
 
                 if missing:
                     return (chat_state.build_recap_line(recorded) + "\n\n"
@@ -4051,7 +4087,7 @@ async def chat_completions(request: Request):
                         r = await supabase_client.get_intake_session(sc, state.session)
                     fresh = (r or {}).get("answers") or {}
                 return (chat_state.build_recap_line(recorded) + "\n\n"
-                        + "Discovery is complete and saved.\n\n"
+                        + _discovery_saved_line(True) + "\n\n"
                         + chat_state.build_plan_message(plan, fresh) + "\n\n"
                         + chat_state.encode_marker(chat_state.ChatState(
                             mode=chat_state.MODE_DIAGRAM_PLAN, session=state.session,
@@ -4087,7 +4123,12 @@ async def chat_completions(request: Request):
                     current, q, structured_fn=_structured_with_fallback)
                 if edited == current:
                     return chat_state.PLAN_REPROMPT + "\n\n" + chat_state.encode_marker(state)
-                await save_plan(state.session, edited)
+                # `is False`: only a failed write. The edit exists nowhere else,
+                # so showing it as the plan would be showing a plan that is gone.
+                if await save_plan(state.session, edited) is False:
+                    return ("That change to the diagram plan **did not save** (a database "
+                            "issue, not a problem with your request). Please send it "
+                            "again.\n\n" + chat_state.encode_marker(state))
                 return (chat_state.build_plan_message(edited, answers) + "\n\n"
                         + chat_state.encode_marker(state))
             return await _emit_chat_lazy(_edit, stream)

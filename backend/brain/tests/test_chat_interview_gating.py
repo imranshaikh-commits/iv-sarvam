@@ -2361,3 +2361,103 @@ def test_1a_alone_routes_to_new_proposal():
     """Isolates the first-token fix: "1b" also matches via wants_rfp_upload's
     phrase fallback, but "1a" has no such fallback and depends on this alone."""
     assert cs.classify_router_choice("1a") == cs.CHOICE_NEW_PROPOSAL
+
+
+# ---------------------------------------------------------------------------
+# Deep audit F19: the remaining writes whose failure was reported as success.
+# ---------------------------------------------------------------------------
+
+def test_a_plan_edit_that_did_not_save_is_not_shown_as_the_plan(monkeypatch):
+    """save_plan threw its result away. A failed save of an EDITED plan showed
+    the edited plan as agreed, and the next turn re-derived the default one."""
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": {
+            "client_name": "AWS", "diagram_count": "3",
+            "required_diagram_types": "solution/reference, deployment, security"}}
+
+    async def failing_patch(c, sid, answers):
+        return None
+
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", failing_patch)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [{"role": "assistant", "content": "plan " + _plan_state()},
+                     {"role": "user", "content": "drop the security diagram"}],
+        "stream": False})
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert cs.decode_marker(content).mode == cs.MODE_DIAGRAM_PLAN
+    assert "did not save" in content.lower() or "not saved" in content.lower()
+    assert "approve" not in content.lower()          # nothing to approve was offered
+
+
+def _answers_missing(*fields):
+    import intake_template
+    required = intake_template.missing_required({}, None)
+    return {k: "value" for k in required if k not in fields}, required
+
+
+def test_discovery_is_not_called_complete_when_marking_it_failed(monkeypatch):
+    answers, required = _answers_missing()
+    gap = required[0]
+    stored = {k: v for k, v in answers.items() if k != gap}
+
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": dict(stored)}
+
+    async def fake_patch(c, sid, partial):
+        stored.update(partial)
+        return {"id": sid}
+
+    async def failing_complete(c, sid):
+        raise app.supabase_client.SupabaseError("database did not answer")
+
+    async def fake_resolve(bucket, text, ptype):
+        return {gap: "the missing value"}
+
+    async def fake_load_plan(sid, answers=None):
+        return [("Solution Architecture", "architecture")]
+
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+    monkeypatch.setattr(app.supabase_client, "complete_intake_session", failing_complete)
+    monkeypatch.setattr(app, "resolve_bucket_answers", fake_resolve)
+    monkeypatch.setattr(app, "load_plan", fake_load_plan)
+    tpl = app.get_intake_template(None)
+    past_last = cs.bucket_count(tpl)                         # the gap-fill loop
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [{"role": "assistant", "content": "gaps " + cs.encode_marker(
+            cs.ChatState(mode=cs.MODE_INTERVIEW, session="s1", bucket=past_last))},
+            {"role": "user", "content": f"{gap}: the missing value"}],
+        "stream": False})
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert "complete and saved" not in content
+    assert "could not mark" in content                       # says what did not happen
+    assert cs.decode_marker(content).mode == cs.MODE_DIAGRAM_PLAN   # answers ARE saved: go on
+
+
+def test_a_diagram_that_could_not_be_stored_is_not_offered_for_approval(monkeypatch):
+    import asyncio
+
+    async def fake_get_session(c, sid):
+        return {"id": sid, "answers": {"client_name": "Acme", "iam_vendor": "SailPoint"}}
+
+    async def fake_load_plan(sid, answers=None):
+        return [("Solution Architecture", "architecture")]
+
+    async def fake_evidence(c, answers):
+        return ""
+
+    async def fake_spec(*a, **k):
+        return app.DiagramSpec(diagram_type="architecture", title=k["title"], nodes=[], edges=[])
+
+    async def insert_fails(c, **k):
+        return None
+
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app, "load_plan", fake_load_plan)
+    monkeypatch.setattr(app, "_architecture_evidence", fake_evidence)
+    monkeypatch.setattr(app.diagram_engine, "generate_diagram_spec", fake_spec)
+    monkeypatch.setattr(app.supabase_client, "insert_diagram", insert_fails)
+    msg, pid, total = asyncio.run(app.propose_one_diagram("s1", "p1", 0))
+    assert "could not save" in msg and "regenerate" in msg.lower()
+    assert "approve" not in msg.lower()

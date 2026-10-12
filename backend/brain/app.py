@@ -3066,9 +3066,9 @@ async def _generate_proposal(request: Request, body: dict):
                 await supabase_client.set_proposal_usage(pclient, proposal_id, ledger)
     except Exception as e:  # noqa: BLE001 — persistence must never break the download
         log.error("generate-proposal persistence failed (returning DOCX anyway): %s", e)
-    log.info("proposal cost: %d calls, %d prompt + %d completion tokens, $%.4f",
+    log.info("proposal cost: %d calls, %d prompt + %d completion tokens, %s",
              ledger["calls"], ledger["prompt_tokens"], ledger["completion_tokens"],
-             ledger["cost_usd"])
+             document_engine.cost_text(ledger))
 
     # DEFAULT path (no export flag): return the DOCX binary byte-for-byte, exactly
     # as Pass 1-5 did. Nothing below runs unless the caller opts in.

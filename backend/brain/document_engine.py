@@ -760,9 +760,21 @@ USAGE_ACCOUNTING = {"usage": {"include": True}}
 
 
 def start_ledger() -> dict:
-    ledger = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
+    # cost_usd is the sum over calls that reported a cost: None until one does,
+    # and a lower bound whenever unpriced_calls > 0. An unreported cost used to
+    # be added as 0, so an unknown spend read as a free run.
+    ledger = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
+              "cost_usd": None, "unpriced_calls": 0}
     _LEDGER.set(ledger)
     return ledger
+
+
+def cost_text(ledger: dict) -> str:
+    """The ledger's cost for a log line or a message: never "$0" for unknown."""
+    cost, unpriced = ledger.get("cost_usd"), ledger.get("unpriced_calls") or 0
+    if cost is None:
+        return "unknown" if ledger.get("calls") else "$0.0000"
+    return f"${cost:.4f}" + (f" (+{unpriced} unpriced calls)" if unpriced else "")
 
 
 def record_usage(usage) -> None:
@@ -775,7 +787,10 @@ def record_usage(usage) -> None:
     ledger["calls"] += 1
     ledger["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
     ledger["completion_tokens"] += int(usage.get("completion_tokens") or 0)
-    ledger["cost_usd"] = round(ledger["cost_usd"] + float(usage.get("cost") or 0), 6)
+    if usage.get("cost") is None:
+        ledger["unpriced_calls"] += 1
+    else:
+        ledger["cost_usd"] = round((ledger["cost_usd"] or 0.0) + float(usage["cost"]), 6)
 
 
 async def _post_once(client: httpx.AsyncClient, payload: dict) -> dict:

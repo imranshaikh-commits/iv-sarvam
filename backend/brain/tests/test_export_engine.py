@@ -479,3 +479,35 @@ def test_a_second_draft_of_the_same_proposal_is_not_started(monkeypatch):
         monkeypatch.setattr(app_module, "_DRAFTS_IN_FLIGHT", set())
         assert tc.post("/v1/generate-proposal", json=body).status_code == 200
         assert app_module._DRAFTS_IN_FLIGHT == set()      # released when it finishes
+
+
+def test_a_call_with_no_cost_is_recorded_as_unpriced_never_as_zero(monkeypatch):
+    """Deep audit F49: a response that reported no cost was added as $0, so an
+    unknown spend read as a free run. The ledger now says how many calls were
+    unpriced, the total is null when none was priced, and the request survives."""
+    import document_engine
+    stored = {}
+
+    async def generate_with_usage(client, **kwargs):
+        document_engine.record_usage({"prompt_tokens": 10, "completion_tokens": 2})  # no cost
+        return await _fake_generate_proposal(client, **kwargs)
+
+    async def capture_usage(client, proposal_id, usage):
+        stored.update(usage)
+        return True
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(app_module, "generate_proposal", generate_with_usage)
+    monkeypatch.setattr(app_module.supabase_client, "set_proposal_usage", capture_usage)
+    with TestClient(app_module.app) as tc:
+        resp = tc.post("/v1/generate-proposal", json=_base_body())
+    assert resp.status_code == 200
+    assert stored["cost_usd"] is None and stored["unpriced_calls"] == 1
+
+    # Priced and unpriced calls together: the known part is kept and flagged.
+    led = document_engine.start_ledger()
+    document_engine.record_usage({"prompt_tokens": 1, "cost": 0.25})
+    document_engine.record_usage({"prompt_tokens": 1, "cost": 0})        # a cached call IS priced
+    document_engine.record_usage({"prompt_tokens": 1})
+    assert led["cost_usd"] == 0.25 and led["unpriced_calls"] == 1 and led["calls"] == 3
+    assert "unpriced" in document_engine.cost_text(led)

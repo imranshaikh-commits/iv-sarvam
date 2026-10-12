@@ -2412,7 +2412,8 @@ def test_usage_ledger_sums_calls_inside_the_request_only():
         document_engine.record_usage(None)          # a response without usage
         return led
     led = asyncio.run(gen())
-    assert led == {"calls": 2, "prompt_tokens": 150, "completion_tokens": 25, "cost_usd": 0.012}
+    assert led == {"calls": 2, "prompt_tokens": 150, "completion_tokens": 25,
+                   "cost_usd": 0.012, "unpriced_calls": 0}
     # Outside any request there is no ledger, so recording is a no-op.
     document_engine.record_usage({"prompt_tokens": 1})
 

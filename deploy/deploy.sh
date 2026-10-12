@@ -18,8 +18,10 @@ if CUR_ID=$(docker inspect sarvam-brain --format '{{.Image}}' 2>/dev/null); then
   docker tag "$CUR_ID" sarvam-brain:previous && PREV=previous
 fi
 
-docker build -q -t "sarvam-brain:$TAG" backend/brain >/dev/null
-echo "built sarvam-brain:$TAG; running tests in the image"
+# Not quiet: a silent build looked hung and was interrupted (2026-10-12).
+echo "building sarvam-brain:$TAG (about a minute)"
+docker build -t "sarvam-brain:$TAG" backend/brain
+echo "built sarvam-brain:$TAG; running the test suite inside it (about a minute, no output until it ends)"
 # No pipe after pytest: `pytest | tail -1` exits with tail's status, so a failing
 # suite deployed anyway (audit 2026-10-12, finding 3). Output goes to a log; the
 # exit status is pytest's own, and set -e stops the script here.

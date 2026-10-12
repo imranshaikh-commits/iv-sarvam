@@ -105,6 +105,73 @@ def _may_access(row: dict) -> bool:
     return not (user and owner and user.strip().lower() != owner.strip().lower())
 
 
+async def may_access_row(client: httpx.AsyncClient, table: str, row_id: str | None) -> bool:
+    """May the signed-in user act on this row? False when it belongs to another
+    user, or when that could not be checked (a failed read is not a yes).
+
+    For rows reached by an id the user can edit: a session or proposal id in a
+    chat marker, a diagram's parent in a REST path (audit F03: ownership was
+    checked when a session was READ, and nowhere else). True when no identity
+    is forwarded, the row has no recorded owner, or the row does not exist --
+    there is then no other user's data to protect, and the caller's own
+    not-found handling applies."""
+    if not REQUEST_USER.get() or not row_id:
+        return True
+    try:
+        resp = await client.get(
+            _table_url(table), headers=_headers(prefer_representation=False),
+            params={"id": f"eq.{row_id}", "select": "id,created_by_email", "limit": "1"},
+            timeout=30.0)
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as e:  # noqa: BLE001
+        log.error("ownership check on %s failed: %s", table, _why(e))
+        return False
+    if rows and not _may_access(rows[0]):
+        log.warning("%s %s refused: it belongs to another user", table, row_id)
+        return False
+    return True
+
+
+async def may_access_diagram(client: httpx.AsyncClient, row: dict) -> bool:
+    """A diagram has no owner of its own: it is its session's, else its proposal's."""
+    if row.get("intake_session_id"):
+        return await may_access_row(client, "intake_sessions", row["intake_session_id"])
+    return await may_access_row(client, "generated_proposals", row.get("generated_proposal_id"))
+
+
+async def marker_is_mine(client: httpx.AsyncClient, session_id: str | None,
+                         proposal_id: str | None) -> bool:
+    """Do the ids a chat marker carries belong to the signed-in user, and to
+    each other? The marker travels through the client and can be edited, so a
+    proposal id proves nothing by being there: it must be the user's own and,
+    when it names a session, the session in the same marker."""
+    if not REQUEST_USER.get():
+        return True
+    if not await may_access_row(client, "intake_sessions", session_id):
+        return False
+    if not proposal_id:
+        return True
+    try:
+        resp = await client.get(
+            _table_url("generated_proposals"), headers=_headers(prefer_representation=False),
+            params={"id": f"eq.{proposal_id}",
+                    "select": "id,created_by_email,intake_session_id", "limit": "1"},
+            timeout=30.0)
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as e:  # noqa: BLE001
+        log.error("ownership check on generated_proposals failed: %s", _why(e))
+        return False
+    if not rows:
+        return True
+    linked = rows[0].get("intake_session_id")
+    if not _may_access(rows[0]) or (linked and session_id and linked != session_id):
+        log.warning("proposal %s refused: not this user's, or not this session's", proposal_id)
+        return False
+    return True
+
+
 async def _stamp_user(client: httpx.AsyncClient, table: str, row_id: str, column: str) -> None:
     user = REQUEST_USER.get()
     if not (user and row_id):
@@ -180,6 +247,8 @@ async def patch_intake_answers(
     also keeps the denormalised proposal_type/client_name/iam_vendor columns in
     sync. It used to be read-merge-write here, and two concurrent saves each
     read the old object, so the later write dropped the other's answer."""
+    if not await may_access_row(client, "intake_sessions", session_id):
+        return None
     try:
         resp = await client.post(
             f"{SUPABASE_URL}/rest/v1/rpc/merge_intake_answers", headers=_headers(),

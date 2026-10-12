@@ -557,3 +557,116 @@ def test_the_matrix_breakdown_travels_from_drafting_to_the_chat_reply(monkeypatc
     monkeypatch.setattr(app_module.httpx.AsyncClient, "post", fake_post)
     reply = asyncio.run(app_module.generate_proposal_from_chat("sess-1", "prop-1"))
     assert "9 of 10" in reply and "no IV precedent" in reply
+
+
+# ---------------------------------------------------------------------------
+# Deep audit F03: ownership is checked wherever a row is reached by an id a
+# user can edit, not only when a session is read.
+# ---------------------------------------------------------------------------
+
+_ROWS = {
+    "intake_sessions": {"s-alice": {"id": "s-alice", "created_by_email": "alice@iv.test",
+                                    "answers": {}},
+                        "s-old": {"id": "s-old", "created_by_email": None, "answers": {}}},
+    "generated_proposals": {"p-alice": {"id": "p-alice", "created_by_email": "alice@iv.test",
+                                        "intake_session_id": "s-alice"},
+                            "p-bob": {"id": "p-bob", "created_by_email": "bob@iv.test",
+                                      "intake_session_id": "s-bob"}},
+    "architecture_diagrams": {"d-alice": {"id": "d-alice", "intake_session_id": "s-alice",
+                                          "generated_proposal_id": "p-alice",
+                                          "status": "needs_review", "title": "T",
+                                          "spec_json": {}, "rendered_svg_path": "d-alice.png"}},
+}
+
+
+def _fake_supabase(writes):
+    """A PostgREST stand-in over _ROWS that records every write."""
+    import httpx
+
+    def handler(req):
+        table = req.url.path.rsplit("/", 1)[-1]
+        if req.method != "GET":
+            writes.append((req.method, req.url.path))
+            return httpx.Response(200, json=[{"id": "x", "answers": {}}])
+        wanted = dict(req.url.params)
+        rows = [r for r in _ROWS.get(table, {}).values()
+                if all(str(r.get(k)) == v.removeprefix("eq.")
+                       for k, v in wanted.items() if v.startswith("eq."))]
+        return httpx.Response(200, json=rows)
+    return httpx.MockTransport(handler)
+
+
+def test_answers_cannot_be_saved_into_another_users_session():
+    import asyncio
+    import httpx
+    import supabase_client as sc
+
+    async def save(user, session):
+        writes = []
+        sc.REQUEST_USER.set(user)
+        async with httpx.AsyncClient(transport=_fake_supabase(writes)) as c:
+            return await sc.patch_intake_answers(c, session, {"client_name": "X"}), writes
+
+    result, writes = asyncio.run(save("bob@iv.test", "s-alice"))
+    assert result is None and writes == []                    # refused before any write
+    result, writes = asyncio.run(save("alice@iv.test", "s-alice"))
+    assert result is not None and len(writes) == 1
+    result, writes = asyncio.run(save("bob@iv.test", "s-old"))   # no owner recorded: as before
+    assert result is not None
+    result, writes = asyncio.run(save(None, "s-alice"))          # no identity forwarded: as before
+    assert result is not None
+
+
+def test_another_users_diagram_cannot_be_read_or_approved(monkeypatch):
+    import httpx
+    writes = []
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(app_module.httpx, "AsyncClient",
+                        lambda *a, **k: real_client(transport=_fake_supabase(writes)))
+    bob = {"X-OpenWebUI-User-Email": "bob@iv.test"}
+    alice = {"X-OpenWebUI-User-Email": "alice@iv.test"}
+    with TestClient(app_module.app) as tc:
+        assert tc.get("/v1/diagrams/d-alice", headers=bob).status_code == 404
+        assert tc.get("/v1/proposals/p-alice/diagrams", headers=bob).status_code == 404
+        assert tc.patch("/v1/diagrams/d-alice", headers=bob,
+                        json={"status": "approved"}).status_code == 404
+        assert writes == []
+        assert tc.get("/v1/diagrams/d-alice", headers=alice).status_code == 200
+        assert tc.get("/v1/proposals/p-alice/diagrams", headers=alice).status_code == 200
+        assert tc.get("/v1/diagrams/d-alice").status_code == 200     # no identity: as before
+
+
+def test_a_chat_marker_naming_someone_elses_proposal_is_refused(monkeypatch):
+    """The proposal id reaches the brain inside a chat marker the user can
+    edit. "approve" must not act on a proposal that is not theirs, nor on one
+    that does not belong to the session in the same marker."""
+    import httpx
+    import chat_state as cs
+    writes, approved = [], []
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(app_module.httpx, "AsyncClient",
+                        lambda *a, **k: real_client(transport=_fake_supabase(writes)))
+
+    async def fake_intent(q):
+        return cs.INTENT_APPROVE, "approve"
+
+    async def spy_approve(proposal_id):
+        approved.append(proposal_id)
+        return True, "ok"
+
+    monkeypatch.setattr(app_module, "resolve_intent", fake_intent)
+    monkeypatch.setattr(app_module, "approve_architecture", spy_approve)
+
+    def turn(user, session, proposal):
+        with TestClient(app_module.app) as tc:
+            return tc.post("/v1/chat/completions", headers={"X-OpenWebUI-User-Email": user}, json={
+                "messages": [
+                    {"role": "assistant", "content": "x " + cs.encode_marker(cs.ChatState(
+                        mode=cs.MODE_ARCHITECTURE, session=session, proposal=proposal))},
+                    {"role": "user", "content": "approve"}],
+                "stream": False}).json()["choices"][0]["message"]["content"]
+
+    reply = turn("bob@iv.test", "s-alice", "p-alice")              # someone else's deal
+    assert approved == [] and "start over" in reply.lower()
+    reply = turn("alice@iv.test", "s-alice", "p-bob")              # proposal of another session
+    assert approved == [] and "start over" in reply.lower()

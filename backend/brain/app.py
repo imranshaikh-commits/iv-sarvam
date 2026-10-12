@@ -3231,6 +3231,9 @@ async def create_diagram_endpoint(proposal_id: str, request: Request):
     _structured_with_fallback helper and sanitized/capped before storage. No
     raw DOT is ever accepted.
     """
+    async with httpx.AsyncClient() as client:
+        if not await supabase_client.may_access_row(client, "generated_proposals", proposal_id):
+            return JSONResponse({"error": "proposal not found"}, status_code=404)
     body = await request.json()
     title = (body.get("title") or "Solution Architecture").strip() or "Solution Architecture"
     diagram_type = (body.get("diagram_type") or "architecture").strip().lower()
@@ -3284,6 +3287,8 @@ async def create_diagram_endpoint(proposal_id: str, request: Request):
 async def list_diagrams_endpoint(proposal_id: str):
     """List all diagrams attached to a proposal (newest first)."""
     async with httpx.AsyncClient() as client:
+        if not await supabase_client.may_access_row(client, "generated_proposals", proposal_id):
+            return JSONResponse({"error": "proposal not found"}, status_code=404)
         rows = await supabase_client.list_diagrams_for_proposal(client, proposal_id)
     return JSONResponse({"diagrams": [_diagram_public(r) for r in rows]})
 
@@ -3293,6 +3298,9 @@ async def get_diagram_endpoint(diagram_id: str):
     """Fetch a single diagram by id."""
     async with httpx.AsyncClient() as client:
         row = await supabase_client.get_diagram(client, diagram_id)
+        # Another user's diagram reads as not found, like another user's session.
+        if row is not None and not await supabase_client.may_access_diagram(client, row):
+            row = None
     if row is None:
         return JSONResponse({"error": "diagram not found"}, status_code=404)
     return JSONResponse(_diagram_public(row))
@@ -3315,7 +3323,7 @@ async def patch_diagram_endpoint(diagram_id: str, request: Request):
 
     async with httpx.AsyncClient() as client:
         row = await supabase_client.get_diagram(client, diagram_id)
-        if row is None:
+        if row is None or not await supabase_client.may_access_diagram(client, row):
             return JSONResponse({"error": "diagram not found"}, status_code=404)
 
         try:
@@ -3489,6 +3497,20 @@ async def chat_completions(request: Request):
                 + chat_state.encode_marker(chat_state.ChatState(mode=chat_state.MODE_ROUTER)),
                 stream,
             )
+
+        # The session and proposal ids come from a marker inside the chat,
+        # which the user can edit. Before any mode acts on them, they must be
+        # this user's own and belong together (audit F03).
+        if state.session or state.proposal:
+            async with httpx.AsyncClient() as oclient:
+                mine = await supabase_client.marker_is_mine(
+                    oclient, state.session, state.proposal)
+            if not mine:
+                return _emit_chat(
+                    "I can't continue this proposal here: I could not confirm that it "
+                    "is yours (it was opened by another colleague, or the database did "
+                    "not answer). Try once more; if it happens again, say **start over** "
+                    "to begin your own.\n\n" + chat_state.encode_marker(state), stream)
 
         # --- awaiting a router choice ---
         if state.mode == chat_state.MODE_ROUTER:

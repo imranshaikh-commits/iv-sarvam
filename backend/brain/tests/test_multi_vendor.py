@@ -2439,9 +2439,12 @@ def test_approve_acts_on_the_current_version_only_and_reports_failed_writes(monk
     """Audit 2026-10-12 finding 5: one approval approved every pending version."""
     import asyncio
     rows = [  # newest first, as list_diagrams_for_proposal returns them
-        {"id": "new", "title": "X — Solution", "status": "needs_review"},
-        {"id": "old", "title": "X — Solution", "status": "needs_review"},
-        {"id": "pam", "title": "X — PAM", "status": "needs_review"},
+        {"id": "new", "title": "X — Solution", "status": "needs_review",
+         "rendered_svg_path": "new.png"},
+        {"id": "old", "title": "X — Solution", "status": "needs_review",
+         "rendered_svg_path": "old.png"},
+        {"id": "pam", "title": "X — PAM", "status": "needs_review",
+         "rendered_svg_path": "pam.png"},
     ]
     writes = {}
 
@@ -2461,6 +2464,51 @@ def test_approve_acts_on_the_current_version_only_and_reports_failed_writes(monk
     fail, writes = {"pam"}, {}
     ok, msg = asyncio.run(app.approve_architecture("p1"))
     assert not ok and "did not save" in msg and "X — PAM" in msg
+
+
+def test_a_diagram_that_never_rendered_cannot_be_approved(monkeypatch):
+    """Deep audit F69: a failed render or upload was swallowed and the diagram
+    was approved anyway. Approving a picture nobody saw is not a review."""
+    import asyncio
+    rows = [{"id": "d1", "title": "X — Solution", "status": "needs_review",
+             "rendered_svg_path": None, "spec_json": {}}]
+    writes = []
+
+    async def fake_list(client, pid):
+        return rows
+
+    async def fake_update(client, did, patch):
+        writes.append((did, patch))
+        return {"id": did}
+    monkeypatch.setattr(app.supabase_client, "list_diagrams_for_proposal", fake_list)
+    monkeypatch.setattr(app.supabase_client, "update_diagram", fake_update)
+    ok, msg = asyncio.run(app.approve_architecture("p1"))
+    assert not ok and writes == []
+    assert "X — Solution" in msg and "regenerate" in msg.lower() and "skip" in msg.lower()
+
+    # The same through the REST route, where the renderer fails at approval time.
+    async def fake_get(client, did):
+        return dict(rows[0])
+    monkeypatch.setattr(app.supabase_client, "get_diagram", fake_get)
+    monkeypatch.setattr(app.diagram_engine, "render_spec", lambda *a, **k: None)
+    from fastapi.testclient import TestClient
+    with TestClient(app.app) as tc:
+        resp = tc.patch("/v1/diagrams/d1", json={"status": "approved"})
+    assert resp.status_code == 409 and "render" in resp.json()["error"]
+    assert writes == []
+
+
+def test_a_diagram_with_no_picture_is_not_offered_for_approval():
+    import chat_state
+    msg = chat_state.build_single_diagram_message(
+        {"title": "X — Solution", "diagram_type": "architecture", "url": None,
+         "text_representation": "A -> B"}, 0, 2)
+    assert "approve" not in msg.lower()
+    assert "regenerate" in msg.lower() and "skip" in msg.lower()
+    shown = chat_state.build_single_diagram_message(
+        {"title": "X — Solution", "diagram_type": "architecture", "url": "https://x/y.png",
+         "text_representation": "A -> B"}, 0, 2)
+    assert "**approve**" in shown
 
 
 def test_only_the_newest_version_of_a_diagram_is_current():

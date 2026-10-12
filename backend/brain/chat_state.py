@@ -912,12 +912,16 @@ def build_single_diagram_message(d: dict, index: int, total: int,
     if d.get("text_representation"):
         lines += ["**Architecture Flow (Text Representation)**", "",
                   d["text_representation"], ""]
-    lines += [
-        "---",
-        "",
-        "Reply **approve** to accept this diagram and move to the next, "
-        "**regenerate** for another attempt, or tell me what to change.",
-    ]
+    lines += ["---", ""]
+    if d.get("url"):
+        lines.append("Reply **approve** to accept this diagram and move to the next, "
+                     "**regenerate** for another attempt, or tell me what to change.")
+    else:
+        # No picture was produced, so there is nothing to sign off: approval
+        # is of the diagram that goes into the document, not of a description.
+        lines.append("The picture could not be drawn, so this diagram cannot be signed "
+                     "off yet. Reply **regenerate** to try again, **skip** to leave it "
+                     "out of the proposal, or tell me what to change.")
     return "\n".join(lines)
 
 

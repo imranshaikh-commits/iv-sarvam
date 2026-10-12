@@ -1871,10 +1871,14 @@ async def propose_one_diagram(
                     path = await supabase_client.upload_diagram_render(
                         client, f"{row['id']}.png", image, content_type="image/png")
                     if path:
-                        await supabase_client.update_diagram(
-                            client, row["id"], {"rendered_svg_path": path})
-                        url = await supabase_client.create_signed_url(
+                        # The stored path is what makes a diagram approvable, so
+                        # it is recorded only once there is a link to show: a
+                        # stored render then means a picture the reviewer saw.
+                        link = await supabase_client.create_signed_url(
                             client, path, bucket=supabase_client.DIAGRAM_BUCKET)
+                        if link and await supabase_client.update_diagram(
+                                client, row["id"], {"rendered_svg_path": path}):
+                            url = link
             except Exception as e:  # noqa: BLE001
                 log.error("diagram render/upload failed for %s: %s", title, e)
 
@@ -2054,6 +2058,17 @@ async def approve_architecture(proposal_id: str | None) -> tuple[bool, str]:
                 log.warning("cannot retire diagram %s: %s", row.get("id"), e)
                 continue
             await supabase_client.update_diagram(client, row["id"], patch)
+
+        # A diagram with no stored render was never shown as a picture (the
+        # render or the upload failed), so there is nothing to sign off. It
+        # used to be approved anyway (audit F69).
+        unseen = [row.get("title") or "a diagram" for row in current
+                  if (row.get("status") or "") == "needs_review"
+                  and not row.get("rendered_svg_path")]
+        if unseen:
+            return (False, f"{', '.join(unseen)} could not be drawn, so there is no "
+                           "picture to approve. Say **regenerate** to draw it again, "
+                           "or **skip** to leave it out of the proposal.")
 
         approved, failed = 0, []
         for row in current:
@@ -3433,9 +3448,9 @@ async def patch_diagram_endpoint(diagram_id: str, request: Request):
            "rejection_comment": "..." (required when rejecting)}
 
     Transitions are validated (draft->needs_review->approved/rejected;
-    rejected->draft bumps iteration). On approval the spec is rendered with the
-    local `dot` binary and uploaded to the diagram-renders bucket (both
-    fail-soft — a missing renderer/bucket never blocks the approval)."""
+    rejected->draft bumps iteration). On approval the spec is rendered and
+    uploaded to the diagram-renders bucket; a diagram with no stored render is
+    not approved (409): approval is of a picture, not of a spec nobody saw."""
     body = await request.json()
     target = (body.get("status") or "").strip()
     rejection_comment = body.get("rejection_comment")
@@ -3465,8 +3480,12 @@ async def patch_diagram_endpoint(diagram_id: str, request: Request):
                     )
                     if path:
                         patch["rendered_svg_path"] = path
-            except Exception as e:  # noqa: BLE001 — render/upload must not block approval
-                log.error("diagram render/upload failed on approve (fail-soft): %s", e)
+            except Exception as e:  # noqa: BLE001 — reported below, not swallowed
+                log.error("diagram render/upload failed on approve: %s", e)
+            if not (patch.get("rendered_svg_path") or row.get("rendered_svg_path")):
+                return JSONResponse(
+                    {"error": "the diagram has no stored render (rendering or the upload "
+                              "failed), so it cannot be approved"}, status_code=409)
 
         updated = await supabase_client.update_diagram(client, diagram_id, patch)
     if updated is None:
@@ -4220,11 +4239,11 @@ async def chat_completions(request: Request):
                 async def _approve_and_next() -> str:
                     prefix = ""
                     if not skip:
-                        ok, _ = await approve_architecture(state.proposal)
+                        ok, why = await approve_architecture(state.proposal)
                         if not ok:
-                            return ("There was nothing awaiting approval — say "
-                                    "**regenerate** to produce this diagram again.\n\n"
-                                    + chat_state.encode_marker(state))
+                            # Its own reason: nothing awaiting approval, a write
+                            # that did not save, or a diagram with no picture.
+                            return why + "\n\n" + chat_state.encode_marker(state)
                         prefix = "Approved.\n\n"
                     else:
                         if not await skip_diagram(state.session, state.proposal, state.dindex):

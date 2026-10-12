@@ -397,25 +397,37 @@ def requirement_references(entries, sections: list[dict]) -> dict:
     return out
 
 
+# What the client matrix may say (audit 2026-10-12, finding 1). The client never
+# sees the corpus grading ("Partial", "Missing"), but the document must not
+# assert more than is known either. Only a requirement with full IV precedent
+# AND a section of this proposal behind it is stated as plainly compliant.
+# "Compliant - confirmed during Discovery" claimed a confirmation nobody had
+# recorded; a keyword-matched reference suggests where to look, it proves nothing.
+RESPONSE_COMPLIANT = "Compliant"
+RESPONSE_SUBJECT = "Compliant, subject to confirmation during Discovery"
+RESPONSE_TBC = "To be confirmed"
+
+
 def render_client_matrix(entries, refs: dict) -> tuple[str, list[str]]:
-    """(markdown, requirement ids the bid team must confirm). Never shows the
-    corpus grading: 'Compliant' where IV has precedent, 'Compliant - confirmed
-    during Discovery' where it does not, 'To be confirmed' where no section of
-    this proposal addresses the requirement."""
+    """(markdown, requirement ids the bid team must confirm before submission).
+
+    covered + a section reference  -> Compliant
+    anything else with a reference -> Compliant, subject to confirmation ...
+    no section addresses it        -> To be confirmed
+    Every row that is not plainly Compliant is on the to-confirm list."""
     rows = ["Compliance Matrix", "",
             "| Req | Requirement | Response | Proposal Reference |", "|---|---|---|---|"]
     to_confirm = []
     for e in entries:
         rid = getattr(e, "requirement_id", "")
         ref = refs.get(rid)
-        precedent = getattr(e, "status", "") in ("covered", "partial")
         if not ref:
-            response = "To be confirmed"
-        elif precedent:
-            response = "Compliant"
+            response = RESPONSE_TBC
+        elif getattr(e, "status", "") == "covered":
+            response = RESPONSE_COMPLIANT
         else:
-            response = "Compliant - confirmed during Discovery"
-        if not (ref and precedent):
+            response = RESPONSE_SUBJECT
+        if response != RESPONSE_COMPLIANT:
             to_confirm.append(rid)
         text = (getattr(e, "requirement_text", "") or "").replace("|", "/").replace("\n", " ").strip()
         rows.append(f"| {rid} | {text} | {response} | {ref or '-'} |")
@@ -3058,6 +3070,7 @@ async def generate_proposal(
     # Optional compliance matrix.
     compliance_markdown: Optional[str] = None
     compliance_to_confirm: list[str] = []
+    compliance_unassessed = 0
     want_compliance = include_compliance_matrix or (
         sections is not None and COMPLIANCE_SECTION_ID in {s.strip().lower() for s in sections}
     )
@@ -3092,6 +3105,7 @@ async def generate_proposal(
         try:
             matrix = await run_compliance_matrix_fn(
                 client, rfp_text, _extracted_reqs, top_k)
+            compliance_unassessed = int(getattr(matrix, "unassessed", 0) or 0)
             if getattr(matrix, "entries", None):
                 compliance_markdown, compliance_to_confirm = render_client_matrix(
                     matrix.entries, requirement_references(matrix.entries, list(drafted)))
@@ -3167,6 +3181,7 @@ async def generate_proposal(
         "filename": filename,
         "included_compliance_matrix": compliance_markdown is not None,
         "compliance_to_confirm": compliance_to_confirm,
+        "compliance_unassessed": compliance_unassessed,
         "proposal_depth": tier.name,
         "included_appendices": tier.include_appendices,
     }

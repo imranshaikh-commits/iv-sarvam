@@ -2378,3 +2378,30 @@ def test_client_logo_fetch_refuses_internal_addresses_and_foreign_files(tmp_path
         assert run(own) == own
     finally:
         os.unlink(own)
+
+
+def test_requirements_over_the_cap_stay_in_the_matrix_unassessed(monkeypatch):
+    """Audit 2026-10-12 finding 7: the cap sliced obligations off silently."""
+    import asyncio
+    monkeypatch.setattr(app, "MAX_REQUIREMENTS", 2)
+
+    async def fake_embed(client, text):
+        return [0.0]
+
+    async def fake_retrieve(client, emb, text, k=8):
+        return []
+
+    async def fake_classify(req, chunks):
+        return app.CoverageEntry(requirement_id=req.id, requirement_text=req.text,
+                                 status="covered", summary="s", recommendation="r")
+    monkeypatch.setattr(app, "embed_query", fake_embed)
+    monkeypatch.setattr(app, "retrieve_chunks", fake_retrieve)
+    monkeypatch.setattr(app, "classify_coverage", fake_classify)
+    reqs = [{"id": f"R-{i}", "text": f"requirement {i}"} for i in range(1, 6)]
+    m = asyncio.run(app.run_compliance_matrix(None, "", reqs))
+    assert [e.requirement_id for e in m.entries] == ["R-1", "R-2", "R-3", "R-4", "R-5"]
+    assert [e.status for e in m.entries] == ["covered", "covered"] + ["needs-human"] * 3
+    assert m.truncated and m.unassessed == 3
+    # ... and the client matrix puts every unassessed one on the to-confirm list.
+    _, confirm = de.render_client_matrix(m.entries, {e.requirement_id: "Sec" for e in m.entries})
+    assert confirm == ["R-3", "R-4", "R-5"]

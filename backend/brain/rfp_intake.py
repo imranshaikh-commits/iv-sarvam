@@ -162,6 +162,7 @@ class RfpExtraction:
     gates: list[EligibilityGate] = field(default_factory=list)
     mandated_structure: list[str] = field(default_factory=list)
     pages_read: int = 0
+    pages_total: int = 0      # pages in the source; more than pages_read = cut off
     used_vision: bool = False
     source_name: str = ""
 
@@ -338,6 +339,18 @@ def describe_extraction(ex: RfpExtraction, total_fields: int) -> str:
     lines = [
         f"**{ex.source_name or 'Document'}** — {ex.pages_read} pages, {how}.",
         "",
+    ]
+    if ex.pages_total > ex.pages_read:
+        # Audit 2026-10-12 finding 7: a capped read looked like a complete one.
+        lines += [
+            f"**INCOMPLETE READ: only the first {ex.pages_read} of {ex.pages_total} pages "
+            f"were read.** Requirements, gates and scope on pages "
+            f"{ex.pages_read + 1}-{ex.pages_total} are NOT in what follows. Split the "
+            f"document and upload the rest, or add those requirements yourself, before "
+            f"relying on the compliance matrix.",
+            "",
+        ]
+    lines += [
         f"Extracted **{got} of {total_fields}** discovery fields, "
         f"**{len(ex.requirements)}** numbered requirements"
         + (f", **{len(ex.gates)}** eligibility conditions." if ex.gates else "."),
@@ -539,8 +552,8 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
     text_pages = read_text_layer(pdf_path)
     use_vision = needs_vision(text_pages)
 
-    ex = RfpExtraction(source_name=source_name,
-                       pages_read=len(text_pages) or 0, used_vision=use_vision)
+    ex = RfpExtraction(source_name=source_name, pages_read=len(text_pages) or 0,
+                       pages_total=len(text_pages) or 0, used_vision=use_vision)
 
     if not use_vision:
         # A usable text layer: mandated structure and gates can be read
@@ -555,6 +568,10 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
                      source_name)
             return ex
         ex.pages_read = len(images)
+        ex.pages_total = max(ex.pages_total, ex.pages_read)
+        if ex.pages_read < ex.pages_total:
+            log.warning("RFP %s: read %d of %d pages (SHILPI_MAX_RFP_PAGES=%d)",
+                        source_name, ex.pages_read, ex.pages_total, MAX_RFP_PAGES)
 
     # Field id -> best ExtractedField seen so far, so a later, FULLER page can
     # replace an earlier, thinner one for the same field. Found sitting

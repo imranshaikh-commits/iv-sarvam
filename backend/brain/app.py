@@ -105,6 +105,7 @@ COMPLIANCE_CONCURRENCY = int(os.getenv("COMPLIANCE_CONCURRENCY", "3"))
 # line by line, so the default must cover a normal RFP; cost is one
 # semaphore-bounded classify call per requirement.
 MAX_REQUIREMENTS = int(os.getenv("MAX_REQUIREMENTS", "60"))
+_EXTRACT_CHARS = 12000   # how much pasted text extract_requirements reads
 COMPLIANCE_TRIGGER = "compliance matrix"
 # Structured extraction/classification uses the same hardcoded primary model.
 STRUCTURED_MODEL = PRIMARY_LLM_MODEL
@@ -2076,8 +2077,13 @@ async def generate_proposal_from_chat(session_id: str | None,
     confirm = (data or {}).get("compliance_to_confirm") or []
     if confirm:
         lines += ["", f"**Compliance matrix:** {len(confirm)} requirement(s) need a "
-                      f"bid-team check before submission (no IV precedent, or no section "
-                      f"of this proposal addresses them): {', '.join(confirm)}."]
+                      f"bid-team check before submission (no full IV precedent, or no "
+                      f"section of this proposal addresses them): {', '.join(confirm)}."]
+    unassessed = (data or {}).get("compliance_unassessed") or 0
+    if unassessed:
+        lines += ["", f"**Incomplete compliance check:** {unassessed} requirement(s) were "
+                      f"beyond the {MAX_REQUIREMENTS}-requirement limit. They are in the "
+                      f"matrix but were NOT assessed; review each one by hand."]
     lines += [
         "",
         "This is a **draft for human review**, not client-ready: check the "
@@ -2152,6 +2158,9 @@ class ComplianceMatrix(BaseModel):
     entries: list[CoverageEntry]
     overall_notes: str
     truncated: bool = False
+    # Requirements carried into the matrix without a corpus assessment (over
+    # the cost cap). They are listed, never dropped: audit 2026-10-12, finding 7.
+    unassessed: int = 0
 
 
 _EXTRACT_PROMPT = (
@@ -2287,7 +2296,7 @@ async def extract_requirements(rfp_text: str) -> list[Requirement]:
         max_tokens=COMPLIANCE_MAX_TOKENS * 2,
         messages=[
             {"role": "system", "content": _EXTRACT_PROMPT},
-            {"role": "user", "content": f"Extract up to {MAX_REQUIREMENTS} compliance requirements from the following RFP text.\n\nRFP TEXT:\n{rfp_text[:12000]}"},
+            {"role": "user", "content": f"Extract up to {MAX_REQUIREMENTS} compliance requirements from the following RFP text.\n\nRFP TEXT:\n{rfp_text[:_EXTRACT_CHARS]}"},
         ],
         temperature=0,
         max_retries=1,
@@ -2442,25 +2451,28 @@ async def run_compliance_matrix(
     # as-is" — that's the actual distinction that matters here, not the class.
     if requirements and not isinstance(requirements[0], str):
         # Already-structured requirements arrive as plain dicts from
-        # document_engine.py (which cannot import app.Requirement without an
-        # import cycle) -- constructed into real Requirement instances HERE,
+        # document_engine.py -- constructed into real Requirement instances HERE,
         # the one place both the class and the caller's plain-dict data meet.
         reqs = [
             r if isinstance(r, Requirement) else
             Requirement(id=(r.get("id") or f"REQ-{i:03d}"), text=r.get("text", ""),
                        category=r.get("category"))
-            for i, r in enumerate(requirements[:MAX_REQUIREMENTS], 1)
+            for i, r in enumerate(requirements, 1)
             if isinstance(r, Requirement) or (r.get("text") or "").strip()
         ]
-        truncated = len(requirements) > MAX_REQUIREMENTS
     elif requirements:
-        reqs = [Requirement(id=f"REQ-{i:03d}", text=t) for i, t in enumerate(requirements[:MAX_REQUIREMENTS], 1)]
-        truncated = len(requirements) > MAX_REQUIREMENTS
+        reqs = [Requirement(id=f"REQ-{i:03d}", text=t) for i, t in enumerate(requirements, 1)]
     else:
         reqs = await extract_requirements(rfp_text)
-        if len(reqs) > MAX_REQUIREMENTS:
-            reqs = reqs[:MAX_REQUIREMENTS]
-            truncated = True
+        # Extraction reads the first 12,000 characters only; a longer text may
+        # hold requirements this never saw, and that must be said.
+        truncated = len(rfp_text or "") > _EXTRACT_CHARS
+    # The cap bounds COST, not the matrix. Requirements past it used to be
+    # sliced off, so a long tender produced a complete-looking matrix with
+    # obligations missing. They now stay in the matrix, unassessed, and land on
+    # the bid team's to-confirm list.
+    reqs, overflow = reqs[:MAX_REQUIREMENTS], reqs[MAX_REQUIREMENTS:]
+    truncated = truncated or bool(overflow)
 
     sem = asyncio.Semaphore(COMPLIANCE_CONCURRENCY)
 
@@ -2489,7 +2501,11 @@ async def run_compliance_matrix(
                     recommendation="Escalate to SME and retry.",
                 )
 
-    entries = await asyncio.gather(*[process(r) for r in reqs])
+    entries = list(await asyncio.gather(*[process(r) for r in reqs]))
+    entries += [CoverageEntry(
+        requirement_id=r.id, requirement_text=r.text, status="needs-human",
+        summary=f"Not assessed against past proposals (beyond the first {MAX_REQUIREMENTS}).",
+        recommendation="Assess manually before submission.") for r in overflow]
 
     counts = {s: sum(1 for e in entries if e.status == s) for s in ("covered", "partial", "missing", "needs-human")}
     overall = (
@@ -2497,9 +2513,13 @@ async def run_compliance_matrix(
         f"Covered {counts['covered']}, partial {counts['partial']}, missing {counts['missing']}, needs-human {counts['needs-human']}. "
         f"For human review only; not a client-ready compliance commitment."
     )
-    if truncated:
-        overall += f" (Truncated: only the first {MAX_REQUIREMENTS} requirements assessed.)"
-    return ComplianceMatrix(entries=list(entries), overall_notes=overall, truncated=truncated)
+    if overflow:
+        overall += (f" ({len(overflow)} further requirement(s) are listed but were not "
+                    f"assessed: over the {MAX_REQUIREMENTS}-requirement limit.)")
+    elif truncated:
+        overall += f" (Only the first {_EXTRACT_CHARS:,} characters of the text were read for requirements.)"
+    return ComplianceMatrix(entries=entries, overall_notes=overall, truncated=truncated,
+                            unassessed=len(overflow))
 
 
 def render_matrix_markdown(matrix: ComplianceMatrix, *, client_facing: bool = False) -> str:
@@ -2954,6 +2974,7 @@ async def generate_proposal_endpoint(request: Request):
         include_pdf=include_pdf,
         return_signed_urls=return_signed_urls,
         compliance_to_confirm=result.get("compliance_to_confirm") or [],
+        compliance_unassessed=result.get("compliance_unassessed") or 0,
     )
 
 
@@ -2966,6 +2987,7 @@ async def _build_export_response(
     include_pdf: bool,
     return_signed_urls: bool,
     compliance_to_confirm: list | None = None,
+    compliance_unassessed: int = 0,
 ) -> JSONResponse:
     """Apply the opt-in export steps and return JSON export metadata.
 
@@ -2999,6 +3021,7 @@ async def _build_export_response(
         # For the bid team, never the client document: requirements answered
         # "confirmed during Discovery" or with no section of this proposal behind them.
         "compliance_to_confirm": compliance_to_confirm or [],
+        "compliance_unassessed": compliance_unassessed,
     }
 
     if return_signed_urls:

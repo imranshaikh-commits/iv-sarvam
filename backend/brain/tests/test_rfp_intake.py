@@ -434,3 +434,13 @@ def test_extraction_prompt_labels_every_field_both_paths(tmp_path):
     assert len(seen) == 2
     for prompt in seen:
         assert "post_sla:" in prompt and "severity" in prompt, prompt[-300:]
+
+
+def test_a_capped_read_says_so_in_the_summary():
+    """Audit 2026-10-12 finding 7."""
+    ex = R.RfpExtraction(source_name="Tender.pdf", pages_read=60, pages_total=84,
+                         used_vision=True)
+    text = R.describe_extraction(ex, 96)
+    assert "only the first 60 of 84 pages" in text and "61-84" in text
+    full = R.RfpExtraction(source_name="T.pdf", pages_read=20, pages_total=20)
+    assert "INCOMPLETE" not in R.describe_extraction(full, 96)

@@ -2334,17 +2334,24 @@ def test_client_matrix_never_shows_the_corpus_grading():
          "content": "Quarterly certification campaigns for managers."}]}]
     entries = [_E("PAM-01", "Privileged session recording with keystroke logging", "partial"),
                _E("IGA-04", "Periodic access certification campaigns by managers", "missing"),
-               _E("X-99", "Quantum-safe cryptographic agility for mainframes", "covered")]
+               _E("X-99", "Quantum-safe cryptographic agility for mainframes", "covered"),
+               _E("PAM-02", "Privileged session recording with keystroke logging", "covered")]
     refs = document_engine.requirement_references(entries, sections)
     assert refs["PAM-01"].endswith("Privileged Session Management and Keystroke Recording")
     assert refs["IGA-04"].endswith("Access Certification Campaigns")
     assert refs["X-99"] is None
     md, confirm = document_engine.render_client_matrix(entries, refs)
     assert "Partial" not in md and "Missing" not in md
-    assert "| PAM-01 | Privileged session recording with keystroke logging | Compliant |" in md
-    assert "Compliant - confirmed during Discovery" in md
+    subject = "Compliant, subject to confirmation during Discovery"
+    # Audit 2026-10-12 finding 1: rendering alone must not turn partial or
+    # missing precedent into a plain or "confirmed" commitment.
+    assert f"| PAM-01 | Privileged session recording with keystroke logging | {subject} |" in md
+    assert f"| IGA-04 | Periodic access certification campaigns by managers | {subject} |" in md
+    assert "confirmed during Discovery |" not in md.replace(subject, "")
+    assert "| PAM-02 | Privileged session recording with keystroke logging | Compliant |" in md
     assert "| X-99 |" in md and "To be confirmed" in md
-    assert confirm == ["IGA-04", "X-99"]
+    # Everything that is not plainly Compliant is on the bid team's list.
+    assert confirm == ["PAM-01", "IGA-04", "X-99"]
 
 
 def test_matrix_reference_uses_capability_headings_and_word_variants():

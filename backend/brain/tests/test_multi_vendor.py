@@ -1225,6 +1225,30 @@ def test_saas_looks_like_detection():
     assert not de._looks_like_saas(None)
 
 
+def test_a_deployment_answer_that_rules_saas_out_is_not_saas():
+    """Deep audit F61: "SaaS is not permitted; deploy in our private data
+    centre" contains the word SaaS and no on-prem term, so it selected the
+    vendor-managed SaaS sizing and product names for a client who forbade it."""
+    for answer in ("SaaS is not permitted; deploy in our private data centre",
+                   "No SaaS. Client-hosted in two data centres",
+                   "Non-SaaS, self-managed on client infrastructure",
+                   "Must not be SaaS",
+                   "We cannot use SaaS for regulatory reasons",
+                   "SaaS is strictly prohibited by the regulator",
+                   "Private cloud; SaaS ruled out"):
+        assert not de._looks_like_saas(answer), answer
+
+
+def test_a_negation_about_something_else_does_not_cancel_saas():
+    for answer in ("SaaS, not on-prem",
+                   "Not on-prem; SaaS only",
+                   "SaaS with no customer-managed infrastructure",
+                   "SaaS hosted in-Kingdom, no data may leave Saudi Arabia",
+                   "SaaS (Software-as-a-Service) hosted within the Kingdom of Saudi "
+                   "Arabia, in full compliance with the data residency requirements"):
+        assert de._looks_like_saas(answer), answer
+
+
 def test_hybrid_deployment_does_not_get_the_saas_treatment():
     """A hybrid answer mentioning SaaS in passing must not be misread as a
     pure SaaS deployment -- the on-prem numeric-table path is the more

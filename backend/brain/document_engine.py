@@ -449,24 +449,43 @@ def _vendor_clause(iam_vendor: Optional[str]) -> str:
     return f" using {iam_vendor}" if iam_vendor else ""
 
 
-# Drives which language the four sizing-table subsections use. Deliberately a
-# substring match rather than an exact-value check against a fixed enum --
-# `deployment_model` is a free-text discovery answer ("SaaS (Software-as-a-
-# Service) hosted within the Kingdom of Saudi Arabia", not a dropdown value --
-# and matching loosely here is the same tradeoff already made for the
-# "needs_vision" text-layer check and the multi-vendor connector-word parser:
-# a missed SaaS mention costs one table's worth of coherence, a wrongly-
-# matched one would too, and neither is catastrophic, so the simpler check
-# wins. Explicitly checked BEFORE the substring match: a hybrid or on-prem
-# answer that happens to mention "SaaS" in passing (e.g. comparing it to an
-# on-prem alternative) must not be misread as a SaaS deployment.
+# Drives which language the four sizing-table subsections use, and which
+# product names the solution stack shows. `deployment_model` is a free-text
+# discovery answer ("SaaS (Software-as-a-Service) hosted within the Kingdom of
+# Saudi Arabia"), not a dropdown value, so it is read loosely -- but a term
+# only counts where it is AFFIRMED. "SaaS is not permitted; deploy in our
+# private data centre" used to read as SaaS (audit F61: the word is there and
+# no on-prem word is), and "SaaS, not on-prem" used to read as on-prem.
+_SAAS_RE = r"(?:saas|software[- ]as[- ]a[- ]service)"
+_SELF_HOSTED_RE = r"(?:on[- ]?prem\w*|hybrid)"
+# Words that may sit between a term and the negation that governs it:
+# "SaaS is strictly not permitted", "must not be SaaS", "cannot use SaaS".
+_LINK = r"(?:\W+(?:is|are|was|be|been|being|will|would|should|must|can|could|may|a|an|" \
+        r"any|the|use|using|used|allow\w*|permit\w*|accept\w*|consider\w*|deploy\w*|" \
+        r"option|model|hosting|strictly|explicitly|currently)){0,3}"
+
+
+def _negated(term: str, clause: str) -> bool:
+    neg = scope_filter.NEGATION_RE.pattern
+    return bool(re.search(rf"(?:{neg}){_LINK}\W*{term}|{term}{_LINK}\W+(?:{neg})",
+                          clause, re.I))
+
+
 def _looks_like_saas(deployment_model: Optional[str]) -> bool:
     text = (deployment_model or "").lower()
     if not text:
         return False
-    if re.search(r"\bon[- ]?prem", text) or "hybrid" in text:
-        return False
-    return "saas" in text or "software as a service" in text or "software-as-a-service" in text
+    saas = False
+    for clause in re.split(r"[.;,\n]|\bbut\b", text):
+        # A hybrid or on-prem answer that mentions SaaS in passing is not a
+        # SaaS deployment -- unless that is the thing being ruled out.
+        if re.search(rf"\b{_SELF_HOSTED_RE}", clause) and not _negated(_SELF_HOSTED_RE, clause):
+            return False
+        if re.search(rf"\b{_SAAS_RE}", clause):
+            if _negated(_SAAS_RE, clause):
+                return False
+            saas = True
+    return saas
 
 
 

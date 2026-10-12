@@ -413,9 +413,13 @@ def describe_extraction(ex: RfpExtraction, total_fields: int) -> str:
         "",
     ]
     if ex.mandated_structure:
+        # Said honestly: the structure is not stored or used by drafting. This
+        # used to promise "I will follow it instead of IV's house template".
         lines += [f"The RFP mandates a response structure of "
-                  f"{len(ex.mandated_structure)} sections. I will follow it "
-                  f"instead of IV's house template.", ""]
+                  f"{len(ex.mandated_structure)} sections:", ""]
+        lines += [f"  {i}. {h}" for i, h in enumerate(ex.mandated_structure, start=1)]
+        lines += ["", "I draft in IV's own structure, not this one. Reorder the "
+                      "draft to match the list above before it is submitted.", ""]
     for f in ex.fields[:40]:
         page = f" _(p.{f.page})_" if f.page else ""
         lines.append(f"  - **{f.field_id}** — {f.value[:110]}{page}")

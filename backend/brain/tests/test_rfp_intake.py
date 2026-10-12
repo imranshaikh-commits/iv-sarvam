@@ -491,3 +491,18 @@ def test_a_capped_read_says_so_in_the_summary():
     assert "only the first 60 of 84 pages" in text and "61-84" in text
     full = R.RfpExtraction(source_name="T.pdf", pages_read=20, pages_total=20)
     assert "INCOMPLETE" not in R.describe_extraction(full, 96)
+
+
+def test_a_mandated_structure_is_shown_and_not_promised():
+    """Deep audit F13: the review said "I will follow it instead of IV's house
+    template" and then drafted in IV's template; the structure was never stored
+    or used. The message now shows the list and says what Shilpi actually does."""
+    ex = R.RfpExtraction(
+        fields=[R.ExtractedField("client_name", "Acme", 1)],
+        mandated_structure=["Company Profile", "Technical Approach", "Pricing Schedule B"],
+        pages_read=3, pages_total=3)
+    text = R.describe_extraction(ex, 96)
+    for heading in ex.mandated_structure:
+        assert heading in text
+    assert "will follow" not in text.lower()
+    assert "IV's own structure" in text and "reorder" in text.lower()

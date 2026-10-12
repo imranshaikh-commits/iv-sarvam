@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: "3.12"   # matches backend/brain/Dockerfile
           cache: pip
-      - run: pip install -r backend/brain/requirements.txt -r scripts/requirements.txt pytest
+      - run: pip install -r backend/brain/requirements.txt -r scripts/requirements.txt pytest -c backend/brain/constraints.txt
       - run: python -m pytest -q backend/brain/tests scripts
 
   # The image that ships, with its real renderer stack (D2, Graphviz,

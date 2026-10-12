@@ -13,11 +13,16 @@
 # tag, so any rebuild could pull a new Open WebUI. Shilpi depends on its
 # internals in three places: patch-webui.py edits its source, the brain reads
 # attachments from its uploads directory, and the brain reads the `file` table
-# of its database to tell whose upload is whose. 0.10.2 is the release that was
-# running in production on 2026-10-12, when all three were verified.
-# To upgrade: change tag AND digest together, rebuild, then check the patch
-# output below, an RFP upload in chat, and `select count(*) from file`.
-FROM ghcr.io/open-webui/open-webui:v0.10.2@sha256:9fcea9c6e32ab60b0498f3986c6cdf651ddbe61db48d2213a3d28048ddd673d4
+# of its database to tell whose upload is whose.
+#
+# The digest is the exact image production was running on 2026-10-12 (read
+# from the host with `docker image inspect ...:main`), when all three were
+# verified: a `:main` build that reports version 0.10.2. It is not the
+# `v0.10.2` tag, which is a separate build of the same release
+# (sha256:9fcea9c6...). Pinning these bits means a rebuild changes nothing.
+# To upgrade: replace the digest, rebuild, then check the patch output below,
+# an RFP upload in chat, and `select count(*) from file` from the brain.
+FROM ghcr.io/open-webui/open-webui@sha256:a26effeb220e132482bf7e0560b3404843e7bc40d23051144e062960df8df6b0
 
 # --- IV logo + favicon assets (served from /static/...) --------------------
 # /static/favicon.png      -> sign-in page logo AND browser tab icon (app.html <link rel="icon">)

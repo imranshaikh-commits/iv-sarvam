@@ -37,8 +37,8 @@ RUN set -eux; \
         && rm -rf /tmp/d2.tgz /tmp/d2-v* \
         && d2 --version; \
     else echo "no d2 build for $arch - Graphviz fallback only"; fi
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt constraints.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt
 COPY app.py asset_selection.py rfp_intake.py scope_filter.py proposal_templates.py document_engine.py intake_template.py supabase_client.py branding.py diagram_engine.py export_engine.py chat_state.py document_qa.py .
 COPY assets/ ./assets/
 EXPOSE 8000

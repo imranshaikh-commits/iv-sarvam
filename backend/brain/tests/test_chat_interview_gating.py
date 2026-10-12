@@ -348,6 +348,108 @@ def test_vault_chat_logs_no_question_text_and_no_client_names(monkeypatch, caplo
     assert "retrieved 1 chunks" in logged and "0.61" in logged   # counts and similarity stay
 
 
+# --- Deep audit F52: the vault stream and its fallback ----------------------
+class _FakeStream:
+    """An OpenRouter SSE response that yields `lines`, then fails if `error`."""
+    def __init__(self, lines, error=None):
+        self.lines, self.error = lines, error
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_lines(self):
+        for line in self.lines:
+            yield line
+        if self.error:
+            raise self.error
+
+
+def _delta(text):
+    return "data: " + json.dumps({"choices": [{"delta": {"content": text}}]})
+
+
+def _vault_stream(monkeypatch, primary: _FakeStream):
+    """Stream one vault turn; returns (models asked, response body)."""
+    asked = []
+
+    async def fake_embed(c, text):
+        return [0.0] * 1536
+
+    async def fake_retrieve(c, emb, query, k=app.TOP_K):
+        return []
+
+    def fake_stream(self, method, url, **kwargs):
+        asked.append(kwargs["json"]["model"])
+        if kwargs["json"]["model"] == app.PRIMARY_LLM_MODEL:
+            return primary
+        return _FakeStream([_delta("SECOND ANSWER from the fallback."), "data: [DONE]"])
+
+    monkeypatch.setattr(app, "embed_query", fake_embed)
+    monkeypatch.setattr(app, "retrieve_chunks", fake_retrieve)
+    monkeypatch.setattr(httpx.AsyncClient, "stream", fake_stream)
+    with client.stream("POST", "/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "ack " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_VAULT))},
+            {"role": "user", "content": "what did we do for Acme?"},
+        ],
+        "stream": True,
+    }) as resp:
+        body = "".join(resp.iter_text())
+    return asked, body
+
+
+def test_a_stream_that_breaks_part_way_is_not_followed_by_a_second_answer(monkeypatch):
+    dropped = httpx.ReadError("connection dropped")
+    asked, body = _vault_stream(monkeypatch, _FakeStream([_delta("First half of the ans")], dropped))
+    assert asked == [app.PRIMARY_LLM_MODEL]          # no fallback once text was sent
+    assert "First half" in body and "SECOND ANSWER" not in body
+    assert "interrupted" in body.lower()             # the user is told, not left guessing
+    assert body.strip().endswith("data: [DONE]")
+
+
+def test_a_stream_that_fails_before_any_text_still_falls_back(monkeypatch):
+    dropped = httpx.ReadError("connection dropped")
+    # A keep-alive comment is not an answer: fallback is still safe after it.
+    asked, body = _vault_stream(monkeypatch, _FakeStream([": OPENROUTER PROCESSING"], dropped))
+    assert asked == [app.PRIMARY_LLM_MODEL, app.FALLBACK_LLM_MODEL]
+    assert "SECOND ANSWER" in body and "interrupted" not in body.lower()
+
+
+def test_a_provider_error_that_is_not_json_is_reported_not_crashed_on(monkeypatch):
+    async def fake_embed(c, text):
+        return [0.0] * 1536
+
+    async def fake_retrieve(c, emb, query, k=app.TOP_K):
+        return []
+
+    async def html_502(self, url, **kwargs):
+        req = httpx.Request("POST", url)
+        raise httpx.HTTPStatusError(
+            "bad gateway", request=req,
+            response=httpx.Response(502, text="<html>Bad Gateway</html>", request=req))
+
+    monkeypatch.setattr(app, "embed_query", fake_embed)
+    monkeypatch.setattr(app, "retrieve_chunks", fake_retrieve)
+    monkeypatch.setattr(httpx.AsyncClient, "post", html_502)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "ack " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_VAULT))},
+            {"role": "user", "content": "what did we do for Acme?"},
+        ],
+        "stream": False,
+    })
+    assert resp.status_code == 502
+    assert "error" in resp.json()
+
+
 # --- no-session, streaming: valid SSE ending in [DONE] ---------------------
 def test_fresh_thread_stream_returns_valid_sse():
     with client.stream("POST", "/v1/chat/completions", json={

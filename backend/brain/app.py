@@ -4244,7 +4244,11 @@ async def chat_completions(request: Request):
                                 "" if model == FALLBACK_LLM_MODEL else f"; falling back to {FALLBACK_LLM_MODEL}")
                     if model == FALLBACK_LLM_MODEL:
                         if isinstance(e, httpx.HTTPStatusError):
-                            data, status_code = e.response.json(), e.response.status_code
+                            status_code = e.response.status_code
+                            try:
+                                data = e.response.json()
+                            except ValueError:   # a proxy's HTML or plain-text error page
+                                data = {"error": (e.response.text or str(e))[:300]}
                         else:
                             data, status_code = {"error": str(e)}, 502
             if isinstance(data, dict) and "model" in data:
@@ -4254,8 +4258,11 @@ async def chat_completions(request: Request):
     # Streaming: separate client lifecycle inside the generator
     async def sse():
         async with httpx.AsyncClient() as sclient:
-            # Try primary, fall back to Qwen if it fails before streaming starts.
+            # Try primary, fall back to Qwen ONLY if it fails before any answer
+            # text was sent. Falling back after that appended a second, complete
+            # answer to the broken first one.
             for model in (PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL):
+                started = False
                 try:
                     async with sclient.stream("POST", f"{OPENROUTER_BASE}/chat/completions",
                                               headers=headers, json={**payload, "model": model},
@@ -4264,9 +4271,17 @@ async def chat_completions(request: Request):
                         log.info("OpenRouter chat (stream) model=%s", model)
                         async for line in resp.aiter_lines():
                             if line:
+                                # ": OPENROUTER PROCESSING" keep-alives are not an answer.
+                                started = started or line.startswith("data:")
                                 yield line + "\n\n"
                     return
                 except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                    if started:
+                        log.warning("OpenRouter stream broke part-way on %s (%s)", model, e)
+                        yield _sse_chunk("\n\n_The answer was interrupted before it finished. "
+                                         "Please ask again._", resp_id="chatcmpl-shilpi-chat")
+                        yield "data: [DONE]\n\n"
+                        return
                     log.warning("OpenRouter stream failed on %s (%s)%s", model, e,
                                 "" if model == FALLBACK_LLM_MODEL else f"; falling back to {FALLBACK_LLM_MODEL}")
                     if model == FALLBACK_LLM_MODEL:

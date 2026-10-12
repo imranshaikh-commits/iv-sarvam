@@ -2979,10 +2979,15 @@ async def generate_proposal(
 
     # Choose which sections to draft. Compliance is opt-in and handled separately.
     if sections:
-        wanted = {s.strip().lower() for s in sections}
+        wanted = {str(s).strip().lower() for s in sections}
+        # A name that matches nothing is refused, not ignored: it used to fall
+        # back to the WHOLE template, so a typo bought a full paid draft.
+        unknown = wanted - {s.id for s in template} - {s.title.lower() for s in template}
+        if unknown:
+            raise ValueError(
+                f"unknown section(s): {', '.join(sorted(unknown))}. Valid ids for "
+                f"{proposal_type}: {', '.join(s.id for s in template)}")
         chosen = [s for s in template if s.id in wanted or s.title.lower() in wanted]
-        if not chosen:
-            chosen = [s for s in template if not s.optional]
     else:
         chosen = [s for s in template if not s.optional]
 
@@ -3072,7 +3077,7 @@ async def generate_proposal(
     compliance_to_confirm: list[str] = []
     compliance_unassessed = 0
     want_compliance = include_compliance_matrix or (
-        sections is not None and COMPLIANCE_SECTION_ID in {s.strip().lower() for s in sections}
+        sections is not None and COMPLIANCE_SECTION_ID in {str(s).strip().lower() for s in sections}
     )
     if want_compliance and run_compliance_matrix_fn and render_matrix_markdown_fn:
         # Prefer requirements already extracted from the source RFP (vision-

@@ -2458,3 +2458,36 @@ def test_answers_are_merged_in_one_database_call():
     # One POST to the merge function: no read of the old object, no whole-object write.
     assert [(m, p.rsplit("/", 1)[-1]) for m, p, _ in calls] == [("POST", "merge_intake_answers")]
     assert calls[0][2] == {"p_session": "s1", "p_partial": {"b": 2}}
+
+
+def test_an_unknown_section_id_is_refused_before_anything_is_drafted():
+    """Deep audit F41: a section id that matched nothing fell back to the whole
+    template, so a typo in a one-section request bought a full paid draft."""
+    import pytest
+    drafted = []
+
+    async def counting_draft(client, system_prompt, user_prompt, max_tokens=None):
+        drafted.append(1)
+        return "Drafted."
+
+    async def run(sections):
+        async with httpx.AsyncClient() as client:
+            return await generate_proposal(
+                client, rfp_text="Deliver IAM.", client_name=CLIENT_NAME,
+                proposal_type="implementation", iam_vendor="SailPoint",
+                embed_fn=stub_embed, retrieve_fn=stub_retrieve,
+                build_grounded_system_fn=stub_build_system, sections=sections)
+
+    saved = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = counting_draft
+    try:
+        with pytest.raises(ValueError, match="executive_sumary"):
+            asyncio.run(run(["executive_sumary"]))
+        # One good id does not excuse a bad one beside it.
+        with pytest.raises(ValueError, match="nope"):
+            asyncio.run(run(["executive_summary", "nope"]))
+        assert drafted == []
+        result = asyncio.run(run(["Executive_Summary "]))   # a real id still works
+        assert [s["id"] for s in result["sections_meta"]] == ["executive_summary"]
+    finally:
+        document_engine.draft_with_openrouter = saved

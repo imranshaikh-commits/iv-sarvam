@@ -374,3 +374,37 @@ def test_similar_experience_is_kept_without_case_study_answers():
 
 def test_a_negative_kt_answer_does_not_override_an_in_scope_training_plan():
     assert "knowledge_transfer" in _kept_ids(dict(_ESNAD, kt="None"))
+
+
+# --- Deep audit F24 ----------------------------------------------------------
+
+def test_saying_training_stays_in_scope_does_not_drop_knowledge_transfer():
+    """"No exclusions for training; training remains in scope" was searched for
+    the word "training" and read as an exclusion, dropping contracted work."""
+    answers = dict(BTPN, training="Administrator training for ten staff",
+                   out_of_scope="No exclusions for training; training remains in scope. "
+                                "Hardware procurement is the client's responsibility.")
+    keep, dropped = S.select_sections(proposal_templates.get_template("migration"), answers)
+    assert "knowledge_transfer" in _ids(keep), dropped
+
+
+def test_not_in_scope_is_still_an_exclusion():
+    answers = dict(BTPN, training="Administrator training for ten staff",
+                   out_of_scope="Training is not included. Knowledge transfer is not in scope.")
+    keep, _ = S.select_sections(proposal_templates.get_template("migration"), answers)
+    assert "knowledge_transfer" not in _ids(keep)
+
+
+def test_the_small_proposal_fallback_never_restores_what_the_client_excluded():
+    """Under five sections the whole template came back, exclusions included:
+    the proposal then promised the training the client had ruled out."""
+    from types import SimpleNamespace
+    template = [SimpleNamespace(id=i) for i in (
+        "executive_summary", "knowledge_transfer", "commercial", "project_timeline",
+        "rollback_risk", "decommissioning")]
+    answers = {"out_of_scope": "End-user training is out of scope."}
+    keep, dropped = S.select_sections(template, answers)
+    assert "knowledge_transfer" not in _ids(keep)
+    assert [sid for sid, _ in dropped] == ["knowledge_transfer"]      # and it is reported
+    # Sections dropped only for want of answers do come back.
+    assert {"commercial", "project_timeline", "rollback_risk"} <= set(_ids(keep))

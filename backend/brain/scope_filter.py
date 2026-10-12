@@ -104,6 +104,24 @@ def _has_evidence(section_id: str, answers: dict) -> bool:
     return any(not _is_empty(answers.get(f)) for f in fields)
 
 
+# A clause of an out-of-scope answer that says something STAYS in. "No
+# exclusions for training; training remains in scope" was searched for the word
+# "training" and dropped Knowledge Transfer (audit F24). "not in scope" and
+# "not included" are exclusions and do not match.
+_INCLUSIVE_CLAUSE_RE = re.compile(
+    r"\bno\s+exclusions?\b|\bnot\s+excluded\b|"
+    r"(?<!not )(?<!n't )\bin[- ]scope\b|(?<!not )(?<!n't )\bincluded\b", re.I)
+
+
+def exclusion_text(out_of_scope) -> str:
+    """The clauses of an out-of-scope answer that actually exclude something,
+    lower-cased. Clauses split on full stops, semicolons and new lines only: a
+    comma list ("training, hypercare and DR") is one statement."""
+    clauses = re.split(r"[.;\n]", str(out_of_scope or ""))
+    return ". ".join(c.strip() for c in clauses
+                     if c.strip() and not _INCLUSIVE_CLAUSE_RE.search(c)).lower()
+
+
 def _explicitly_excluded(section_id: str, answers: dict) -> Optional[str]:
     """Is this section ruled out by what the client said is out of scope?
 
@@ -121,7 +139,7 @@ def _explicitly_excluded(section_id: str, answers: dict) -> Optional[str]:
     positive = [v for v in own if not _is_empty(v) and not _NEGATIVE_ANSWER_RE.match(v)]
     if negative and not positive:
         return negative[0].strip()[:80]
-    haystack = str(answers.get("out_of_scope") or "").lower()
+    haystack = exclusion_text(answers.get("out_of_scope"))
     if not haystack.strip():
         return None
     for pat in patterns:
@@ -176,6 +194,7 @@ def select_sections(template: list, answers: Optional[dict]) -> tuple[list, list
         return list(template), []
 
     keep, dropped = [], []
+    excluded_by_client: list[tuple[str, str]] = []
     for spec in template:
         sid = spec.id
         if sid in ALWAYS_KEEP:
@@ -185,6 +204,7 @@ def select_sections(template: list, answers: Optional[dict]) -> tuple[list, list
         excluded = _explicitly_excluded(sid, answers)
         if excluded:
             dropped.append((sid, f"the client placed \"{excluded}\" out of scope"))
+            excluded_by_client.append(dropped[-1])
             continue
 
         if sid == "decommissioning" and _upgrade_in_place(answers):
@@ -200,11 +220,16 @@ def select_sections(template: list, answers: Optional[dict]) -> tuple[list, list
         keep.append(spec)
 
     # A proposal stripped below this is more likely a bug in the answers than a
-    # genuinely tiny engagement, so fail safe and keep everything.
+    # genuinely tiny engagement, so fail safe and restore what was dropped for
+    # want of answers. What the client explicitly excluded stays out: restoring
+    # it promised work they had ruled out, on exactly the small engagements
+    # this fallback exists for.
     if len(keep) < 5:
-        log.warning("scope filter would leave only %d sections; keeping all %d",
-                    len(keep), len(template))
-        return list(template), []
+        out = {sid for sid, _ in excluded_by_client}
+        log.warning("scope filter would leave only %d sections; keeping all %d "
+                    "except %d the client excluded",
+                    len(keep), len(template), len(out))
+        return [s for s in template if s.id not in out], excluded_by_client
 
     for sid, reason in dropped:
         log.info("section %s dropped: %s", sid, reason)

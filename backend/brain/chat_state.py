@@ -930,6 +930,25 @@ def build_all_diagrams_approved_message(total: int) -> str:
     )
 
 
+def build_architecture_done_message(approved: int, skipped: int, total: int) -> str:
+    """The end of the diagram review, in the counts that actually happened.
+
+    Skipping the last diagram used to print "All N diagrams approved" (audit
+    F21). Approved, skipped and not-reviewed are different outcomes, and only
+    approved diagrams are embedded."""
+    if approved >= total:
+        return build_all_diagrams_approved_message(total)
+    lines = [f"Diagram review finished: **{approved}** of {total} approved, "
+             f"**{skipped}** skipped. Only approved diagrams go into the proposal."]
+    if approved + skipped < total:
+        lines.append(f"**{total - approved - skipped}** planned diagram(s) are neither "
+                     "approved nor skipped, so drafting will be refused until they are.")
+    elif approved == 0:
+        lines.append("Nothing was approved, so the proposal will carry no reviewed "
+                     "architecture diagram.")
+    return " ".join(lines) + "\n\nSay **generate the proposal** when you're ready."
+
+
 def build_architecture_message(rendered: list[dict], *, iteration: int = 1) -> str:
     """Present the proposed architecture for approval.
 

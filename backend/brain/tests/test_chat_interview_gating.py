@@ -2461,3 +2461,102 @@ def test_a_diagram_that_could_not_be_stored_is_not_offered_for_approval(monkeypa
     msg, pid, total = asyncio.run(app.propose_one_diagram("s1", "p1", 0))
     assert "could not save" in msg and "regenerate" in msg.lower()
     assert "approve" not in msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# Deep audit F21 / F18: a skipped diagram is recorded as skipped.
+# ---------------------------------------------------------------------------
+
+def _review_store(monkeypatch, diagrams, plan):
+    """An in-memory session with its diagram rows, behind the brain's own
+    database helpers. Returns the store so a test can read what was written."""
+    store = {"answers": {"client_name": "Acme"}, "diagrams": {d["id"]: dict(d) for d in diagrams},
+             "fail_writes": False}
+
+    async def get_session(c, sid):
+        return {"id": sid, "answers": dict(store["answers"])}
+
+    async def patch_answers(c, sid, partial):
+        if store["fail_writes"]:
+            return None
+        store["answers"].update(partial)
+        return {"id": sid}
+
+    async def list_rows(c, _id):
+        return sorted(store["diagrams"].values(), key=lambda r: r["created_at"], reverse=True)
+
+    async def update_row(c, did, patch):
+        if store["fail_writes"]:
+            return None
+        store["diagrams"][did].update(patch)
+        return store["diagrams"][did]
+
+    async def fake_load_plan(sid, answers=None):
+        return plan
+
+    async def next_diagram(session_id, proposal_id, index, *, feedback=None):
+        return (f"## Diagram {index + 1}", proposal_id, len(plan))
+
+    sc = app.supabase_client
+    monkeypatch.setattr(sc, "get_intake_session", get_session)
+    monkeypatch.setattr(sc, "patch_intake_answers", patch_answers)
+    monkeypatch.setattr(sc, "list_diagrams_for_proposal", list_rows)
+    monkeypatch.setattr(sc, "list_diagrams_for_session", list_rows)
+    monkeypatch.setattr(sc, "update_diagram", update_row)
+    monkeypatch.setattr(app, "load_plan", fake_load_plan)
+    monkeypatch.setattr(app, "propose_one_diagram", next_diagram)
+    return store
+
+
+def _review_turn(text, dindex):
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [{"role": "assistant", "content": "d " + cs.encode_marker(
+            cs.ChatState(mode=cs.MODE_ARCHITECTURE, session="s1", proposal="p1",
+                         dindex=dindex))},
+            {"role": "user", "content": text}],
+        "stream": False})
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+_PLAN_AB = [("Solution Architecture", "architecture"), ("Network", "network")]
+
+
+def test_a_skipped_diagram_is_not_approved_by_the_next_approve(monkeypatch):
+    """Skip left the diagram awaiting review, and approve acts on everything
+    awaiting review: the next "approve" approved a picture nobody accepted."""
+    store = _review_store(monkeypatch, [
+        {"id": "d1", "title": "Acme — Solution Architecture", "status": "needs_review",
+         "created_at": "1", "rendered_svg_path": "d1.png"}], _PLAN_AB)
+    reply = _review_turn("skip", 0)
+    assert store["diagrams"]["d1"]["status"] == "rejected"
+    assert store["diagrams"]["d1"]["rejection_comments"] == ["Skipped by reviewer"]
+    assert store["answers"][app.SKIP_KEY] == ["Solution Architecture"]
+    assert reply.startswith("Skipped.") and cs.decode_marker(reply).dindex == 1
+
+    store["diagrams"]["d2"] = {"id": "d2", "title": "Acme — Network", "status": "needs_review",
+                               "created_at": "2", "rendered_svg_path": "d2.png"}
+    reply = _review_turn("approve", 1)
+    assert store["diagrams"]["d2"]["status"] == "approved"
+    assert store["diagrams"]["d1"]["status"] == "rejected"          # still skipped
+    # The summary counts what happened; it does not say "All 2 diagrams approved".
+    assert cs.decode_marker(reply).mode == cs.MODE_DRAFTING
+    assert "**1** of 2" in reply and "**1** skipped" in reply and "All **2**" not in reply
+
+
+def test_a_skip_that_did_not_save_does_not_move_on(monkeypatch):
+    store = _review_store(monkeypatch, [
+        {"id": "d1", "title": "Acme — Solution Architecture", "status": "needs_review",
+         "created_at": "1", "rendered_svg_path": "d1.png"}], _PLAN_AB)
+    store["fail_writes"] = True
+    reply = _review_turn("skip", 0)
+    assert cs.decode_marker(reply).dindex == 0 and "did not save" in reply
+
+
+def test_all_approved_still_reads_as_all_approved(monkeypatch):
+    store = _review_store(monkeypatch, [
+        {"id": "d1", "title": "Acme — Solution Architecture", "status": "approved",
+         "created_at": "1", "rendered_svg_path": "d1.png"},
+        {"id": "d2", "title": "Acme — Network", "status": "needs_review",
+         "created_at": "2", "rendered_svg_path": "d2.png"}], _PLAN_AB)
+    reply = _review_turn("approve", 1)
+    assert "All **2** diagrams approved" in reply

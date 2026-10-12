@@ -2081,6 +2081,68 @@ async def approve_architecture(proposal_id: str | None) -> tuple[bool, str]:
                    "a fresh architecture for review.")
 
 
+# A diagram the reviewer chose to skip. Recorded twice on purpose: the row (if
+# there is one) is retired so it is neither awaiting review nor approvable, and
+# the plan title goes on the session, because a diagram that never generated
+# has no row to mark.
+SKIP_KEY = "_diagrams_skipped"
+SKIP_COMMENT = "Skipped by reviewer"
+
+
+async def skip_diagram(session_id: str | None, proposal_id: str | None, index: int) -> bool:
+    """Record that the diagram at `index` of the plan was skipped. False when
+    that could not be stored: the caller must then not move on.
+
+    Skip used to do nothing, so the diagram stayed awaiting review. The next
+    "approve" then approved it unseen, or, if it was the last, the chat said
+    "All N diagrams approved" and drafting was refused (audit F21, F18)."""
+    async with httpx.AsyncClient() as client:
+        answers: dict = {}
+        if session_id:
+            row = await supabase_client.get_intake_session(client, session_id)
+            answers = (row or {}).get("answers") or {}
+        plan = await load_plan(session_id, answers)
+        if proposal_id:
+            rows = await supabase_client.list_diagrams_for_proposal(client, proposal_id)
+            current, _ = diagram_engine.current_revisions(rows)
+            for drow in current:
+                if (drow.get("status") or "") != "needs_review":
+                    continue
+                patch = diagram_engine.apply_transition(
+                    drow, "rejected", rejection_comment=SKIP_COMMENT)
+                if not await supabase_client.update_diagram(client, drow["id"], patch):
+                    return False
+        if session_id and index < len(plan):
+            skipped = [t for t in (answers.get(SKIP_KEY) or []) if isinstance(t, str)]
+            title = plan[index][0]
+            if title not in skipped and await supabase_client.patch_intake_answers(
+                    client, session_id, {SKIP_KEY: skipped + [title]}) is None:
+                return False
+    return True
+
+
+async def architecture_progress(session_id: str | None, proposal_id: str | None,
+                                answers: dict | None = None) -> tuple[int, int, int]:
+    """(approved, skipped, planned) for a session's diagram review, from stored
+    rows: the newest version of each diagram, and the skips recorded on the
+    session. The chat marker's position proves nothing about either."""
+    async with httpx.AsyncClient() as client:
+        if answers is None and session_id:
+            row = await supabase_client.get_intake_session(client, session_id)
+            answers = (row or {}).get("answers") or {}
+        answers = answers or {}
+        rows = (await supabase_client.list_diagrams_for_session(client, session_id)
+                if session_id else
+                await supabase_client.list_diagrams_for_proposal(client, proposal_id)
+                if proposal_id else [])
+    plan = await load_plan(session_id, answers)
+    current, _ = diagram_engine.current_revisions(rows)
+    approved = sum(1 for r in current if (r.get("status") or "") == "approved")
+    recorded = set(t for t in (answers.get(SKIP_KEY) or []) if isinstance(t, str))
+    skipped = sum(1 for title, _ in plan if title in recorded)
+    return approved, skipped, len(plan)
+
+
 async def reject_architecture(proposal_id: str | None, comment: str) -> str:
     """Record a rejection with the reviewer's comment and reopen for redraft."""
     if not proposal_id:
@@ -4149,12 +4211,19 @@ async def chat_completions(request: Request):
                                     + chat_state.encode_marker(state))
                         prefix = "Approved.\n\n"
                     else:
+                        if not await skip_diagram(state.session, state.proposal, state.dindex):
+                            return ("That skip **did not save** (a database issue), so I "
+                                    "have not moved on. Say **skip** again.\n\n"
+                                    + chat_state.encode_marker(state))
                         prefix = "Skipped.\n\n"
 
                     nxt = state.dindex + 1
                     plan = await load_plan(state.session)
                     if nxt >= len(plan):
-                        return (chat_state.build_all_diagrams_approved_message(len(plan))
+                        approved_n, skipped_n, total_n = await architecture_progress(
+                            state.session, state.proposal)
+                        return (chat_state.build_architecture_done_message(
+                                    approved_n, skipped_n, total_n)
                                 + "\n\n" + chat_state.encode_marker(chat_state.ChatState(
                                     mode=chat_state.MODE_DRAFTING, session=state.session,
                                     proposal=state.proposal)))

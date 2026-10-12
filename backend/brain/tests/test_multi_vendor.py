@@ -2405,3 +2405,41 @@ def test_requirements_over_the_cap_stay_in_the_matrix_unassessed(monkeypatch):
     # ... and the client matrix puts every unassessed one on the to-confirm list.
     _, confirm = de.render_client_matrix(m.entries, {e.requirement_id: "Sec" for e in m.entries})
     assert confirm == ["R-3", "R-4", "R-5"]
+
+
+def test_approve_acts_on_the_current_version_only_and_reports_failed_writes(monkeypatch):
+    """Audit 2026-10-12 finding 5: one approval approved every pending version."""
+    import asyncio
+    rows = [  # newest first, as list_diagrams_for_proposal returns them
+        {"id": "new", "title": "X — Solution", "status": "needs_review"},
+        {"id": "old", "title": "X — Solution", "status": "needs_review"},
+        {"id": "pam", "title": "X — PAM", "status": "needs_review"},
+    ]
+    writes = {}
+
+    async def fake_list(client, pid):
+        return rows
+
+    async def fake_update(client, did, patch):
+        writes[did] = patch["status"]
+        return None if did in fail else {"id": did}
+    monkeypatch.setattr(app.supabase_client, "list_diagrams_for_proposal", fake_list)
+    monkeypatch.setattr(app.supabase_client, "update_diagram", fake_update)
+
+    fail = set()
+    ok, _ = asyncio.run(app.approve_architecture("p1"))
+    assert ok and writes == {"old": "rejected", "new": "approved", "pam": "approved"}
+
+    fail, writes = {"pam"}, {}
+    ok, msg = asyncio.run(app.approve_architecture("p1"))
+    assert not ok and "did not save" in msg and "X — PAM" in msg
+
+
+def test_only_the_newest_version_of_a_diagram_is_current():
+    from diagram_engine import current_revisions
+    rows = [{"id": 3, "title": "A", "status": "needs_review"},
+            {"id": 2, "title": "A", "status": "approved"},
+            {"id": 1, "title": "B", "status": "approved"}]
+    current, superseded = current_revisions(rows)
+    # The approved older "A" is not embedded while a newer "A" awaits review.
+    assert [r["id"] for r in current] == [3, 1] and [r["id"] for r in superseded] == [2]

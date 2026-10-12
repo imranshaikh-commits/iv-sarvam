@@ -996,6 +996,23 @@ def can_transition(current: str, target: str) -> bool:
     return target in _VALID_TRANSITIONS.get((current or "").strip(), set())
 
 
+def current_revisions(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(current, superseded) from a proposal's diagram rows, NEWEST FIRST.
+
+    Regenerating a diagram inserts another row with the same title. Only the
+    newest row per title is the diagram the reviewer is looking at; approval
+    and embedding act on that one alone (audit 2026-10-12, finding 5: one
+    "approve" used to approve every pending version, old attempts included).
+    """
+    seen: set[str] = set()
+    current, superseded = [], []
+    for row in rows or []:
+        title = (row.get("title") or "").strip()
+        (superseded if title in seen else current).append(row)
+        seen.add(title)
+    return current, superseded
+
+
 def validate_transition(current: str, target: str) -> None:
     """Raise InvalidTransition if current -> target is not allowed."""
     current = (current or "").strip()

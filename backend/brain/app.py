@@ -1953,29 +1953,49 @@ async def propose_architecture(
 
 
 async def approve_architecture(proposal_id: str | None) -> tuple[bool, str]:
-    """Approve every diagram under review for this proposal.
+    """Approve the CURRENT version of each diagram under review for this proposal.
 
-    Returns ``(approved_any, message)``. Approval IS the gate, so a DB failure is
-    reported honestly rather than silently letting drafting proceed.
+    Returns ``(approved, message)``. Approval IS the gate, so it is all or
+    nothing: a diagram whose approval did not save is reported, never counted
+    as approved. Earlier attempts at the same diagram are retired, not approved.
     """
     if not proposal_id:
         return (False, "I've lost track of which proposal this is — say **start over** "
                        "and we'll re-run discovery.")
     async with httpx.AsyncClient() as client:
         rows = await supabase_client.list_diagrams_for_proposal(client, proposal_id)
-        approved = 0
-        for row in rows or []:
+        current, superseded = diagram_engine.current_revisions(rows)
+        for row in superseded:
+            if (row.get("status") or "") != "needs_review":
+                continue
+            try:
+                patch = diagram_engine.apply_transition(
+                    row, "rejected", rejection_comment="Superseded by a later version.")
+            except InvalidTransition as e:
+                log.warning("cannot retire diagram %s: %s", row.get("id"), e)
+                continue
+            await supabase_client.update_diagram(client, row["id"], patch)
+
+        approved, failed = 0, []
+        for row in current:
             if (row.get("status") or "") != "needs_review":
                 continue
             try:
                 patch = diagram_engine.apply_transition(row, "approved")
             except InvalidTransition as e:
                 log.warning("cannot approve diagram %s: %s", row.get("id"), e)
+                failed.append(row.get("title") or "a diagram")
                 continue
             patch["approved_at"] = datetime.now(timezone.utc).isoformat()
             if await supabase_client.update_diagram(client, row["id"], patch):
                 approved += 1
+            else:
+                failed.append(row.get("title") or "a diagram")
 
+        if failed:
+            return (False, f"{len(failed)} approval(s) did not save ({', '.join(failed)}), "
+                           f"so the architecture is NOT approved yet. Say **approve** to "
+                           f"try again.")
         if approved:
             return (True, chat_state.ARCHITECTURE_APPROVED_MESSAGE)
     return (False, "There was nothing awaiting approval — say **regenerate** to produce "
@@ -2839,6 +2859,8 @@ async def generate_proposal_endpoint(request: Request):
     if embed_proposal_id:
         async with httpx.AsyncClient() as dclient:
             diagram_rows = await supabase_client.list_diagrams_for_proposal(dclient, embed_proposal_id)
+        # Only the newest version of each diagram, and only if THAT one is approved.
+        diagram_rows, _ = diagram_engine.current_revisions(diagram_rows)
         for drow in diagram_rows:
             if (drow.get("status") or "") != "approved":
                 continue

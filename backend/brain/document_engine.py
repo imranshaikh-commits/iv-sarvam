@@ -37,6 +37,7 @@ from docx.shared import Inches, Pt, RGBColor
 import branding
 import document_qa
 from proposal_templates import (
+    REFERENCE_LIST,
     engagement_domains,
     COMPLIANCE_SECTION_ID,
     SUBSECTION_FACETS,
@@ -274,7 +275,7 @@ def _mentions_client(text: str, alias: str) -> bool:
 
 
 def build_reference_book(proposals: list[dict], citation_chunks: list[dict]) -> str:
-    """The DELIVERED ENGAGEMENTS block for Similar Experience, or "".
+    """The WON ENGAGEMENTS block for Similar Experience, or "".
 
     proposals: corpus rows (id, client_name, iam_vendor, proposal_type, year,
     industry, country, outcome). citation_chunks: (proposal_id, text) from the
@@ -327,16 +328,19 @@ def build_reference_book(proposals: list[dict], citation_chunks: list[dict]) -> 
                    if v.lower() in _ACQUIRED_BY else v for v in e["vendors"]]
         lines.append(f"- {who}: {', '.join(vendors)}; "
                      f"{', '.join(sorted(e['types'])) or 'engagement'}{years}")
-    return ("DELIVERED ENGAGEMENTS -- IV's won work, the ONLY engagements you may "
-            "describe as delivered:\n" + "\n".join(lines) + "\n"
-            "RULES: name a client only where marked (named); for every other entry "
-            "use exactly the description given, never a name. Mention each entry "
-            "at most once. A product listed as 'now part of' a vendor counts as "
-            "that vendor's delivery. State only the product and engagement type "
-            "listed -- no scope, figures, outcomes or claims about referenceability "
-            "the list does not give. Where a proposed vendor has no entry here, "
-            "describe IV's partner status and certified resources for it, never "
-            "past delivery.")
+    return (f"{REFERENCE_LIST} -- proposals IV won, the ONLY "
+            "engagements you may mention:\n" + "\n".join(lines) + "\n"
+            "RULES: this list records that IV was SELECTED for the work, not that "
+            "the work was completed. Write \"selected by\" or \"engaged by\"; never "
+            "say delivered, completed, implemented, deployed or live. Name a client "
+            "only where marked (named); for every other entry use exactly the "
+            "description given, never a name. Mention each entry at most once. A "
+            "product listed as 'now part of' a vendor counts as that vendor's "
+            "engagement. State only the product and engagement type listed -- no "
+            "scope, figures, outcomes or claims about referenceability the list "
+            "does not give. Where a proposed vendor has no entry here, describe "
+            "IV's partner status and certified resources for it, never a past "
+            "engagement.")
 
 
 # --- Client-facing compliance matrix -----------------------------------------

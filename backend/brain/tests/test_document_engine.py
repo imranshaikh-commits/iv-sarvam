@@ -2492,3 +2492,24 @@ def test_an_unknown_section_id_is_refused_before_anything_is_drafted():
         assert [s["id"] for s in result["sections_meta"]] == ["executive_summary"]
     finally:
         document_engine.draft_with_openrouter = saved
+
+
+def test_won_work_is_not_presented_as_delivered_work():
+    """Deep audit F31: the reference list was headed DELIVERED ENGAGEMENTS and
+    told the drafter these were the engagements it may "describe as delivered".
+    It is built from outcome='won'. Winning a proposal is not delivering it."""
+    import proposal_templates
+    book = document_engine.build_reference_book(
+        _PROPS, [{"proposal_id": 3, "text": "Our clients include ANB."}])
+    name = proposal_templates.REFERENCE_LIST
+    assert name == "WON ENGAGEMENTS" and book.startswith(name)
+    assert "DELIVERED" not in book
+    low = book.lower()
+    assert "selected by" in low and "engaged by" in low
+    assert "never say" in low and "delivered" in low          # the rule names the word
+    # The template asks for the list under the same name the block carries.
+    spec = next(s for s in proposal_templates.get_template("implementation")
+                if s.id == "similar_experience")
+    instructions = " ".join(text for _, text in spec.subsections)
+    assert name in instructions and "DELIVERED ENGAGEMENTS" not in instructions
+    assert "described as delivered" not in instructions

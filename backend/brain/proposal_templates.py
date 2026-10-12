@@ -157,6 +157,12 @@ def split_vendors(iam_vendor: Optional[str]) -> list[str]:
     return parts if len(parts) > 1 else [text]
 
 # --- Capability domains ------------------------------------------------------
+# The name of the reference block document_engine.build_reference_book hands to
+# Similar Experience, shared so the instruction and the block cannot drift. It
+# was "DELIVERED ENGAGEMENTS": the block is built from proposals marked `won`,
+# and winning a proposal is not delivering it (audit F31).
+REFERENCE_LIST = "WON ENGAGEMENTS"
+
 # Which IAM domains an engagement covers, and which vendor owns each. Drives
 # the scope and solution structure for ANY vendor mix: IV structures a
 # multi-domain proposal (ESNAD: WIAM+CIAM on one platform, IGA+PAM on another)
@@ -499,12 +505,13 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
         static_from_corpus=True,
         subsections=(
             ("Relevant Engagements",
-             "the engagements from the DELIVERED ENGAGEMENTS list most comparable "
+             f"the engagements from the {REFERENCE_LIST} list most comparable "
              "to this one: same vendor first, then sector, region and scope. For "
              "each, give the client exactly as the list gives it (name only where "
              "marked named, otherwise its description), the product and the kind "
-             "of engagement. Nothing outside the list is described as delivered; "
-             "never add scope, figures or outcomes the list does not give. For a "
+             "of engagement, as work IV was selected for or engaged on. No "
+             "engagement outside the list is mentioned; never add scope, figures "
+             "or outcomes the list does not give. For a "
              "proposed vendor with no entry in the list, describe IV's partner "
              "status and certified resources for it instead. If there is no list, "
              "write the review marker rather than naming any engagement."),
@@ -513,7 +520,7 @@ IMPLEMENTATION_SECTIONS: list[SectionSpec] = [
             # "problem, delivered, outcome" facet could only be invented.
             ("Client References by Sector",
              "a markdown TABLE with columns Client Sector, Client List, listing "
-             "ONLY clients marked named in the DELIVERED ENGAGEMENTS list, grouped "
+             f"ONLY clients marked named in the {REFERENCE_LIST} list, grouped "
              "by sector. Never add a client the list does not mark named."),
         ),
     ),

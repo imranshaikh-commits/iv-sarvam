@@ -2354,3 +2354,27 @@ def test_rfp_page_calls_are_bounded():
         app._structured_with_fallback = orig
     assert seen["max_tokens"] <= 8000 and seen["timeout"] <= 300 and seen["max_retries"] == 1
     assert app.STRUCTURED_CLIENT_TIMEOUT_S <= 300
+
+
+def test_client_logo_fetch_refuses_internal_addresses_and_foreign_files(tmp_path):
+    """Audit 2026-10-12 finding 8: the logo answer was an open server-side GET."""
+    import asyncio
+    assert not app._is_public_host("169.254.169.254")     # cloud metadata
+    assert not app._is_public_host("127.0.0.1")
+    assert not app._is_public_host("10.0.0.5")
+    assert not app._is_public_host("localhost")
+    run = lambda v: asyncio.run(app._resolve_client_logo({"client_logo": v}))
+    assert run("http://169.254.169.254/latest/meta-data/iam/security-credentials/") is None
+    assert run("http://localhost:8000/health") is None
+    # A local path is honoured only for a logo this service saved itself.
+    secret = tmp_path / "sarvam.env"
+    secret.write_text("KEY=1")
+    assert run(str(secret)) is None
+    assert run("/etc/passwd") is None
+    import tempfile, os
+    fd, own = tempfile.mkstemp(prefix="client_logo_", suffix=".png")
+    os.close(fd)
+    try:
+        assert run(own) == own
+    finally:
+        os.unlink(own)

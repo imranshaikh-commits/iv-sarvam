@@ -19,10 +19,12 @@ import asyncio
 import base64
 import functools
 import io
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -1577,13 +1579,41 @@ async def _architecture_evidence(client: httpx.AsyncClient, answers: dict) -> st
     return build_evidence_block(chunks)[:6000]
 
 
+_LOGO_MAX_BYTES = 8 * 1024 * 1024
+_LOGO_MAX_REDIRECTS = 3
+
+
+def _is_public_host(host: str) -> bool:
+    """True only when EVERY address the name resolves to is on the public
+    internet: not loopback, private, link-local (169.254.169.254 is the cloud
+    metadata service) or otherwise reserved."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        if not ip.is_global:
+            return False
+    return bool(infos)
+
+
+def _is_own_temp_logo(path: str) -> bool:
+    """A logo this service saved itself (an attached image), nothing else on disk."""
+    real = os.path.realpath(path)
+    return (os.path.dirname(real) == os.path.realpath(tempfile.gettempdir())
+            and os.path.basename(real).startswith("client_logo_") and os.path.isfile(real))
+
+
 async def _resolve_client_logo(answers: dict) -> str | None:
     """Turn the intake's client-logo answer into a local file path.
 
-    The interview asks for a client logo (area 10) and assemble_docx accepts a
-    path, but nothing joined them up — every document rendered the bordered
-    "Client Logo" placeholder even when a logo had been supplied. The answer may
-    be an https URL or a path already on disk; anything else is ignored.
+    The answer is an https URL or the temp path of an image attached in chat.
+    A discovery answer is user input, so a URL is fetched defensively (audit
+    2026-10-12, finding 8: it was an open server-side request): public hosts
+    only, each redirect re-checked, the body streamed against a size cap, and
+    the result must decode as an image. Any other local path is refused.
     """
     raw = ""
     for key in ("client_logo", "logo_url", "logo"):
@@ -1594,9 +1624,8 @@ async def _resolve_client_logo(answers: dict) -> str | None:
     if not raw or raw.lower() in ("skip", "none", "n/a", "na", "-"):
         return None
 
-    # A bare local path (rare, but supported).
     if not raw.lower().startswith(("http://", "https://")):
-        return raw if os.path.exists(raw) else None
+        return raw if _is_own_temp_logo(raw) else None
 
     # Pull the first URL out of a possibly-prose answer.
     match = re.search(r"https?://\S+", raw)
@@ -1604,23 +1633,46 @@ async def _resolve_client_logo(answers: dict) -> str | None:
         return None
     url = match.group(0).rstrip(").,;\"'")
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-            resp = await c.get(url)
-            resp.raise_for_status()
-            data = resp.content
-        if not data or len(data) > 8 * 1024 * 1024:
-            log.warning("client logo rejected (empty or >8MB): %s", url)
+        data = b""
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False) as c:
+            for _ in range(_LOGO_MAX_REDIRECTS + 1):
+                parts = httpx.URL(url)
+                # ponytail: the name is resolved here and again by the HTTP
+                # client, so DNS rebinding between the two is not closed.
+                # Upgrade: connect to the checked address with the Host header.
+                if parts.scheme not in ("http", "https") or not await asyncio.to_thread(
+                        _is_public_host, parts.host):
+                    log.warning("client logo refused: %s is not a public address", parts.host)
+                    return None
+                async with c.stream("GET", url) as resp:
+                    if resp.is_redirect and resp.headers.get("location"):
+                        url = str(parts.join(resp.headers["location"]))
+                        continue
+                    resp.raise_for_status()
+                    async for block in resp.aiter_bytes():
+                        data += block
+                        if len(data) > _LOGO_MAX_BYTES:
+                            log.warning("client logo refused: larger than 8 MB")
+                            return None
+                break
+            else:
+                log.warning("client logo refused: too many redirects")
+                return None
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as im:
+            fmt = (im.format or "").lower()
+            im.verify()
+        suffix = {"jpeg": ".jpg"}.get(fmt, f".{fmt}")
+        if suffix not in (".png", ".jpg", ".gif", ".bmp"):
+            log.warning("client logo refused: not a supported image (%s)", fmt or "unknown")
             return None
-        suffix = os.path.splitext(url.split("?")[0])[1].lower()
-        if suffix not in (".png", ".jpg", ".jpeg", ".gif", ".bmp"):
-            suffix = ".png"
         fd, path = tempfile.mkstemp(prefix="client_logo_", suffix=suffix)
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
         log.info("client logo downloaded (%d bytes) -> %s", len(data), path)
         return path
     except Exception as e:  # noqa: BLE001 — a missing logo must never fail a proposal
-        log.warning("could not fetch client logo (%s): %s", url, e)
+        log.warning("could not fetch client logo: %s", e)
         return None
 
 

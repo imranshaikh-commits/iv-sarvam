@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 git pull --ff-only
 TAG=$(git rev-parse --short HEAD)
-HIST=deploy/.deploy_history          # one tag per line, newest last (gitignored)
+HIST=${SHILPI_DEPLOY_HISTORY:-deploy/.deploy_history}   # one tag per line, newest last (gitignored)
 # Whatever is running now, however it was built, stays available as :previous.
 PREV=""
 if CUR_ID=$(docker inspect sarvam-brain --format '{{.Image}}' 2>/dev/null); then
@@ -20,12 +20,23 @@ fi
 
 docker build -q -t "sarvam-brain:$TAG" backend/brain >/dev/null
 echo "built sarvam-brain:$TAG; running tests in the image"
-docker run --rm -v "$PWD/backend/brain/tests:/app/tests:ro" --entrypoint sh "sarvam-brain:$TAG" \
-  -c "pip install -q pytest >/dev/null 2>&1 && python -m pytest -q -p no:cacheprovider tests | tail -1"
+# No pipe after pytest: `pytest | tail -1` exits with tail's status, so a failing
+# suite deployed anyway (audit 2026-10-12, finding 3). Output goes to a log; the
+# exit status is pytest's own, and set -e stops the script here.
+if ! docker run --rm -v "$PWD/backend/brain/tests:/app/tests:ro" --entrypoint sh "sarvam-brain:$TAG" \
+     -c "pip install -q pytest >/dev/null 2>&1 && python -m pytest -q -p no:cacheprovider tests" \
+     > /tmp/shilpi-deploy-tests.log 2>&1; then
+  tail -30 /tmp/shilpi-deploy-tests.log
+  echo "tests FAILED in sarvam-brain:$TAG; nothing was deployed"
+  exit 1
+fi
+tail -1 /tmp/shilpi-deploy-tests.log
 
 BRAIN_TAG=$TAG docker compose -f deploy/docker-compose.yml up -d --no-build sarvam-brain
 for _ in $(seq 1 45); do
-  if curl -fsS -m 5 http://127.0.0.1:8000/v1/keepalive >/dev/null 2>&1; then
+  # Database reachable AND the container answering is this build, not a stale one.
+  if curl -fsS -m 5 http://127.0.0.1:8000/v1/keepalive >/dev/null 2>&1 \
+     && curl -fsS -m 5 http://127.0.0.1:8000/health | grep -q "\"build\": *\"$TAG\""; then
     echo "$TAG" >> "$HIST"
     echo "deployed sarvam-brain:$TAG (previous: ${PREV:-none})"
     # Keep the last five tagged images for rollback.

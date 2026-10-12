@@ -2541,7 +2541,7 @@ async def health():
     # reported here. A silent config difference makes a scored run meaningless:
     # the model override is visible for exactly that reason, and image placement
     # was enabled once with no way to confirm it had taken effect.
-    return {"status": "ok", "model": MODEL_ID,
+    return {"status": "ok", "build": os.environ.get("SHILPI_BUILD", "unknown"), "model": MODEL_ID,
             "primary_model": PRIMARY_LLM_MODEL, "fallback_model": FALLBACK_LLM_MODEL,
             "assets_enabled": ASSETS_ENABLED,
             "asset_bucket": ASSET_BUCKET if ASSETS_ENABLED else None,

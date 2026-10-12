@@ -61,6 +61,9 @@ services:
     restart: always
     env_file:
       - ../scripts/sarvam.env
+    environment:
+      # Reported by /health so a deploy can prove WHICH build is answering.
+      - "SHILPI_BUILD=${BRAIN_TAG:-latest}"
     ports:
       - "127.0.0.1:8000:8000"
     logging: *default-logging

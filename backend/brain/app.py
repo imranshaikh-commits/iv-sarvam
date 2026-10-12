@@ -2254,10 +2254,19 @@ async def generate_proposal_from_chat(session_id: str | None,
     if pdf_url:
         lines.append(f"- [Download PDF]({pdf_url})")
     if docx_url or pdf_url:
-        lines += ["", "_Links expire in 1 hour._"]
+        lines += ["", "_Links expire in 1 hour. Say **links** for fresh ones._"]
     else:
         lines.append("_The document was produced but no download link came back — check "
                      "the generated-drafts bucket._")
+    # What did NOT work, said here: it was in the endpoint's JSON and never
+    # reached the consultant, so a failed PDF showed only as a missing link.
+    pdf_error = ((data or {}).get("pdf") or {}).get("error")
+    if pdf_error:
+        lines += ["", f"**PDF not produced:** {pdf_error}. The DOCX is unaffected; "
+                      "export it to PDF from Word rather than drafting again."]
+    storage_notes = (data or {}).get("storage_notes") or []
+    if storage_notes:
+        lines += ["", "**Storage problem:** " + "; ".join(str(n) for n in storage_notes) + "."]
     confirm = (data or {}).get("compliance_to_confirm") or []
     if confirm:
         lines += ["", f"**Compliance matrix:** {len(confirm)} requirement(s) need a "
@@ -2283,6 +2292,33 @@ async def generate_proposal_from_chat(session_id: str | None,
         "`[ASSUMPTION]` and `[SME REVIEW]` markers, and fill in commercials yourself.",
     ]
     return "\n".join(lines)
+
+
+_WANTS_LINKS_RE = re.compile(r"\b(?:links?|download)\b", re.I)
+
+
+async def fresh_download_links(session_id: str | None) -> str:
+    """New signed links to the files of the session's latest draft, or a plain
+    statement that there is none. Never starts a draft."""
+    nothing = ("There is no stored document for this proposal yet. Say **generate the "
+               "proposal** to draft it.")
+    if not session_id:
+        return nothing
+    async with httpx.AsyncClient() as client:
+        row = await supabase_client.get_intake_session(client, session_id)
+        proposal_id = (row or {}).get("generated_proposal_id")
+        files = await supabase_client.get_proposal_files(client, proposal_id) \
+            if proposal_id else {}
+        lines = []
+        for label, key in (("DOCX", "final_docx_path"), ("PDF", "final_pdf_path")):
+            path = (files or {}).get(key)
+            url = await supabase_client.create_signed_url(client, path) if path else None
+            if url:
+                lines.append(f"- [Download {label}]({url})")
+    if not lines:
+        return nothing
+    return "\n".join(["Fresh links to the last draft:", ""] + lines
+                     + ["", "_Links expire in 1 hour._"])
 
 
 # ---------------------------------------------------------------------------
@@ -3307,8 +3343,8 @@ async def _build_export_response(
                     f"'{supabase_client.GENERATED_DRAFTS_BUCKET}' — create the bucket manually "
                     "in Supabase Storage to enable signed-URL delivery"
                 )
+            pdf_path = f"{prefix}/{pdf_filename}"
             if pdf_bytes is not None:
-                pdf_path = f"{prefix}/{pdf_filename}"
                 if await supabase_client.upload_generated_draft(
                     sclient, pdf_path, pdf_bytes, "application/pdf"
                 ):
@@ -3319,6 +3355,16 @@ async def _build_export_response(
                         notes.append("pdf uploaded but signed URL creation failed")
                 else:
                     notes.append("could not upload PDF to storage bucket")
+            # Where the files are, so "links" can re-sign them later instead of
+            # the consultant paying for another draft (audit F40).
+            stored_docx = docx_path if "docx" in signed else None
+            stored_pdf = pdf_path if "pdf" in signed else None
+            if proposal_id and (stored_docx or stored_pdf) and not \
+                    await supabase_client.set_proposal_files(
+                        sclient, proposal_id, docx_path=stored_docx, pdf_path=stored_pdf):
+                notes.append("the files are stored, but their location could not be "
+                             "recorded, so fresh links cannot be issued later: save "
+                             "the files now")
         response["signed_urls"] = signed
         if notes:
             response["storage_notes"] = notes
@@ -4311,6 +4357,16 @@ async def chat_completions(request: Request):
 
         # --- drafting: architecture approved, full document can be produced ---
         if state.mode == chat_state.MODE_DRAFTING:
+            # "links" / "the download link expired": re-sign the stored files.
+            # Checked before intent, and only on a short message that is not
+            # itself a request to draft.
+            if (_WANTS_LINKS_RE.search(q) and len(q.split()) <= 10
+                    and not re.search(r"\b(?:generate|draft|regenerate)\b", q, re.I)):
+                async def _links() -> str:
+                    return (await fresh_download_links(state.session) + "\n\n"
+                            + chat_state.encode_marker(state))
+                return await _emit_chat_lazy(_links, stream)
+
             _intent, _reading = await resolve_intent(q)
 
             # A late answer during the drafting gate is an ANSWER, not noise.

@@ -731,3 +731,119 @@ def test_every_diagram_approved_or_skipped_can_draft(monkeypatch):
     assert _draft(monkeypatch, [], skipped=["Solution Architecture", "Network"]).status_code == 200
     # A skip recorded for a diagram that is not in the plan counts for nothing.
     assert _draft(monkeypatch, [approved], skipped=["Something Else"]).status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Deep audit F39 and F40: what the consultant is told after a draft, and
+# getting the files again without drafting again.
+# ---------------------------------------------------------------------------
+
+def _chat_reply_for(monkeypatch, data):
+    """The chat reply generate_proposal_from_chat builds from an endpoint JSON."""
+    import asyncio
+
+    async def fake_session(client, sid):
+        return {"answers": {"client_name": "Test Client", "proposal_type": "implementation",
+                            "rfp_text": "x"}}
+
+    class _Resp:
+        status_code = 200
+        def raise_for_status(self): return None
+        def json(self): return data
+
+    async def fake_post(self, url, **kwargs):
+        return _Resp()
+
+    monkeypatch.setattr(app_module.supabase_client, "get_intake_session", fake_session)
+    monkeypatch.setattr(app_module.httpx.AsyncClient, "post", fake_post)
+    return asyncio.run(app_module.generate_proposal_from_chat("sess-1", "prop-1"))
+
+
+def test_a_failed_pdf_and_a_failed_upload_are_said_in_the_chat_reply(monkeypatch):
+    """F39: both were in the endpoint's JSON and the chat reply read neither,
+    so a failed PDF showed only as a missing link."""
+    reply = _chat_reply_for(monkeypatch, {
+        "filename": "Shilpi_Proposal_X.docx",
+        "signed_urls": {"docx": "https://example.supabase.co/d"},
+        "pdf": {"error": "LibreOffice (soffice) binary not found on PATH"},
+        "storage_notes": ["could not upload PDF to storage bucket"]})
+    assert "PDF" in reply and "soffice" in reply
+    assert "could not upload PDF to storage bucket" in reply
+    assert "[Download DOCX]" in reply                     # what did work is still offered
+    clean = _chat_reply_for(monkeypatch, {
+        "filename": "Shilpi_Proposal_X.docx", "pdf": {"size": 10},
+        "signed_urls": {"docx": "https://example.supabase.co/d",
+                        "pdf": "https://example.supabase.co/p"}})
+    assert "not produced" not in clean.lower() and "problem" not in clean.lower()
+
+
+def test_the_stored_file_paths_are_recorded_on_the_proposal(monkeypatch):
+    """F40, caller side: the files were uploaded and their paths thrown away,
+    so nothing could re-issue a link once the first one expired."""
+    recorded = {}
+
+    async def fake_upload(client, path, data, content_type):
+        return path
+
+    async def fake_sign(client, path, expires_in=3600, bucket=None):
+        return f"https://example.supabase.co/sign/{path}"
+
+    async def capture_files(client, proposal_id, *, docx_path=None, pdf_path=None):
+        recorded.update(proposal=proposal_id, docx=docx_path, pdf=pdf_path)
+        return True
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(app_module.supabase_client, "upload_generated_draft", fake_upload)
+    monkeypatch.setattr(app_module.supabase_client, "create_signed_url", fake_sign)
+    monkeypatch.setattr(app_module.supabase_client, "set_proposal_files", capture_files)
+    monkeypatch.setattr(app_module.export_engine, "export_pdf", lambda b: (b"%PDF-1.4", None))
+    with TestClient(app_module.app) as tc:
+        tc.post("/v1/generate-proposal",
+                json={**_base_body(), "include_pdf": True, "return_signed_urls": True})
+    assert recorded["proposal"] == "prop-123"
+    assert recorded["docx"].startswith("prop-123/") and recorded["docx"].endswith(".docx")
+    assert recorded["pdf"].startswith("prop-123/") and recorded["pdf"].endswith(".pdf")
+
+
+def test_asking_for_the_links_again_signs_the_stored_files_without_drafting(monkeypatch):
+    """F40: after the one-hour links expired, the only way to the files was
+    another 40-minute paid draft."""
+    import chat_state as cs
+    drafted = []
+
+    async def fake_session(client, sid):
+        return {"id": sid, "generated_proposal_id": "prop-9", "answers": {}}
+
+    async def fake_files(client, proposal_id):
+        return {"final_docx_path": "prop-9/a.docx", "final_pdf_path": "prop-9/a.pdf"} \
+            if stored["has_files"] else {}
+
+    async def fake_sign(client, path, expires_in=3600, bucket=None):
+        return f"https://example.supabase.co/sign/{path}?token=fresh"
+
+    async def spy_draft(session_id, proposal_id):
+        drafted.append(session_id)
+        return "drafted"
+
+    stored = {"has_files": True}
+    monkeypatch.setattr(app_module.supabase_client, "get_intake_session", fake_session)
+    monkeypatch.setattr(app_module.supabase_client, "get_proposal_files", fake_files)
+    monkeypatch.setattr(app_module.supabase_client, "create_signed_url", fake_sign)
+    monkeypatch.setattr(app_module, "generate_proposal_from_chat", spy_draft)
+
+    def ask(text):
+        with TestClient(app_module.app) as tc:
+            return tc.post("/v1/chat/completions", json={
+                "messages": [
+                    {"role": "assistant", "content": "x " + cs.encode_marker(cs.ChatState(
+                        mode=cs.MODE_DRAFTING, session="s1", proposal="p1"))},
+                    {"role": "user", "content": text}],
+                "stream": False}).json()["choices"][0]["message"]["content"]
+
+    reply = ask("the links expired, new links please")
+    assert "prop-9/a.docx?token=fresh" in reply and "prop-9/a.pdf?token=fresh" in reply
+    assert drafted == []
+    assert cs.decode_marker(reply).mode == cs.MODE_DRAFTING
+    stored["has_files"] = False
+    reply = ask("links")
+    assert drafted == [] and "generate the proposal" in reply.lower()

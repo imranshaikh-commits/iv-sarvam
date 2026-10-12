@@ -406,6 +406,43 @@ async def insert_generated_proposal(
     return rows[0]["id"] if rows else None
 
 
+async def set_proposal_files(client: httpx.AsyncClient, proposal_id: str, *,
+                             docx_path: str | None = None,
+                             pdf_path: str | None = None) -> bool:
+    """Record where a proposal's exported files are stored (final_docx_path,
+    final_pdf_path). The columns have existed since 001_init and were never
+    written, so nothing could re-issue a download link once the first expired."""
+    body = {k: v for k, v in (("final_docx_path", docx_path), ("final_pdf_path", pdf_path)) if v}
+    if not (proposal_id and body):
+        return False
+    try:
+        resp = await client.patch(
+            _table_url("generated_proposals"), headers=_headers(prefer_representation=False),
+            params={"id": f"eq.{proposal_id}"}, json=body, timeout=30.0)
+        resp.raise_for_status()
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("set_proposal_files failed: %s", _why(e))
+        return False
+
+
+async def get_proposal_files(client: httpx.AsyncClient, proposal_id: str) -> dict:
+    """{"final_docx_path", "final_pdf_path"} for a proposal the signed-in user
+    may access; {} when there is none, it is another user's, or the read failed."""
+    try:
+        resp = await client.get(
+            _table_url("generated_proposals"), headers=_headers(prefer_representation=False),
+            params={"id": f"eq.{proposal_id}", "limit": "1",
+                    "select": "id,created_by_email,final_docx_path,final_pdf_path"},
+            timeout=30.0)
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as e:  # noqa: BLE001
+        log.error("get_proposal_files failed: %s", _why(e))
+        return {}
+    return rows[0] if rows and _may_access(rows[0]) else {}
+
+
 # --- architecture_diagrams (Pass 4) -----------------------------------------
 # All fail-soft (log + None/empty). The core proposal flow must never break on a
 # diagram persistence hiccup. RLS is enforced at the DB layer; the service-role

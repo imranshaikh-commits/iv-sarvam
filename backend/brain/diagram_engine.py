@@ -1475,9 +1475,11 @@ def render_gantt(items: list[tuple[str, str, int, int]]) -> Optional[bytes]:
     workstream. None when there is nothing to draw."""
     if len(items) < 2:
         return None
+    weeks = max(b for *_, b in items)
+    if weeks < 1:   # every row at "week 0": no axis to draw (and a division by zero)
+        return None
     from PIL import Image, ImageDraw
     import io
-    weeks = max(b for *_, b in items)
     label_w, chart_w, row_h, top = 620, 1180, 38, 70
     W, H = label_w + chart_w + 40, top + row_h * len(items) + 30
     img = Image.new("RGB", (W, H), "white")

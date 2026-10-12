@@ -974,6 +974,21 @@ def test_gantt_is_drawn_from_week_columns_and_skipped_without_them():
     assert diagram_engine.render_gantt(items[:1]) is None
 
 
+def test_a_plan_whose_weeks_are_all_zero_gets_no_chart_and_still_assembles():
+    """Deep audit F71: two rows at week 0 divided by zero and ended the whole
+    document at assembly. A chart is decoration; the table stays, the chart goes."""
+    h = ["Workstream", "Phase", "Start Week", "End Week"]
+    rows = [["IGA", "Kick-off", "0", "0"], ["PAM", "Kick-off", "Week 0", "0"]]
+    assert diagram_engine.render_gantt(diagram_engine.gantt_rows(h, rows)) is None
+    import document_engine
+    from docx import Document
+    doc = Document()
+    table = "| " + " | ".join(h) + " |\n|---|---|---|---|\n" + "\n".join(
+        "| " + " | ".join(r) + " |" for r in rows)
+    document_engine._add_body_paragraphs(doc, table + "\n")
+    assert len(doc.tables) == 1 and not doc.inline_shapes
+
+
 def test_plan_table_in_a_draft_gets_a_chart_under_it():
     from docx import Document
     import document_engine

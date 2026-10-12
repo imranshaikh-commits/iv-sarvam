@@ -899,7 +899,8 @@ def _compact(spec: DiagramSpec) -> DiagramSpec:
     ESNAD 09-28's architecture diagram printed its labels at ~3.8 pt (IV's own
     diagrams print at 5-7 pt): five application boxes side by side set the page
     width, and one-line labels made every box wide. Leaves that hang off the
-    same source in the same zone become one box listing them, the way the
+    same source in the same zone, with the same shape, become one box listing
+    them, the way the
     solution stack does, and long labels wrap. Measured on that diagram:
     3.8 pt -> 4.9 pt. Render-time only; the stored spec is unchanged.
     """
@@ -913,7 +914,9 @@ def _compact(spec: DiagramSpec) -> DiagramSpec:
     for n in spec.nodes:
         into = incoming.get(n.id) or []
         if n.id not in outgoing and len(into) == 1:
-            fans.setdefault((n.group, into[0].source), []).append(n)
+            # Same source, same zone AND same kind: folding a person and a
+            # queue into a database-shaped box changed what the diagram said.
+            fans.setdefault((n.group, into[0].source, n.shape), []).append(n)
     merged: dict[str, str] = {}   # dropped id -> kept id
     labels: dict[str, str] = {}
     for ns in fans.values():

@@ -999,6 +999,34 @@ def test_plan_table_in_a_draft_gets_a_chart_under_it():
     assert len(doc.tables) == 1 and len(doc.inline_shapes) == 1
 
 
+def test_compact_never_merges_leaves_of_different_kinds():
+    """Deep audit F56: a database, a person and a queue hanging off one source
+    were folded into one database-shaped box. Leaves merge only when they are
+    the same kind of thing; like leaves still merge (the legibility fix stays)."""
+    from diagram_engine import DiagramSpec, _compact
+    spec = DiagramSpec.model_validate({
+        "diagram_type": "architecture", "title": "t",
+        "nodes": [{"id": "iga", "label": "IGA", "group": "IAM"},
+                  {"id": "db", "label": "HR database", "group": "Targets", "shape": "datastore"},
+                  {"id": "mgr", "label": "Line manager", "group": "Targets", "shape": "person"},
+                  {"id": "q", "label": "Event queue", "group": "Targets", "shape": "queue"},
+                  *[{"id": f"d{i}", "label": f"Directory {i}", "group": "Targets",
+                     "shape": "datastore"} for i in range(3)]],
+        "edges": [{"source": "iga", "target": "db", "label": "SQL"},
+                  {"source": "iga", "target": "mgr", "label": "approval"},
+                  {"source": "iga", "target": "q", "label": "events"},
+                  *[{"source": "iga", "target": f"d{i}", "label": "LDAP"} for i in range(3)]]})
+    out = _compact(spec)
+    by_id = {n.id: n for n in out.nodes}
+    # The person and the queue stand alone, with their own edges and labels.
+    assert by_id["mgr"].shape == "person" and by_id["q"].shape == "queue"
+    assert ("mgr", "approval") in [(e.target, e.label) for e in out.edges]
+    assert ("q", "events") in [(e.target, e.label) for e in out.edges]
+    # The four datastores are one kind, so they still fold into one box.
+    stores = [n for n in out.nodes if n.shape == "datastore"]
+    assert len(stores) == 1 and "HR database" in stores[0].label.replace("\\n", " ")
+
+
 def test_compact_merges_fan_out_leaves_and_wraps_long_labels():
     from diagram_engine import DiagramSpec, _compact
     spec = DiagramSpec.model_validate({

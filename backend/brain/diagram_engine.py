@@ -1303,16 +1303,27 @@ _SAAS_PLATFORM = {"ping": "PingOne Advanced Identity Cloud",
                   "saviynt": "Saviynt Enterprise Identity Cloud",
                   "sailpoint": "SailPoint Identity Security Cloud"}
 
-# (pattern on the vendor's scope, node label). Order is display order.
+# (domain, pattern on the vendor's scope). Order is display order.
 _DOMAINS = (
-    ("wiam", r"(?<!privileged )access management|\bam\b|wiam|workforce|\bsso\b",
-     "Workforce access: SSO, adaptive MFA, federation"),
-    ("ciam", r"ciam|customer", "Customer identity (CIAM): registration, login, consent"),
-    ("iga", r"\biga\b|governance|lifecycle",
-     "Identity governance (IGA): joiner/mover/leaver, access reviews, SoD"),
-    ("pam", r"\bpam\b|privileged",
-     "Privileged access (PAM): vaulting, just-in-time access, session recording"),
+    ("wiam", r"(?<!privileged )access management|\bam\b|wiam|workforce|\bsso\b"),
+    ("ciam", r"ciam|customer"),
+    ("iga", r"\biga\b|governance|lifecycle"),
+    ("pam", r"\bpam\b|privileged"),
 )
+
+
+def _domain_label(dom: str, excluded: str) -> str:
+    """A domain box's label: its heading and the capability bullets that are
+    not placed out of scope. `excluded` is scope_filter.exclusion_text(...).
+
+    The bullets were a fixed string per domain, so an SSO-only engagement with
+    MFA ruled out still printed "adaptive MFA" on the one diagram that reaches
+    every proposal without a review step. When in doubt a bullet is dropped:
+    the box then says less, never more than was agreed."""
+    from proposal_templates import DOMAIN_STACK_BULLETS
+    head, bullets = DOMAIN_STACK_BULLETS[dom]
+    shown = [label for label, pat in bullets if not re.search(pat, excluded or "", re.I)]
+    return f"{head}: {', '.join(shown)}" if shown else head
 
 
 def _vendor_scopes(iam_vendor: str, vendor_scope_map: Optional[dict]) -> list[tuple[str, str]]:
@@ -1348,8 +1359,10 @@ def _system_names(target_integrations: str) -> list[str]:
 def build_stack_spec(*, title: str, client_name: str, iam_vendor: str,
                      vendor_scope_map: Optional[dict] = None, is_saas: bool = False,
                      population: str = "", target_integrations: str = "",
-                     context: str = "") -> DiagramSpec:
+                     context: str = "", out_of_scope: str = "") -> DiagramSpec:
     """The solution stack as a DiagramSpec, from answers alone."""
+    import scope_filter
+    excluded = scope_filter.exclusion_text(out_of_scope)
     nodes: list[DiagramNode] = []
     edges: list[DiagramEdge] = []
     domain_node: dict[str, str] = {}
@@ -1358,11 +1371,12 @@ def build_stack_spec(*, title: str, client_name: str, iam_vendor: str,
         key = next((k for k in _SAAS_PLATFORM if k in vendor.lower()), None)
         group = (f"{vendor}: {_SAAS_PLATFORM[key]} (SaaS)" if is_saas and key
                  else vendor)
-        for dom, pat, label in _DOMAINS:
+        for dom, pat in _DOMAINS:
             if dom not in domain_node and re.search(pat, scope, re.I):
                 nid = f"{dom}_{len(nodes)}"
                 domain_node[dom] = nid
-                nodes.append(DiagramNode(id=nid, label=label, group=group))
+                nodes.append(DiagramNode(id=nid, label=_domain_label(dom, excluded),
+                                         group=group))
 
     users = [("wiam", r"wiam|workforce", "Workforce users"),
              ("ciam", r"ciam users|customer", "Customer users"),

@@ -1046,3 +1046,54 @@ def test_compact_merges_fan_out_leaves_and_wraps_long_labels():
     assert len(spec.nodes) == 6                          # stored spec untouched
     stack = spec.model_copy(update={"diagram_type": "stack"})
     assert _compact(stack) is stack
+
+
+# --- Deep audit F72: the stack shows only capabilities that are in scope -----
+
+def _stack_labels(**answers):
+    # Through app._stack_spec, the caller: a filter the caller never feeds is
+    # the bug class this project keeps meeting. Dummy keys so app imports.
+    for key, value in (("OPENROUTER_API_KEY", "test-key"), ("SUPABASE_KEY", "test-key"),
+                       ("SUPABASE_URL", "https://example.invalid")):
+        os.environ.setdefault(key, value)
+    import app
+    base = {"client_name": "Acme", "iam_vendor": "Ping Identity for Access Management and SSO"}
+    spec = app._stack_spec({**base, **answers}, "Acme — Solution Stack")
+    return [n.label for n in spec.nodes], {n.group for n in spec.nodes}
+
+
+def test_the_stack_drops_a_capability_the_answers_place_out_of_scope():
+    """An SSO-only deal with MFA ruled out still printed "adaptive MFA" on the
+    one picture that goes into every proposal with no review step."""
+    labels, _ = _stack_labels(out_of_scope="MFA is out of scope for this phase.")
+    workforce = next(l for l in labels if l.startswith("Workforce access"))
+    assert "MFA" not in workforce
+    assert "SSO" in workforce and "federation" in workforce      # the rest stays
+    # Saying a capability stays in scope does not remove it.
+    labels, _ = _stack_labels(out_of_scope="No exclusions for MFA; MFA remains in scope.")
+    assert "adaptive MFA" in next(l for l in labels if l.startswith("Workforce access"))
+    # With nothing excluded the capability list is unchanged (IV's own stack
+    # slide packs bullets into each box).
+    labels, _ = _stack_labels()
+    assert "Workforce access: SSO, adaptive MFA, federation" in labels
+    # Everything excluded leaves the domain name alone, never an empty list.
+    labels, _ = _stack_labels(out_of_scope="SSO, MFA and federation are excluded.")
+    assert "Workforce access" in labels
+
+
+def test_a_client_who_forbids_saas_gets_no_saas_product_name_on_the_stack():
+    _, groups = _stack_labels(deployment_model="SaaS is not permitted; private data centre")
+    assert not any("Identity Cloud" in g or "SaaS" in g for g in groups), groups
+    _, groups = _stack_labels(deployment_model="SaaS")
+    assert any("PingOne Advanced Identity Cloud (SaaS)" in g for g in groups), groups
+
+
+def test_every_stack_capability_comes_from_the_shared_domain_definition():
+    """One definition: a bullet the stack can show must be a capability
+    proposal_templates.DOMAIN_CAPABILITIES lists for that domain."""
+    import re
+    import proposal_templates as pt
+    assert set(pt.DOMAIN_STACK_BULLETS) == set(pt.DOMAIN_CAPABILITIES)
+    for dom, (_head, bullets) in pt.DOMAIN_STACK_BULLETS.items():
+        for label, pattern in bullets:
+            assert re.search(pattern, pt.DOMAIN_CAPABILITIES[dom], re.I), (dom, label)

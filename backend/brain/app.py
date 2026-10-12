@@ -1589,6 +1589,8 @@ def _stack_spec(answers: dict, title: str) -> DiagramSpec:
         is_saas=document_engine._looks_like_saas(answers.get("deployment_model")),
         population=str(answers.get("population_by_domain") or ""),
         target_integrations=str(answers.get("target_integrations") or ""),
+        # A capability the client ruled out must not be printed in a domain box.
+        out_of_scope=str(answers.get("out_of_scope") or ""),
         # extracted_requirements too: ESNAD's answers never said "HR", but its
         # requirements do ("authoritative HR source"), and HR/ERP vanished.
         context=" ".join(str(answers.get(k) or "") for k in

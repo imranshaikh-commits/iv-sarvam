@@ -200,6 +200,31 @@ DOMAIN_CAPABILITIES: dict[str, str] = {
             "approval workflows, and privileged audit and analytics"),
 }
 
+# The few capabilities the one-page solution stack prints in each domain's box
+# (IV's own stack slide packs bullets into each box): (box heading, ((bullet,
+# pattern that finds it), ...)). Every bullet must be a capability
+# DOMAIN_CAPABILITIES lists for that domain -- a test holds the two together --
+# and the same pattern is what removes a bullet the client's answers place out
+# of scope (diagram_engine.build_stack_spec, audit F72).
+DOMAIN_STACK_BULLETS: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
+    "wiam": ("Workforce access", (
+        ("SSO", r"single sign[- ]on|\bsso\b"),
+        ("adaptive MFA", r"\bmfa\b|multi[- ]factor"),
+        ("federation", r"federat"))),
+    "ciam": ("Customer identity (CIAM)", (
+        ("registration", r"registration|sign[- ]up"),
+        ("login", r"federation|\blog[- ]?in\b|sign[- ]in"),
+        ("consent", r"consent"))),
+    "iga": ("Identity governance (IGA)", (
+        ("joiner/mover/leaver", r"joiner|mover|leaver|\bjml\b|lifecycle"),
+        ("access reviews", r"access (?:review|certification)|recertif"),
+        ("SoD", r"\bsod\b|segregation of duties"))),
+    "pam": ("Privileged access (PAM)", (
+        ("vaulting", r"vault"),
+        ("just-in-time access", r"just[- ]in[- ]time|\bjit\b"),
+        ("session recording", r"session (?:management|recording|monitoring)"))),
+}
+
 DOMAIN_NAMES: dict[str, str] = {
     "wiam": "Workforce Identity and Access Management (WIAM)",
     "ciam": "Customer Identity and Access Management (CIAM)",

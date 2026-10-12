@@ -316,6 +316,38 @@ def test_vault_mode_reaches_the_rag_path(monkeypatch):
     assert resp.json()["choices"][0]["message"]["content"] == "RAG grounded answer [1]."
 
 
+def test_vault_chat_logs_no_question_text_and_no_client_names(monkeypatch, caplog):
+    """Deep audit F06: every vault question's first 80 characters and each
+    hit's client name and heading went to the container log."""
+    async def fake_embed(c, text):
+        return [0.0] * 1536
+
+    async def fake_retrieve(c, emb, query, k=app.TOP_K):
+        return [{"chunk_text": "x", "heading": "Canaryheading sizing", "similarity": 0.61,
+                 "client_name": "Zenith Canarybank", "iam_vendor": "sailpoint"}]
+
+    async def fake_post(self, url, **kwargs):
+        return _FakeResp()
+
+    monkeypatch.setattr(app, "embed_query", fake_embed)
+    monkeypatch.setattr(app, "retrieve_chunks", fake_retrieve)
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    with caplog.at_level("INFO", logger="shilpi-brain"):
+        resp = client.post("/v1/chat/completions", json={
+            "messages": [
+                {"role": "assistant", "content": "ack " + cs.encode_marker(
+                    cs.ChatState(mode=cs.MODE_VAULT))},
+                {"role": "user", "content": "what was the canaryquestion tender worth?"},
+            ],
+            "stream": False,
+        })
+    assert resp.status_code == 200
+    logged = caplog.text.lower()
+    for canary in ("canaryquestion", "canarybank", "canaryheading"):
+        assert canary not in logged, canary
+    assert "retrieved 1 chunks" in logged and "0.61" in logged   # counts and similarity stay
+
+
 # --- no-session, streaming: valid SSE ending in [DONE] ---------------------
 def test_fresh_thread_stream_returns_valid_sse():
     with client.stream("POST", "/v1/chat/completions", json={

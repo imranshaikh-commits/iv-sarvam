@@ -4208,10 +4208,11 @@ async def chat_completions(request: Request):
             try:
                 emb = await embed_query(client, query)
                 chunks = await retrieve_chunks(client, emb, query)
-                log.info("Retrieved %d chunks for query: %.80s", len(chunks), query)
-                for i, c in enumerate(chunks, 1):
-                    log.info("  [%d] sim=%.2f %s / %s", i, c.get("similarity", 0),
-                             c.get("client_name"), c.get("heading"))
+                # Counts and similarity only. The question and each hit's
+                # client name and heading are client content, and this line
+                # runs on every vault turn whatever the logging flags say.
+                log.info("Retrieved %d chunks (similarity %s)", len(chunks),
+                         ", ".join(f"{float(c.get('similarity') or 0):.2f}" for c in chunks))
             except Exception as e:
                 log.error("Retrieval failed (drafting ungrounded): %s", e)
 

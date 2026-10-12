@@ -4,8 +4,9 @@
 #   ~/iv-sarvam/deploy/deploy.sh
 #
 # 1. pull, 2. build sarvam-brain:<sha>, 3. run the test suite INSIDE that image
-# (a red build never ships), 4. swap the container, 5. wait for /v1/keepalive,
-# rolling back to the previous tag by itself if the new one never comes up.
+# (a red build never ships), 4. swap the container, 5. wait for /v1/keepalive
+# and a /health that reports this build with the uploads folder mounted,
+# rolling back to the previous tag by itself if the new one never gets there.
 # Undo a good-but-wrong deploy with deploy/rollback.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -37,10 +38,18 @@ fi
 tail -1 /tmp/shilpi-deploy-tests.log
 
 BRAIN_TAG=$TAG docker compose -f deploy/docker-compose.yml up -d --no-build sarvam-brain
+WHY="did not become healthy in 90 s"
 for _ in $(seq 1 45); do
   # Database reachable AND the container answering is this build, not a stale one.
   if curl -fsS -m 5 http://127.0.0.1:8000/v1/keepalive >/dev/null 2>&1 \
-     && curl -fsS -m 5 http://127.0.0.1:8000/health | grep -q "\"build\": *\"$TAG\""; then
+     && HEALTH=$(curl -fsS -m 5 http://127.0.0.1:8000/health) \
+     && echo "$HEALTH" | grep -q "\"build\": *\"$TAG\""; then
+    # The brain reads RFP attachments from Open WebUI's upload folder. Without
+    # that mount the build is up and RFP upload is dead; waiting will not fix it.
+    if ! echo "$HEALTH" | grep -q '"rfp_uploads_mounted": *true'; then
+      WHY="is up but cannot see Open WebUI's uploads (rfp_uploads_mounted is not true), so RFP upload would not work"
+      break
+    fi
     echo "$TAG" >> "$HIST"
     echo "deployed sarvam-brain:$TAG (previous: ${PREV:-none})"
     # Keep the last five tagged images for rollback.
@@ -50,7 +59,7 @@ for _ in $(seq 1 45); do
   fi
   sleep 2
 done
-echo "sarvam-brain:$TAG did not become healthy in 90 s"
+echo "sarvam-brain:$TAG $WHY"
 if [ -n "$PREV" ]; then
   echo "rolling back to $PREV"
   BRAIN_TAG=$PREV docker compose -f deploy/docker-compose.yml up -d --no-build sarvam-brain

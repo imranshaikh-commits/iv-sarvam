@@ -50,8 +50,10 @@ end. Do that drill before relying on these backups for a real outage.
 
 This pulls `main`, builds `sarvam-brain:<commit>`, runs the test suite inside
 that image (a failing build stops here), swaps the container and waits until
-the brain answers with the database reachable. If the new build never becomes
-healthy it puts the previous one back by itself. It deploys the brain only.
+the brain answers with the database reachable and Open WebUI's upload folder
+mounted (`rfp_uploads_mounted` in `/health`). If the new build never gets
+there it puts the previous one back by itself and says why. It deploys the
+brain only.
 
 - Open WebUI or Caddy changes (`deploy/Dockerfile.webui`, `deploy/Caddyfile`,
   their settings in `deploy/docker-compose.yml`):

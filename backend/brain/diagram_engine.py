@@ -466,7 +466,7 @@ def build_stack_d2(spec: DiagramSpec) -> str:
     Graph layout (ELK) put the sources on the far side and looped arrows round
     the whole picture, at a width that printed near 5pt. A grid keeps columns in
     reading order and only draws arrows between neighbouring columns, so no
-    arrow crosses a column.
+    arrow crosses a column. Every arrow drawn is an edge of the spec.
     """
     order: list[str] = []
     members: dict[str, list[DiagramNode]] = {}
@@ -512,30 +512,50 @@ def build_stack_d2(spec: DiagramSpec) -> str:
     lines.append("}")
     for g in sources:
         lines += container("sources", g, max(1, len(members[g])), "")
-    # Arrows between neighbouring columns only, labelled by what crosses.
-    labels = {("Users", "vendor"): "sign-in", ("vendor", "vendor"): "identity data",
-              ("vendor", "apps"): "SSO · provisioning"}
-    kind = lambda g: "Users" if g in users else "vendor" if g in vendors else "apps"
+    # Every arrow is an edge of the spec (audit F54). This used to draw one
+    # between EVERY pair of neighbouring columns from a fixed label table and
+    # never read spec.edges, so two vendors side by side always exchanged
+    # "identity data" and an empty spec still had arrows. The grid stays:
+    # arrows run only between neighbouring columns, so none crosses a column;
+    # an edge between columns that are not neighbours is not drawn.
+    group_of = {n.id: n.group or "Other" for n in spec.nodes}
+    between: dict[tuple[str, str], list[str]] = {}
+    for e in spec.edges:
+        a, b = (ref[len(GROUP_REF):] if ref.startswith(GROUP_REF) else group_of.get(ref)
+                for ref in (e.source, e.target))
+        if a and b and a != b:
+            labels = between.setdefault((a, b), [])
+            if e.label and e.label not in labels:
+                labels.append(e.label)
+
+    def link(ga: str, gb: str) -> Optional[tuple[str, str]]:
+        """(arrow, label) for the edges between two groups, or None if there are none."""
+        fwd, back = between.get((ga, gb)), between.get((gb, ga))
+        if fwd is None and back is None:
+            return None
+        arrow = "<->" if fwd is not None and back is not None else "->" if fwd is not None else "<-"
+        # One relation per line, wrapped: the label sits in the gap between columns.
+        text = "\\n".join("\\n".join(textwrap.wrap(lab, _WRAP_EDGE)) or lab
+                           for lab in dict.fromkeys((fwd or []) + (back or [])))
+        return arrow, _d2_label(text)
+
     for a, b, ga, gb in zip(ids, ids[1:], columns, columns[1:]):
-        lab = labels.get((kind(ga), kind(gb)), "")
-        lines += [f'main.{a} -> main.{b}: "{lab}" {{', "  style: {",
-                  f'    stroke: "{IV_SLATE}"', "    stroke-width: 2",
-                  f'    font-color: "{IV_SLATE}"', f"    font-size: {_STACK_FONT - 4}", "  }", "}"]
-    # Each platform to the sources band, dashed, as IV's "supporting
-    # integration" lines: the band otherwise floated with no connection.
-    if sources:
-        for cid, g in zip(ids, columns):
-            if g not in vendors:
-                continue
-            labs = [n.label.lower() for n in members[g]]
-            access = any(l.startswith(("workforce access", "customer identity")) for l in labs)
-            govern = any(l.startswith(("identity governance", "privileged access")) for l in labs)
-            lab = " · ".join(x for x, on in (("federation · directory", access),
-                                             ("HR feed · accounts · audit", govern)) if on)
-            lines += [f'main.{cid} <-> sources: "{lab}" {{', "  style: {",
-                      f'    stroke: "{IV_ASH}"', "    stroke-width: 2", "    stroke-dash: 5",
-                      f'    font-color: "{IV_SLATE}"', f"    font-size: {_STACK_FONT - 6}",
+        found = link(ga, gb)
+        if found:
+            lines += [f'main.{a} {found[0]} main.{b}: "{found[1]}" {{', "  style: {",
+                      f'    stroke: "{IV_SLATE}"', "    stroke-width: 2",
+                      f'    font-color: "{IV_SLATE}"', f"    font-size: {_STACK_FONT - 4}",
                       "  }", "}"]
+    # Each platform to the sources band, dashed, as IV's "supporting
+    # integration" lines -- again only where the spec has that link.
+    for g in sources[:1]:
+        for cid, col in zip(ids, columns):
+            found = link(col, g) if col in vendors else None
+            if found:
+                lines += [f'main.{cid} {found[0]} sources: "{found[1]}" {{', "  style: {",
+                          f'    stroke: "{IV_ASH}"', "    stroke-width: 2", "    stroke-dash: 5",
+                          f'    font-color: "{IV_SLATE}"', f"    font-size: {_STACK_FONT - 6}",
+                          "  }", "}"]
     return "\n".join(lines) + "\n"
 
 

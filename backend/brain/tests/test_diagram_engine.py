@@ -19,6 +19,7 @@ import asyncio
 import base64
 import io
 import os
+import re
 import sys
 
 import pytest
@@ -936,7 +937,10 @@ def test_every_diagram_form_actually_compiles_with_d2():
 def test_stack_links_each_platform_to_the_sources_band():
     """Review finding: the sources band floated with no connection."""
     d2 = diagram_engine.build_d2(_esnad_stack())
-    assert d2.count("<-> sources") == 2 and "HR feed · accounts · audit" in d2
+    # Two links, each labelled with the spec's own edge labels (deep audit F54:
+    # the labels used to be a fixed "HR feed · accounts · audit").
+    assert d2.count("<-> sources") == 2
+    assert "joiner/mover/leaver" in d2 and "accounts and groups" in d2
     if diagram_engine.d2_available():
         assert diagram_engine._d2_run(d2, 25)
 
@@ -1097,3 +1101,69 @@ def test_every_stack_capability_comes_from_the_shared_domain_definition():
     for dom, (_head, bullets) in pt.DOMAIN_STACK_BULLETS.items():
         for label, pattern in bullets:
             assert re.search(pattern, pt.DOMAIN_CAPABILITIES[dom], re.I), (dom, label)
+
+
+# --- Deep audit F54: stack arrows come from the spec's edges -----------------
+
+def _stack_arrows(spec):
+    """(left, arrow, right, label) for every connection in the stack's D2."""
+    out = []
+    for line in diagram_engine.build_d2(spec).splitlines():
+        m = re.match(r'\s*(\S+) (<->|->|<-) (\S+): "(.*)" \{', line)
+        if m:
+            out.append((m.group(1), m.group(2), m.group(3), m.group(4).replace("\\n", " ")))
+    return out
+
+
+def _two_vendor_stack(edges):
+    N = diagram_engine.DiagramNode
+    return diagram_engine.sanitize_spec(diagram_engine.DiagramSpec(
+        diagram_type="stack", title="t", edges=edges, nodes=[
+            N(id="u", label="Workforce users", group="Users", shape="person"),
+            N(id="am", label="Workforce access", group="Ping Identity"),
+            N(id="iga", label="Identity governance (IGA)", group="Saviynt"),
+            N(id="app", label="ERP", group="Acme applications"),
+            N(id="hr", label="HR / ERP (authoritative source)",
+              group="Identity sources and operations", shape="datastore")]))
+
+
+def test_the_stack_draws_no_arrow_the_spec_does_not_contain():
+    """The renderer never read spec.edges: it drew an arrow between every pair
+    of neighbouring columns from a fixed label table, so two vendors side by
+    side always exchanged "identity data" and an empty spec still had arrows."""
+    E = diagram_engine.DiagramEdge
+    assert _stack_arrows(_two_vendor_stack([])) == []
+    # One real edge, one arrow, carrying that edge's own label.
+    one = _two_vendor_stack([E(source="iga", target="app", label="provisioning")])
+    assert _stack_arrows(one) == [("main.c2", "->", "main.c3", "provisioning")]
+    # A different edge gives a different picture.
+    other = _two_vendor_stack([E(source="am", target="iga", label="SCIM")])
+    assert _stack_arrows(other) == [("main.c1", "->", "main.c2", "SCIM")]
+    # Direction follows the edge; both ways is a double-headed arrow.
+    back = _two_vendor_stack([E(source="iga", target="am", label="entitlements")])
+    assert _stack_arrows(back) == [("main.c1", "<-", "main.c2", "entitlements")]
+
+
+def test_the_stack_never_routes_an_arrow_across_a_column():
+    """Non-adjacent columns stay unconnected: an arrow from column 1 to column
+    3 would cross column 2, which is what the grid exists to prevent."""
+    E = diagram_engine.DiagramEdge
+    spec = _two_vendor_stack([E(source="am", target="app", label="SSO (SAML / OIDC)")])
+    assert _stack_arrows(spec) == []
+
+
+def test_the_sources_band_is_linked_only_where_the_spec_links_it():
+    E = diagram_engine.DiagramEdge
+    spec = _two_vendor_stack([E(source="hr", target="iga", label="joiner/mover/leaver feed")])
+    assert _stack_arrows(spec) == [("main.c2", "<-", "sources", "joiner/mover/leaver feed")]
+
+
+def test_the_esnad_stack_keeps_its_true_links_and_loses_the_invented_one():
+    arrows = _stack_arrows(_esnad_stack())
+    labels = " | ".join(a[3] for a in arrows)
+    assert "identity data" not in labels                       # nobody stated it
+    assert ("main.c0", "->", "main.c1", "sign-in") in arrows   # users to Ping: stated
+    assert not [a for a in arrows if {a[0], a[2]} == {"main.c1", "main.c2"}]
+    assert "provisioning" in labels and "joiner/mover/leaver feed" in labels
+    if diagram_engine.d2_available():
+        assert diagram_engine._d2_run(diagram_engine.build_d2(_esnad_stack()), 25)

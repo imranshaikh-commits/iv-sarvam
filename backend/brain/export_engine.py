@@ -206,8 +206,12 @@ def soffice_available() -> bool:
     return _soffice_binary() is not None
 
 
-def export_pdf(docx_bytes: bytes, timeout: float = 120.0) -> tuple[Optional[bytes], Optional[str]]:
+def export_pdf(docx_bytes: bytes, timeout: float = 120.0,
+               suffix: str = ".docx") -> tuple[Optional[bytes], Optional[str]]:
     """Convert DOCX bytes to PDF via ``soffice --headless --convert-to pdf``.
+
+    ``suffix`` names the input's real type (".doc" for a legacy Word file read
+    in as a tender): LibreOffice picks its import filter from it.
 
     LibreOffice is the only realistic way to preserve the DOCX layout/branding.
     FAIL-SOFT: returns ``(None, error)`` when the binary is missing or the
@@ -219,7 +223,7 @@ def export_pdf(docx_bytes: bytes, timeout: float = 120.0) -> tuple[Optional[byte
         return None, "LibreOffice (soffice) binary not found on PATH; PDF export unavailable"
 
     with tempfile.TemporaryDirectory() as tmp:
-        docx_path = os.path.join(tmp, "proposal.docx")
+        docx_path = os.path.join(tmp, f"proposal{suffix}")
         pdf_path = os.path.join(tmp, "proposal.pdf")
         with open(docx_path, "wb") as f:
             f.write(docx_bytes)

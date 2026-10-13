@@ -587,3 +587,73 @@ def test_a_scanned_page_that_cannot_be_read_is_reported_not_skipped(monkeypatch,
     assert how == ["text"] and ex.unread_pages == [2]
     text = R.describe_extraction(ex, 96)
     assert "NOT READ" in text and "page 2" in text.lower()
+
+
+# --- Deep audit F16: tenders arrive as Word ----------------------------------
+
+def test_a_word_tender_is_converted_and_a_text_file_is_refused_plainly(tmp_path, monkeypatch):
+    """The upload picker accepted .docx .doc .txt .md .rtf, and the reader is
+    pdftotext and pdftoppm: every one of them failed with "Reading that
+    document failed". Word is converted with the LibreOffice already in the
+    image; the rest are refused by name, before any work."""
+    import export_engine
+    seen = {}
+
+    def fake_convert(data, timeout=120.0, suffix=".docx"):
+        seen.update(bytes=data, suffix=suffix)
+        return b"%PDF-1.7 converted", None
+
+    monkeypatch.setattr(export_engine, "export_pdf", fake_convert)
+    pdf = tmp_path / "abc_SOW.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    assert R.as_pdf(str(pdf), str(tmp_path)) == (str(pdf), "")       # a PDF is used as it is
+
+    for name in ("abc_Tender.docx", "abc_Old Tender.DOC"):
+        src = tmp_path / name
+        src.write_bytes(b"word bytes")
+        out, why = R.as_pdf(str(src), str(tmp_path))
+        assert why == "" and out.endswith(".pdf") and open(out, "rb").read().startswith(b"%PDF")
+        assert seen["bytes"] == b"word bytes" and seen["suffix"] == os.path.splitext(name)[1].lower()
+
+    for name in ("notes.txt", "readme.md", "tender.rtf"):
+        src = tmp_path / name
+        src.write_text("x")
+        out, why = R.as_pdf(str(src), str(tmp_path))
+        assert out is None and "PDF or Word" in why and name in why
+
+    # A conversion that fails is said, with the way out.
+    monkeypatch.setattr(export_engine, "export_pdf", lambda *a, **k: (None, "soffice crashed"))
+    out, why = R.as_pdf(str(tmp_path / "abc_Tender.docx"), str(tmp_path))
+    assert out is None and "could not be converted" in why and "PDF" in why
+
+
+def test_the_chat_reads_a_word_tender_through_the_converter(tmp_path, monkeypatch):
+    """Caller side: run_rfp_extraction must hand extract_rfp the CONVERTED file."""
+    import asyncio
+    os.environ.setdefault("OPENROUTER_API_KEY", "test-key")
+    os.environ.setdefault("SUPABASE_URL", "https://example.invalid")
+    os.environ.setdefault("SUPABASE_KEY", "test-key")
+    import app
+    import export_engine
+    upload = tmp_path / "1b4e28ba-2fa1-11d2-883f-0016d3cca427_Tender.docx"
+    upload.write_bytes(b"word bytes")
+    read = {}
+
+    async def spy_extract(pdf_path, source_name, field_ids, structured_fn, tmp):
+        read.update(path=pdf_path, name=source_name, head=open(pdf_path, "rb").read(5))
+        return R.RfpExtraction(fields=[R.ExtractedField("client_name", "Acme", 1)])
+
+    monkeypatch.setattr(R, "pick_upload", lambda **k: (str(upload), [], ""))
+    monkeypatch.setattr(R, "extract_rfp", spy_extract)
+    monkeypatch.setattr(export_engine, "export_pdf", lambda *a, **k: (b"%PDF-1.7 x", None))
+    ex, err = asyncio.run(app.run_rfp_extraction("use this RFP"))
+    assert err == "" and ex is not None
+    assert read["path"].endswith(".pdf") and read["head"] == b"%PDF-" and read["name"] == "Tender.docx"
+
+    # A format that cannot be read is refused before extraction is attempted.
+    notes = tmp_path / "1b4e28ba-2fa1-11d2-883f-0016d3cca427_notes.txt"
+    notes.write_text("x")
+    read.clear()
+    monkeypatch.setattr(R, "pick_upload", lambda **k: (str(notes), [], ""))
+    ex, err = asyncio.run(app.run_rfp_extraction("use this RFP"))
+    assert ex is None and "PDF or Word" in err and read == {}

@@ -118,3 +118,20 @@ def test_poppler_counts_pages_as_they_are_and_a_scanned_page_is_read_as_an_image
         str(path), "mixed.pdf", [], fake_structured, str(tmp_path / "pages")))
     assert seen == ["text", "vision"]
     assert ex.pages_total == 2 and ex.vision_pages == [2] and ex.unread_pages == []
+
+
+def test_a_word_tender_is_converted_and_its_text_is_readable(tmp_path):
+    """Deep audit F16, with the real LibreOffice and poppler: a .docx tender
+    becomes a PDF whose text layer carries what the tender says."""
+    _need("soffice")
+    _need("pdftotext")
+    doc = Document()
+    doc.add_paragraph("AM-01 The solution shall provide single sign-on for all "
+                      "workforce applications. " * 6)
+    src = tmp_path / "1b4e28ba-2fa1-11d2-883f-0016d3cca427_Tender.docx"
+    doc.save(str(src))
+    pdf_path, why = rfp_intake.as_pdf(str(src), str(tmp_path / "work"))
+    assert why == "" and pdf_path
+    pages = rfp_intake.read_text_layer(pdf_path)
+    assert len(pages) == 1 and "single sign-on" in pages[0]
+    assert rfp_intake.extract_requirements(pages)[0].ref == "AM-01"

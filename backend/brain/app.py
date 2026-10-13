@@ -666,10 +666,15 @@ async def run_rfp_extraction(display_name_: str) -> tuple[Optional[rfp_intake.Rf
 
     field_ids = [q["id"] for q in intake_template.iter_questions(None)]
     with tempfile.TemporaryDirectory(prefix="rfp-") as tmp:
+        # A Word tender is converted to PDF first; a type that cannot be read
+        # is refused here, by name. LibreOffice blocks, so off the event loop.
+        pdf_path, why = await asyncio.to_thread(rfp_intake.as_pdf, path, tmp)
+        if not pdf_path:
+            return None, why
         try:
             ex = await rfp_intake.extract_rfp(
-                path, rfp_intake.display_name(path), field_ids,
-                rfp_structured_call, tmp)
+                pdf_path, rfp_intake.display_name(path), field_ids,
+                rfp_structured_call, os.path.join(tmp, "pages"))
         except Exception as e:  # noqa: BLE001
             log.error("RFP extraction failed: %s", e)
             return None, ("Reading that document failed. Try again, or use the "

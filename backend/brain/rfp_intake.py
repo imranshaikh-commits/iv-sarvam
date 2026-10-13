@@ -62,7 +62,11 @@ OWUI_UPLOADS = os.environ.get("SHILPI_OWUI_UPLOADS", "/owui-data/uploads")
 # How far back an upload can be and still count as "the file just attached".
 UPLOAD_WINDOW_S = int(os.environ.get("SHILPI_UPLOAD_WINDOW_S", "900"))
 
-_DOC_SUFFIXES = (".pdf", ".docx", ".doc", ".txt", ".md", ".rtf")
+# What can be read: PDF directly, Word by converting it to PDF first (as_pdf).
+# The rest stay candidates only so that their owner is TOLD the format is not
+# readable, instead of "I don't see a document".
+_WORD_SUFFIXES = (".docx", ".doc")
+_DOC_SUFFIXES = (".pdf",) + _WORD_SUFFIXES + (".txt", ".md", ".rtf")
 
 
 def uploads_available() -> bool:
@@ -179,6 +183,42 @@ def pick_upload(window_s: int = UPLOAD_WINDOW_S, user_id: Optional[str] = None,
             return named[0], [], ""
         return None, [display_name(p) for p in contenders], ""
     return newest_path, [], ""
+
+
+def as_pdf(path: str, tmp_dir: str) -> tuple[Optional[str], str]:
+    """(path of a PDF to read, "") or (None, what to tell the user).
+
+    The reader is pdftotext and pdftoppm, so everything is read as a PDF.
+    Tenders arrive as Word at least as often: those are converted with the
+    LibreOffice already in the image. Any other type is refused by name before
+    work starts; it used to be accepted and then fail as "Reading that
+    document failed" (audit F16). Blocking (LibreOffice): call it off the
+    event loop."""
+    name = display_name(path)
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".pdf":
+        return path, ""
+    if ext not in _WORD_SUFFIXES:
+        return None, (f"I can read a tender as PDF or Word. **{name}** is a "
+                      f"{ext or 'file with no'} type I cannot read: save it as PDF or "
+                      f"DOCX and attach it again, or say **interview** to answer "
+                      f"questions instead.")
+    import export_engine
+    try:
+        with open(path, "rb") as fh:
+            pdf, err = export_engine.export_pdf(fh.read(), suffix=ext)
+    except OSError as e:
+        pdf, err = None, str(e)
+    if not pdf:
+        log.error("could not convert %s to PDF: %s", name, err)
+        return None, (f"**{name}** could not be converted for reading (a problem on "
+                      f"my side, not with your file). Save it as PDF and attach that, "
+                      f"or say **interview** to answer questions instead.")
+    os.makedirs(tmp_dir, exist_ok=True)
+    out = os.path.join(tmp_dir, "tender.pdf")
+    with open(out, "wb") as fh:
+        fh.write(pdf)
+    return out, ""
 
 
 @dataclass

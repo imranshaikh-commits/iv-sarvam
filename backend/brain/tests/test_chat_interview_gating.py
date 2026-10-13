@@ -2560,3 +2560,63 @@ def test_all_approved_still_reads_as_all_approved(monkeypatch):
          "created_at": "2", "rendered_svg_path": "d2.png"}], _PLAN_AB)
     reply = _review_turn("approve", 1)
     assert "All **2** diagrams approved" in reply
+
+
+# --- Deep audit F62: which vendor a query is about ---------------------------
+
+def test_vendor_detection_matches_vendors_not_fragments_of_words():
+    """detect_vendor was a substring test over seven names: "mapping" contains
+    "ping", so any query about attribute mapping put Ping's proposals first,
+    and Saviynt, CyberArk, Oracle and BeyondTrust were never detected at all."""
+    for query in ("mapping attributes between HR and the directory",
+                  "shipping the release and escaping special characters",
+                  "typing a password; scoping the engagement; grouping roles"):
+        assert app.detect_vendor(query) is None, query
+    for query, vendor in (("Ping Identity SSO for workforce", "ping"),
+                          ("PingOne Advanced Identity Cloud tenant", "ping"),
+                          ("PingFederate adapters", "ping"),
+                          ("Saviynt EIC access reviews", "saviynt"),
+                          ("CyberArk vaulting", "cyberark"),
+                          ("Oracle OIM connectors", "oracle"),
+                          ("BeyondTrust session recording", "beyondtrust"),
+                          ("SailPoint IdentityIQ joiner workflow", "sailpoint"),
+                          ("IdentityNow access request", "sailpoint"),
+                          ("Okta federation", "okta"),
+                          ("Red Hat Keycloak realms", "keycloak"),
+                          ("Microsoft Entra ID conditional access", "microsoft"),
+                          ("IBM Verify governance", "ibm"),
+                          ("ForgeRock AM upgrade", "forgerock"),
+                          ("Semperis directory recovery", "semperis")):
+        assert app.detect_vendor(query) == vendor, query
+    # Two vendors named: the one the query names first.
+    assert app.detect_vendor("Saviynt IGA integrated with Ping SSO") == "saviynt"
+    # Every token is a substring of how that vendor is written in the corpus,
+    # because retrieve_chunks matches it against proposals.iam_vendor that way.
+    corpus = ("oracle", "forgerock", "sailpoint", "ping identity", "sailpoint + beyondtrust",
+              "ibm", "okta", "red hat keycloak", "beyondtrust", "saviynt", "cyberark",
+              "microsoft", "semperis")
+    for token, _ in app.VENDOR_PATTERNS:
+        assert any(token in name for name in corpus), token
+
+
+def test_vendor_preference_no_longer_follows_the_word_mapping(monkeypatch):
+    """Caller side: retrieve_chunks must not reorder evidence toward Ping for a
+    query that never names Ping."""
+    import asyncio
+    rows = [{"chunk_id": "s", "chunk_text": "SailPoint attribute mapping rules for HR feeds",
+             "heading": "Mapping", "iam_vendor": "SailPoint", "similarity": 0.9},
+            {"chunk_id": "p", "chunk_text": "Ping federation attribute contracts explained",
+             "heading": "Contracts", "iam_vendor": "Ping Identity", "similarity": 0.6}]
+
+    class _Resp:
+        def raise_for_status(self): return None
+        def json(self): return [dict(r) for r in rows]
+
+    class _Client:
+        async def post(self, url, **kwargs): return _Resp()
+
+    monkeypatch.setattr(app, "RERANK_ENABLED", False)
+    out = asyncio.run(app.retrieve_chunks(_Client(), [0.0], "attribute mapping from HR", k=2))
+    assert [c["chunk_id"] for c in out] == ["s", "p"]            # similarity order kept
+    out = asyncio.run(app.retrieve_chunks(_Client(), [0.0], "Ping attribute contracts", k=2))
+    assert [c["chunk_id"] for c in out] == ["p", "s"]            # a named vendor still leads

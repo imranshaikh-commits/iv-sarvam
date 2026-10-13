@@ -184,16 +184,35 @@ async def embed_query(client: httpx.AsyncClient, text: str) -> list[float]:
     return resp.json()["data"][0]["embedding"]
 
 
-# Vendor keywords → normalized token used to match proposals.iam_vendor (case-insensitive).
-VENDOR_KEYWORDS = ["sailpoint", "ping", "forgerock", "ibm", "keycloak", "okta", "microsoft"]
+# (token, pattern). The token is what retrieve_chunks looks for inside
+# proposals.iam_vendor (lower-cased, substring), so it must be how the corpus
+# writes that vendor. The pattern is what names the vendor in a query: the
+# vendor's name or one of its products, as WHOLE WORDS. This was a substring
+# test over seven names: "mapping" contains "ping", so every query about
+# attribute mapping put Ping's proposals first, and Saviynt, CyberArk, Oracle
+# and BeyondTrust were never detected (audit F62).
+VENDOR_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("sailpoint", r"sailpoint|identityiq|identitynow|iiq"),
+    ("ping", r"ping(?:\s+identity)?|ping(?:one|federate|access|directory|gateway|id|am|ds|idm)"),
+    ("forgerock", r"forgerock"),
+    ("saviynt", r"saviynt"),
+    ("cyberark", r"cyberark"),
+    ("beyondtrust", r"beyondtrust"),
+    ("oracle", r"oracle|oim|oam|oud"),
+    ("ibm", r"ibm"),
+    ("okta", r"okta"),
+    ("keycloak", r"keycloak"),
+    ("microsoft", r"microsoft|entra"),
+    ("semperis", r"semperis"),
+)
+_VENDOR_RES = tuple((token, re.compile(rf"\b(?:{pat})\b", re.I)) for token, pat in VENDOR_PATTERNS)
 
 
 def detect_vendor(query: str) -> str | None:
-    q = query.lower()
-    for kw in VENDOR_KEYWORDS:
-        if kw in q:
-            return kw
-    return None
+    """The vendor a query names, or None. With several, the one named first."""
+    found = [(m.start(), token) for token, rx in _VENDOR_RES
+             if (m := rx.search(query or ""))]
+    return min(found)[1] if found else None
 
 
 # ---------------------------------------------------------------------------

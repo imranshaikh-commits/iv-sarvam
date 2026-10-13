@@ -729,6 +729,7 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
     # extracted from a tender, where later mentions are almost always
     # elaborations rather than unrelated restatements.
     best_fields: dict[str, ExtractedField] = {}
+    seen_requirements: set[tuple[str, str]] = set()
     _SKIP_VALUES = {"", "skip", "n/a", "na", "none", "unknown"}
 
     for i in range(ex.pages_read):
@@ -765,6 +766,14 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
         for r in (page_ex.requirements or []):
             ref, text = (r.ref or "").strip(), (r.text or "").strip()
             if ref and text:
+                # The same requirement restated on a later page (a summary
+                # table, a checklist) is one requirement. Only an EXACT repeat
+                # is merged: the same reference with different wording may be
+                # a different obligation, and stays.
+                same = (ref.upper(), re.sub(r"[^a-z0-9]+", " ", text.lower()).strip())
+                if same in seen_requirements:
+                    continue
+                seen_requirements.add(same)
                 ex.requirements.append(Requirement(
                     ref=ref, text=text[:MAX_REQUIREMENT_CHARS], page=page_no))
         for g in (page_ex.eligibility_gates or []):

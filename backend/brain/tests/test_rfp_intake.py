@@ -657,3 +657,35 @@ def test_the_chat_reads_a_word_tender_through_the_converter(tmp_path, monkeypatc
     monkeypatch.setattr(R, "pick_upload", lambda **k: (str(notes), [], ""))
     ex, err = asyncio.run(app.run_rfp_extraction("use this RFP"))
     assert ex is None and "PDF or Word" in err and read == {}
+
+
+def test_a_requirement_repeated_on_another_page_is_listed_once(monkeypatch, tmp_path):
+    """Deep audit F15: a requirement restated on a later page (a summary table,
+    a compliance checklist) was listed again each time. Repeats use up the
+    budget of requirements that get assessed and pad the matrix."""
+    import asyncio
+
+    class _Req:
+        def __init__(self, ref, text):
+            self.ref, self.text = ref, text
+
+    class _PageEx:
+        def __init__(self, reqs):
+            self.field_values, self.eligibility_gates, self.structure_headings = [], [], []
+            self.requirements = reqs
+
+    pages = iter([
+        [_Req("AM-01", "Single sign-on for all workforce applications."),
+         _Req("AM-02", "Adaptive MFA for remote access")],
+        [_Req("am-01", "single  sign-on for all workforce applications"),     # the same, restated
+         _Req("AM-02", "Adaptive MFA for privileged administrators")],        # same ref, NOT the same
+    ])
+
+    async def fake_structured(model, messages):
+        return _PageEx(next(pages))
+
+    monkeypatch.setattr(R, "read_text_layer", lambda path: ["tender text " * 30, "tender text " * 30])
+    ex = asyncio.run(R.extract_rfp("x.pdf", "SOW.pdf", [], fake_structured, str(tmp_path)))
+    assert [(r.ref, r.page) for r in ex.requirements] == [
+        ("AM-01", 1), ("AM-02", 1), ("AM-02", 2)]
+    assert "privileged administrators" in ex.requirements[2].text

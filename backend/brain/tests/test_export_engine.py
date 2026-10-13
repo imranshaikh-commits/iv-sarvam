@@ -1020,3 +1020,81 @@ def test_paged_reads_ask_for_a_stable_order():
     rows = asyncio.run(run())
     assert len(rows) == 1005 and len({r["id"] for r in rows}) == 1005
     assert seen == [("id", "0-999"), ("id", "1000-1999")]
+
+
+# ---------------------------------------------------------------------------
+# Deep audit F29 and F22 (lite): what a draft was made from is kept.
+# ---------------------------------------------------------------------------
+
+def test_a_drafts_sources_are_recorded_per_section():
+    """F29: the stored trace kept a COUNT of the evidence each section drew on.
+    Which chunks they were was thrown away, so nobody could later ask why a
+    proposal said what it said, or which drafts a corrected chunk had reached."""
+    import asyncio
+    import document_engine
+
+    async def stub_embed(client, text):
+        return [0.0] * 8
+
+    async def retrieve(client, embedding, query, k=8, **kw):
+        return [{"chunk_id": "c-1", "chunk_text": "Alpha evidence about joiners.",
+                 "heading": "h", "similarity": 0.7, "client_name": "X", "iam_vendor": "SailPoint"},
+                {"chunk_id": "c-2", "chunk_text": "Beta evidence about leavers.",
+                 "heading": "h", "similarity": 0.6, "client_name": "Y", "iam_vendor": "SailPoint"}]
+
+    async def retrieve_product(client, embedding, vendor, k=8, **kw):
+        return [{"chunk_id": "p-9", "chunk_text": "Vendor datasheet text.", "similarity": 0.8,
+                 "vendor": vendor, "product_name": "IdentityIQ", "heading": "h"}]
+
+    async def stub_draft(client, system_prompt, user_prompt, max_tokens=None):
+        return "Drafted."
+
+    async def run():
+        async with app_module.httpx.AsyncClient() as client:
+            return await document_engine.generate_proposal(
+                client, rfp_text="Deliver IAM.", client_name="Acme",
+                proposal_type="implementation", iam_vendor="SailPoint",
+                embed_fn=stub_embed, retrieve_fn=retrieve,
+                build_grounded_system_fn=lambda chunks: "EVIDENCE",
+                retrieve_product_fn=retrieve_product,
+                build_product_evidence_fn=lambda chunks: "PRODUCT",
+                sections=["proposed_solution"])
+
+    saved = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = stub_draft
+    try:
+        meta = asyncio.run(run())["sections_meta"][0]
+    finally:
+        document_engine.draft_with_openrouter = saved
+    assert meta["chunk_ids"] == ["c-1", "c-2"] and meta["citation_count"] == 2
+    assert meta["product_chunk_ids"] == ["p-9"]
+
+
+def test_the_stored_trace_names_the_diagrams_that_went_into_the_document(monkeypatch):
+    """F22 (lite): which approved diagram rows a draft embedded was not
+    recorded anywhere; the draft got its own proposal row and the link was
+    lost. Caller side: the endpoint must hand the ids to the insert."""
+    stored = {}
+
+    async def capture_insert(*args, **kwargs):
+        stored.update(kwargs)
+        return "prop-123"
+
+    spec = {"diagram_type": "architecture", "title": "X — Solution Architecture",
+            "nodes": [{"id": "a", "label": "IdP"}, {"id": "b", "label": "App"}],
+            "edges": [{"source": "a", "target": "b"}]}
+    _patch_common(monkeypatch, direct=False)
+    _reviewed_session(monkeypatch, [
+        {"id": "d-approved", "title": "X — Solution Architecture", "status": "approved",
+         "spec_json": spec},
+        {"id": "d-skipped", "title": "X — Network", "status": "rejected", "spec_json": spec}],
+        _TWO, skipped=["Network"])
+    monkeypatch.setattr(app_module.supabase_client, "insert_generated_proposal", capture_insert)
+    monkeypatch.setattr(app_module.diagram_engine, "render_spec", lambda *a, **k: b"\x89PNG x")
+    with TestClient(app_module.app) as tc:
+        assert tc.post("/v1/generate-proposal",
+                       json={**_base_body(), "intake_session_id": "s1"}).status_code == 200
+    trace = stored["retrieval_trace"]
+    assert trace[0]["id"] == "executive_summary"               # the sections are still there
+    document = [t for t in trace if t.get("id") == "_document"]
+    assert document == [{"id": "_document", "diagram_ids": ["d-approved"]}]

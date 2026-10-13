@@ -3204,7 +3204,8 @@ async def _generate_proposal(request: Request, body: dict):
                                           "why": "not_drawn"})
             if image:
                 embed_diagrams.append(
-                    {"title": drow.get("title") or "Architecture Diagram",
+                    {"id": drow.get("id"),
+                     "title": drow.get("title") or "Architecture Diagram",
                      "status": "approved", "image_bytes": image,
                      "diagram_type": drow.get("diagram_type"),
                      "nodes": [n.label for n in spec.nodes],
@@ -3288,6 +3289,15 @@ async def _generate_proposal(request: Request, body: dict):
     # Fail-soft persistence: never let a Supabase hiccup block the download.
     draft_markdown = result.get("draft_markdown", "")
     proposal_id = None
+    # What this document was made from, kept with it (audit F29, F22): the
+    # chunk ids per section are already in sections_meta; the approved diagram
+    # rows actually embedded go in a document-level entry. The draft gets its
+    # own proposal row, so without this nothing links it to what was reviewed.
+    not_embedded = set(result.get("diagrams_left_out") or [])
+    trace = list(result.get("sections_meta") or []) + [{
+        "id": "_document",
+        "diagram_ids": [d["id"] for d in embed_diagrams
+                        if d.get("id") and d.get("title") not in not_embedded]}]
     try:
         async with httpx.AsyncClient() as pclient:
             proposal_id = await supabase_client.insert_generated_proposal(
@@ -3298,7 +3308,7 @@ async def _generate_proposal(request: Request, body: dict):
                 iam_vendor=iam_vendor,
                 discovery_answers=intake_answers,
                 draft_markdown=draft_markdown,
-                retrieval_trace=result.get("sections_meta", []),
+                retrieval_trace=trace,
                 intake_session_id=intake_session_id,
             )
             if proposal_id and intake_session_id:

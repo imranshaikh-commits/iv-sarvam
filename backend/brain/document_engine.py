@@ -3319,6 +3319,13 @@ async def generate_proposal(
             "max_similarity": d["max_similarity"],
             "needs_sme_review": d["needs_sme_review"],
             "citation_count": len(d.get("citations") or []),
+            # WHICH chunks, not only how many (audit F29): the ids the corpus
+            # tables key on, so a claim can be traced back to its source and a
+            # corrected chunk forward to the drafts it reached.
+            "chunk_ids": [c["chunk_id"] for c in d.get("citations") or []
+                          if c.get("chunk_id")],
+            "product_chunk_ids": [c["chunk_id"] for c in d.get("product_citations") or []
+                                  if c.get("chunk_id")],
             "stripped_asides": d.get("stripped_asides", 0),
         }
         for d in drafted

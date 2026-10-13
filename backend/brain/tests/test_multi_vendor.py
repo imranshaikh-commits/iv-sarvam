@@ -2293,7 +2293,7 @@ def test_classification_maps_the_strict_reply_back_to_a_coverage_entry():
     async def fake(response_model, messages, models=None, **kw):
         assert response_model is app._CoverageLLM
         return app._CoverageLLM(status="partial", evidence_refs=[
-            app._EvidenceRefLLM(evidence_id=1, quote="q", rationale="r")],
+            app._EvidenceRefLLM(evidence_id=1, quote="q", rationale="r", stance="supports")],
             summary="s", recommendation="r")
 
     orig = app._structured_with_fallback
@@ -2519,3 +2519,44 @@ def test_only_the_newest_version_of_a_diagram_is_current():
     current, superseded = current_revisions(rows)
     # The approved older "A" is not embedded while a newer "A" awaits review.
     assert [r["id"] for r in current] == [3, 1] and [r["id"] for r in superseded] == [2]
+
+
+def test_evidence_that_says_the_opposite_cannot_make_a_requirement_compliant(monkeypatch):
+    """Deep audit F09: the quote check proves a quote came from the evidence,
+    not that it SUPPORTS the requirement. "The platform does not support
+    biometric authentication" is a faithful quote and was accepted as cover
+    for "supports biometric authentication". The classifier now says which way
+    each quote points, in the call it already makes, and a contradiction
+    cannot stand as covered or partial."""
+    import asyncio
+    chunks = [{"chunk_text": "The platform does not support biometric authentication "
+                             "in the current release.", "heading": "Limitations",
+               "client_name": "X", "iam_vendor": "v"}]
+    req = app.Requirement(id="AM-09", text="The solution shall support biometric authentication.")
+    seen = {}
+
+    async def fake_structured(response_model, messages, **kwargs):
+        seen["system"] = messages[0]["content"]
+        return app._CoverageLLM(
+            status=answer["status"], summary="Biometric authentication is addressed.",
+            recommendation="Reuse the cited approach.",
+            evidence_refs=[app._EvidenceRefLLM(
+                evidence_id=1, rationale="mentions biometric authentication",
+                quote="does not support biometric authentication", stance=answer["stance"])])
+
+    monkeypatch.setattr(app, "_structured_with_fallback", fake_structured)
+    for status in ("covered", "partial"):
+        answer = {"status": status, "stance": "contradicts"}
+        entry = asyncio.run(app.classify_coverage(req, chunks))
+        assert entry.status == "needs-human", status
+        assert "contradict" in entry.summary.lower()
+    # The same quote read as support is left alone: the model's call, not ours.
+    answer = {"status": "partial", "stance": "supports"}
+    assert asyncio.run(app.classify_coverage(req, chunks)).status == "partial"
+    # The model is told what the field means.
+    assert "contradicts" in seen["system"] and "stance" in seen["system"]
+    # And the client matrix then says "To be confirmed", with or without a reference.
+    answer = {"status": "covered", "stance": "contradicts"}
+    entry = asyncio.run(app.classify_coverage(req, chunks))
+    md, confirm = de.render_client_matrix([entry], {"AM-09": "Solution > Authentication"})
+    assert "| To be confirmed |" in md and confirm == ["AM-09"]

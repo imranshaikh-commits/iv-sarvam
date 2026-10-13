@@ -2368,6 +2368,9 @@ class EvidenceRef(BaseModel):
     evidence_id: int = Field(..., description="The [N] evidence number from the provided EVIDENCE block (1-based).")
     quote: str = Field(..., description="Short verbatim quote from that evidence chunk supporting the assessment.")
     rationale: str = Field(..., description="Why this evidence is relevant to the requirement. Max ~25 words.")
+    # Which way the quote points. The quote check below proves a quote came
+    # from the evidence; it cannot tell "supports X" from "does not support X".
+    stance: Literal["supports", "contradicts"] = "supports"
 
 
 class CoverageEntry(BaseModel):
@@ -2385,6 +2388,11 @@ class _EvidenceRefLLM(BaseModel):
     evidence_id: int = Field(..., description="The [N] evidence number from the provided EVIDENCE block (1-based).")
     quote: str = Field(..., description="Short verbatim quote from that evidence chunk supporting the assessment.")
     rationale: str = Field(..., description="Why this evidence is relevant to the requirement. Max ~25 words.")
+    stance: Literal["supports", "contradicts"] = Field(
+        ..., description="'supports' if the quote says what the requirement asks for IS "
+                         "provided; 'contradicts' if it says it is NOT provided, is excluded "
+                         "or out of scope, falls short of the required number or version, "
+                         "or holds only under a condition the requirement does not allow.")
 
 
 class _CoverageLLM(BaseModel):
@@ -2446,7 +2454,8 @@ HARD RULES (non-negotiable):
 5. For regulatory / compliance / certification / pricing / product-version / SLA claims, prefer "needs-human" unless the evidence states it explicitly (then "covered" is allowed, still pending human verification).
 6. The summary and recommendation must reflect ONLY what the evidence supports. Do not invent capabilities, connectors, or commitments not in the evidence. The recommendation must be a concrete next step, NOT a status word.
 7. This is a DRAFT internal compliance matrix for human review — never a client-ready commitment.
-8. LENGTH LIMITS (strict): summary max 80 words (2-3 sentences); recommendation max 30 words; each EvidenceRef.rationale max 25 words; at most 2 evidence_refs. Never repeat the same sentence or phrase — say something once and stop.
+8. For every EvidenceRef set stance. A quote can share every keyword with the requirement and still say the opposite ("does not support", "is not included", "up to 5,000" against a required 20,000, an older version than required): that is "contradicts". A requirement whose evidence contradicts it is NOT "covered" or "partial"; use "missing" or "needs-human".
+9. LENGTH LIMITS (strict): summary max 80 words (2-3 sentences); recommendation max 30 words; each EvidenceRef.rationale max 25 words; at most 2 evidence_refs. Never repeat the same sentence or phrase — say something once and stop.
 """
 
 
@@ -2681,6 +2690,15 @@ def validate_coverage(entry: CoverageEntry, chunks: list[dict]) -> CoverageEntry
         if quote in chunk_text or overlap >= 0.6:
             valid.append(ref)
     entry.evidence_refs = valid
+    if entry.status in ("covered", "partial") and any(r.stance == "contradicts" for r in valid):
+        # Grounded, and pointing the wrong way (audit F09). The model marked its
+        # own evidence as contradicting the requirement and still called it
+        # covered: a person decides, and the client matrix says "To be confirmed".
+        entry.status = "needs-human"
+        entry.summary = ("[DOWNGRADED to needs-human: the cited evidence contradicts the "
+                         f"requirement.] {entry.summary}").strip()
+        entry.recommendation = ("Escalate to SME: the evidence found says the opposite of "
+                                "what the requirement asks. Confirm what IV can commit to.")
     if entry.status in ("covered", "partial") and not valid:
         entry.status = "needs-human"
         banner = ("[DOWNGRADED to needs-human: the cited quotes could not be verified "

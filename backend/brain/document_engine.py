@@ -1150,6 +1150,20 @@ def _evidence_key(chunk: dict) -> str:
     return " ".join((chunk.get("chunk_text") or chunk.get("heading") or "").split())
 
 
+def _cap_product_evidence(by_vendor: list[list[dict]]) -> list[dict]:
+    """Each vendor's best product chunks, vendor by vendor.
+
+    The cap is PER vendor, applied to each vendor's own chunks. It used to be
+    one cut over every vendor's chunks sorted together, so the better-matching
+    vendor took every slot and the other was drafted with no product evidence
+    at all (audit F27)."""
+    out: list[dict] = []
+    for mine in by_vendor:
+        ranked = sorted(mine, key=lambda c: float(c.get("similarity") or 0.0), reverse=True)
+        out += ranked[:PRODUCT_EVIDENCE_PER_VENDOR]
+    return out
+
+
 async def _retrieve_fanout(
     client: httpx.AsyncClient,
     section_spec: SectionSpec,
@@ -1221,6 +1235,7 @@ async def _retrieve_fanout(
         # independent -- a slow or broken product query must never affect
         # proposal-history retrieval, or vice versa.
         seen_product: set[str] = set()
+        by_vendor: list[list[dict]] = []
         for v in vendors:
             if not v:
                 continue
@@ -1240,12 +1255,8 @@ async def _retrieve_fanout(
                 if key:
                     seen_product.add(key)
                 mine.append({**c, "_for_vendor": v})
-            # The cap is PER vendor, applied to each vendor's own chunks. It
-            # used to be one cut over all vendors' chunks sorted together, so
-            # the better-matching vendor took every slot and the other was
-            # drafted with no product evidence at all (audit F27).
-            mine.sort(key=lambda c: float(c.get("similarity") or 0.0), reverse=True)
-            product_chunks += mine[:PRODUCT_EVIDENCE_PER_VENDOR]
+            by_vendor.append(mine)
+        product_chunks = _cap_product_evidence(by_vendor)
 
     return proposal_chunks, product_chunks
 

@@ -1224,6 +1224,7 @@ async def _retrieve_fanout(
         for v in vendors:
             if not v:
                 continue
+            mine: list[dict] = []
             try:
                 pq = section_spec.render_query({**context, "iam_vendor": v})
                 p_embedding = await embed_fn(client, pq)
@@ -1238,12 +1239,13 @@ async def _retrieve_fanout(
                     continue
                 if key:
                     seen_product.add(key)
-                product_chunks.append({**c, "_for_vendor": v})
-        product_chunks.sort(key=lambda c: float(c.get("similarity") or 0.0), reverse=True)
-        # top_k PER vendor: one shared cap let the better-embedding vendor's
-        # docs crowd the other out of its own "Solution Overview".
-        product_chunks = product_chunks[:PRODUCT_EVIDENCE_PER_VENDOR
-                                        * max(1, len([v for v in vendors if v]))]
+                mine.append({**c, "_for_vendor": v})
+            # The cap is PER vendor, applied to each vendor's own chunks. It
+            # used to be one cut over all vendors' chunks sorted together, so
+            # the better-matching vendor took every slot and the other was
+            # drafted with no product evidence at all (audit F27).
+            mine.sort(key=lambda c: float(c.get("similarity") or 0.0), reverse=True)
+            product_chunks += mine[:PRODUCT_EVIDENCE_PER_VENDOR]
 
     return proposal_chunks, product_chunks
 

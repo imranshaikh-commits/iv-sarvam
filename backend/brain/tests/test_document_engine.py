@@ -2740,3 +2740,37 @@ def test_evidence_sharing_an_opening_is_not_treated_as_one_chunk():
 
     chunks, _ = _fanout(retrieve_no_ids)
     assert len(chunks) == 2
+
+
+def test_each_proposed_vendor_keeps_its_own_product_evidence():
+    """Deep audit F27: product chunks from every vendor were pooled, sorted by
+    similarity and cut to (6 x vendors). The comment said "top_k PER vendor";
+    the code let the better-matching vendor take every slot, so on a two-vendor
+    deal the second vendor's sections were drafted with no product evidence."""
+    from proposal_templates import get_template
+    spec = next(s for s in get_template("implementation") if s.id == "proposed_solution")
+    vendors = ["Ping Identity", "Saviynt"]
+    ctx = {"client_name": "Acme", "iam_vendor": " and ".join(vendors), "iam_vendors": vendors,
+           "proposal_type": "implementation", "rfp_text": "", "discovery_answers": {}}
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    async def no_chunks(*a, **k):
+        return []
+
+    async def product(client, embedding, vendor, k=8, **kw):
+        # Ping's documents all match better than any of Saviynt's.
+        score = 0.9 if vendor.startswith("Ping") else 0.5
+        return [{"chunk_id": f"{vendor[:4]}-{i}", "chunk_text": f"{vendor} doc {i}",
+                 "similarity": score - i / 100, "vendor": vendor} for i in range(20)]
+
+    _, chunks = asyncio.run(document_engine._retrieve_fanout(
+        None, spec, ctx, embed_fn=stub_embed, retrieve_fn=no_chunks, top_k=20, fanout=1,
+        retrieve_product_fn=product))
+    per_vendor = {v: sum(1 for c in chunks if c["_for_vendor"] == v) for v in vendors}
+    cap = document_engine.PRODUCT_EVIDENCE_PER_VENDOR
+    assert per_vendor == {"Ping Identity": cap, "Saviynt": cap}, per_vendor
+    # Each vendor's best chunks, best first.
+    saviynt = [c["chunk_id"] for c in chunks if c["_for_vendor"] == "Saviynt"]
+    assert saviynt == [f"Savi-{i}" for i in range(cap)]

@@ -2298,6 +2298,11 @@ async def generate_proposal_from_chat(session_id: str | None,
         lines += ["", f"**Incomplete compliance check:** {unassessed} requirement(s) were "
                       f"beyond the {MAX_REQUIREMENTS}-requirement limit. They are in the "
                       f"matrix but were NOT assessed; review each one by hand."]
+    if (data or {}).get("compliance_text_cut"):
+        lines += ["", f"**Incomplete requirement read:** only the first {_EXTRACT_CHARS:,} "
+                      f"characters of the RFP text were read for requirements. Any "
+                      f"requirement after that point is NOT in the compliance matrix; "
+                      f"add it by hand, or upload the RFP as a file so every page is read."]
     lines += [
         "",
         "This is a **draft for human review**, not client-ready: check the "
@@ -2402,6 +2407,10 @@ class ComplianceMatrix(BaseModel):
     # Requirements carried into the matrix without a corpus assessment (over
     # the cost cap). They are listed, never dropped: audit 2026-10-12, finding 7.
     unassessed: int = 0
+    # The pasted RFP text was longer than extraction reads, so requirements
+    # past that point are not in the matrix at all. Separate from `truncated`
+    # (which is also true for the over-the-cap case) so the reply can say which.
+    text_cut: bool = False
 
 
 _EXTRACT_PROMPT = (
@@ -2683,7 +2692,7 @@ async def run_compliance_matrix(
     client: httpx.AsyncClient, rfp_text: str,
     requirements: list[str] | list[Requirement] | None = None, top_k: int = TOP_K
 ) -> ComplianceMatrix:
-    truncated = False
+    truncated = text_cut = False
     # Duck-typed rather than isinstance(requirements[0], Requirement):
     # document_engine.py calls this function but cannot import app.Requirement
     # without an import cycle (app.py already imports from document_engine).
@@ -2707,7 +2716,7 @@ async def run_compliance_matrix(
         reqs = await extract_requirements(rfp_text)
         # Extraction reads the first 12,000 characters only; a longer text may
         # hold requirements this never saw, and that must be said.
-        truncated = len(rfp_text or "") > _EXTRACT_CHARS
+        truncated = text_cut = len(rfp_text or "") > _EXTRACT_CHARS
     # The cap bounds COST, not the matrix. Requirements past it used to be
     # sliced off, so a long tender produced a complete-looking matrix with
     # obligations missing. They now stay in the matrix, unassessed, and land on
@@ -2760,7 +2769,7 @@ async def run_compliance_matrix(
     elif truncated:
         overall += f" (Only the first {_EXTRACT_CHARS:,} characters of the text were read for requirements.)"
     return ComplianceMatrix(entries=entries, overall_notes=overall, truncated=truncated,
-                            unassessed=len(overflow))
+                            unassessed=len(overflow), text_cut=text_cut)
 
 
 def render_matrix_markdown(matrix: ComplianceMatrix, *, client_facing: bool = False) -> str:
@@ -3292,6 +3301,7 @@ async def _generate_proposal(request: Request, body: dict):
         return_signed_urls=return_signed_urls,
         compliance_to_confirm=result.get("compliance_to_confirm") or [],
         compliance_unassessed=result.get("compliance_unassessed") or 0,
+        compliance_text_cut=bool(result.get("compliance_text_cut")),
         compliance_breakdown=result.get("compliance_breakdown") or {},
         diagrams_left_out=diagrams_left_out + [
             {"title": t, "why": "duplicate"} for t in result.get("diagrams_left_out") or []],
@@ -3308,6 +3318,7 @@ async def _build_export_response(
     return_signed_urls: bool,
     compliance_to_confirm: list | None = None,
     compliance_unassessed: int = 0,
+    compliance_text_cut: bool = False,
     compliance_breakdown: dict | None = None,
     diagrams_left_out: list | None = None,
 ) -> JSONResponse:
@@ -3345,6 +3356,7 @@ async def _build_export_response(
         # "confirmed during Discovery" or with no section of this proposal behind them.
         "compliance_to_confirm": compliance_to_confirm or [],
         "compliance_unassessed": compliance_unassessed,
+        "compliance_text_cut": compliance_text_cut,
         # {status: {"rows", "with_reference"}}: what the matrix wording rests on.
         "compliance_breakdown": compliance_breakdown or {},
         # Approved diagrams that did NOT reach the document, and why:

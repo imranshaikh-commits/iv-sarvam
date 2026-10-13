@@ -506,3 +506,31 @@ def test_a_mandated_structure_is_shown_and_not_promised():
         assert heading in text
     assert "will follow" not in text.lower()
     assert "IV's own structure" in text and "reorder" in text.lower()
+
+
+def test_a_long_requirement_is_not_cut_off(monkeypatch):
+    """Deep audit F11: requirement text was cut at 600 characters on the way in,
+    the same cut that once shipped "...achieves access to a" to a client, one
+    step earlier. The client wrote these; they are scored line by line."""
+    import asyncio
+    import tempfile
+    long_text = "The solution shall " + "provide audited delegated administration; " * 30
+    assert 1000 < len(long_text.strip()) < R.MAX_REQUIREMENT_CHARS
+
+    class _Req:
+        ref, text = "IGA-07", long_text
+
+    class _PageEx:
+        field_values, eligibility_gates, structure_headings = [], [], []
+        requirements = [_Req()]
+
+    async def fake_structured(model, messages):
+        return _PageEx()
+
+    monkeypatch.setattr(R, "read_text_layer", lambda path: ["A page of tender text. " * 20])
+    with tempfile.TemporaryDirectory() as tmp:
+        ex = asyncio.run(R.extract_rfp("fake.pdf", "SOW.pdf", [], fake_structured, tmp))
+    assert ex.requirements[0].text == long_text.strip()
+    # The text-layer register reader keeps it whole too.
+    line = "IGA-07 " + long_text.strip()
+    assert R.extract_requirements([line])[0].text.endswith("administration;")

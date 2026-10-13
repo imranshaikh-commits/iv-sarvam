@@ -257,6 +257,12 @@ _REQ_REF_EXCLUDE = re.compile(
     r"CPU|RAM|IPV|HTTP|API|SP|Q)\b", re.I)
 
 
+# A requirement is the client's own wording and is scored line by line. This
+# cap was 600 and cut long ones mid-sentence on the way in; it is a guard
+# against runaway model output, the same size as the cap on a field value.
+MAX_REQUIREMENT_CHARS = 2000
+
+
 def extract_requirements(text_by_page: list[str]) -> list[Requirement]:
     """Every numbered requirement, with its page.
 
@@ -285,7 +291,7 @@ def extract_requirements(text_by_page: list[str]) -> list[Requirement]:
             if len(body.split()) < 3:
                 continue
             seen.add(ref)
-            out.append(Requirement(ref=ref, text=body[:600], page=page_no))
+            out.append(Requirement(ref=ref, text=body[:MAX_REQUIREMENT_CHARS], page=page_no))
     return out
 
 
@@ -677,7 +683,8 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
         for r in (page_ex.requirements or []):
             ref, text = (r.ref or "").strip(), (r.text or "").strip()
             if ref and text:
-                ex.requirements.append(Requirement(ref=ref, text=text[:600], page=page_no))
+                ex.requirements.append(Requirement(
+                    ref=ref, text=text[:MAX_REQUIREMENT_CHARS], page=page_no))
         for g in (page_ex.eligibility_gates or []):
             if g and len(g.split()) >= 5:
                 ex.gates.append(EligibilityGate(text=str(g)[:400], page=page_no))

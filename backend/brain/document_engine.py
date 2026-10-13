@@ -3178,6 +3178,7 @@ async def generate_proposal(
     compliance_markdown: Optional[str] = None
     compliance_to_confirm: list[str] = []
     compliance_unassessed = 0
+    compliance_text_cut = False
     compliance_breakdown: dict = {}
     want_compliance = include_compliance_matrix or (
         sections is not None and COMPLIANCE_SECTION_ID in {str(s).strip().lower() for s in sections}
@@ -3214,6 +3215,7 @@ async def generate_proposal(
             matrix = await run_compliance_matrix_fn(
                 client, rfp_text, _extracted_reqs, top_k)
             compliance_unassessed = int(getattr(matrix, "unassessed", 0) or 0)
+            compliance_text_cut = bool(getattr(matrix, "text_cut", False))
             if getattr(matrix, "entries", None):
                 _refs = requirement_references(matrix.entries, list(drafted))
                 compliance_markdown, compliance_to_confirm = render_client_matrix(
@@ -3303,6 +3305,7 @@ async def generate_proposal(
         "included_compliance_matrix": compliance_markdown is not None,
         "compliance_to_confirm": compliance_to_confirm,
         "compliance_unassessed": compliance_unassessed,
+        "compliance_text_cut": compliance_text_cut,
         "compliance_breakdown": compliance_breakdown,
         "diagrams_left_out": diagrams_left_out,
         "stripped_asides": stripped_asides,

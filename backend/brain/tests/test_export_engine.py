@@ -941,3 +941,59 @@ def test_an_approved_diagram_is_not_redrawn_by_another_engine_at_draft_time(monk
     assert renderers and set(renderers) == {"d2"}            # never asked for a fallback
     assert not seen["diagrams"]                              # nothing redrawn went in
     assert {"title": "X — Joiner Flow", "why": "not_drawn"} in data["diagrams_left_out"]
+
+
+def test_a_requirement_read_cut_short_reaches_the_chat_reply(monkeypatch):
+    """Deep audit F11: pasted RFP text is read for requirements up to 12,000
+    characters. The matrix knew it had stopped early (`truncated`) and nothing
+    on the drafting path read that, so the consultant was never told."""
+    import asyncio
+    import document_engine
+
+    class _Matrix:
+        entries, unassessed, truncated, text_cut = [], 0, True, True
+        overall_notes = ""
+
+    async def cut_matrix(client, rfp_text, requirements, top_k):
+        return _Matrix()
+
+    async def stub_embed(client, text):
+        return [0.0] * 8
+
+    async def no_chunks(*a, **k):
+        return []
+
+    async def stub_draft(client, system_prompt, user_prompt, max_tokens=None):
+        return "Drafted."
+
+    async def run():
+        async with app_module.httpx.AsyncClient() as client:
+            return await document_engine.generate_proposal(
+                client, rfp_text="x" * 20000, client_name="Acme",
+                proposal_type="implementation", iam_vendor="SailPoint",
+                embed_fn=stub_embed, retrieve_fn=no_chunks,
+                build_grounded_system_fn=lambda chunks: "EVIDENCE",
+                run_compliance_matrix_fn=cut_matrix,
+                render_matrix_markdown_fn=lambda m: "Compliance Matrix",
+                sections=["executive_summary"], include_compliance_matrix=True)
+
+    saved = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = stub_draft
+    try:
+        result = asyncio.run(run())
+    finally:
+        document_engine.draft_with_openrouter = saved
+    assert result["compliance_text_cut"] is True
+
+    # The real matrix sets the flag only when the text really was longer.
+    async def no_requirements(text):
+        return []
+    monkeypatch.setattr(app_module, "extract_requirements", no_requirements)
+    long = asyncio.run(app_module.run_compliance_matrix(None, "y" * 20000))
+    short = asyncio.run(app_module.run_compliance_matrix(None, "y" * 200))
+    assert long.text_cut is True and short.text_cut is False
+
+    reply = _chat_reply_for(monkeypatch, {
+        "filename": "Shilpi_Proposal_X.docx", "signed_urls": {"docx": "https://e/d"},
+        "compliance_text_cut": True})
+    assert "requirement" in reply.lower() and "12,000" in reply

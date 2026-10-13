@@ -731,18 +731,8 @@ def _humanise_field(key: str) -> str:
     return key.replace("_", " ").strip().title()
 
 
-def discovery_context_for(section_id: str, answers: Optional[dict],
-                          limit: int = 3500) -> str:
-    """Render the discovery answers relevant to one section.
-
-    Returns an empty string when nothing relevant was captured, so the prompt is
-    unchanged for callers that have no intake data (the REST path).
-    """
-    if not answers:
-        return ""
-    wanted = _SECTION_DISCOVERY_FIELDS.get(section_id, ())
-    keys = list(_UNIVERSAL_DISCOVERY_FIELDS) + [k for k in wanted
-                                                if k not in _UNIVERSAL_DISCOVERY_FIELDS]
+def _discovery_lines(keys, answers: dict) -> list[str]:
+    """'- Label: value' for each of `keys` the consultant actually answered."""
     lines: list[str] = []
     for key in keys:
         if key in _EXCLUDED_DISCOVERY_FIELDS:
@@ -758,12 +748,57 @@ def discovery_context_for(section_id: str, answers: Optional[dict],
         if text.startswith("<") and text.endswith(">"):
             continue
         lines.append(f"- {_humanise_field(key)}: {text}")
+    return lines
+
+
+def _section_fact_lines(section_id: str, answers: Optional[dict]) -> list[str]:
+    """The facts captured for THIS section, without the five identity fields
+    every section gets."""
+    wanted = _SECTION_DISCOVERY_FIELDS.get(section_id, ())
+    return _discovery_lines([k for k in wanted if k not in _UNIVERSAL_DISCOVERY_FIELDS],
+                            answers or {})
+
+
+def section_fact_chars(section_id: str, answers: Optional[dict]) -> int:
+    """How much the consultant told us about this section in particular. The
+    weak-evidence check uses this, not the whole facts block: a long client
+    name, vendor list, industry and country passed the old 200-character test
+    on their own and switched the review banner off (audit F30)."""
+    return sum(len(line) for line in _section_fact_lines(section_id, answers))
+
+
+def discovery_context_for(section_id: str, answers: Optional[dict],
+                          limit: int = 3500) -> str:
+    """Render the discovery answers relevant to one section.
+
+    Returns an empty string when nothing relevant was captured, so the prompt is
+    unchanged for callers that have no intake data (the REST path).
+
+    The block used to be cut at `limit` from the end, so one long answer early
+    in the list removed every fact after it, sizing included (audit F28). When
+    it is too long now, the LONGEST answers are shortened (and marked "…")
+    until it fits: every answered field keeps a line.
+    """
+    if not answers:
+        return ""
+    lines = (_discovery_lines(_UNIVERSAL_DISCOVERY_FIELDS, answers)
+             + _section_fact_lines(section_id, answers))
     if not lines:
         return ""
-    block = "\n".join(lines)
-    if len(block) > limit:
-        block = block[:limit].rsplit("\n", 1)[0]
-    return block
+    budget = limit - (len(lines) - 1)            # the newlines between lines
+    if sum(len(line) for line in lines) > budget:
+        # The largest per-line length at which everything fits.
+        cap, remaining = 0, budget
+        for i, length in enumerate(sorted(len(line) for line in lines)):
+            share = remaining // (len(lines) - i)
+            if length <= share:
+                remaining -= length
+            else:
+                cap = share
+                break
+        lines = [line if len(line) <= cap else line[:max(cap - 1, 0)].rstrip() + "…"
+                 for line in lines]
+    return "\n".join(lines)
 
 
 def _draft_payload(model: str, system_prompt: str, user_prompt: str,
@@ -1528,7 +1563,8 @@ async def draft_section(
                                           context.get("discovery_answers"))
     # A few lines of client facts is a passing mention; a substantial block
     # means the consultant has actually briefed this section.
-    has_client_facts = len(discovery_ctx) >= MIN_DISCOVERY_FOR_GROUNDING
+    has_client_facts = section_fact_chars(
+        section_spec.id, context.get("discovery_answers")) >= MIN_DISCOVERY_FOR_GROUNDING
     needs_sme_review = weak_corpus and not has_client_facts
 
     # Reuse the brain's evidence/system-prompt builder, then layer section-specific

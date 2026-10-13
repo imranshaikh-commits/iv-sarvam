@@ -2626,3 +2626,73 @@ def test_a_requirement_nobody_judged_is_never_printed_as_compliant():
         "partial": {"rows": 1, "with_reference": 1},
         "covered": {"rows": 1, "with_reference": 1},
         "missing": {"rows": 2, "with_reference": 1}}
+
+
+# --- Deep audit F28 and F30: which client facts reach a section --------------
+
+def test_a_long_answer_cannot_push_a_sections_other_facts_out_of_its_prompt():
+    """F28: the facts block was built in a fixed order and cut at 3,500
+    characters from the end, so one long answer early in the list removed
+    every fact after it, sizing included."""
+    wanted = [k for k in document_engine._SECTION_DISCOVERY_FIELDS["proposed_solution"]
+              if k not in document_engine._EXCLUDED_DISCOVERY_FIELDS]
+    first, last = wanted[0], wanted[-1]
+    answers = {k: f"value for {k}" for k in wanted}
+    answers.update({"client_name": "Meridian Bank", "iam_vendor": "SailPoint",
+                    first: "A very long narrative about the client. " * 200,
+                    last: "LASTFACT 8 vCPU and 32 GB per node"})
+    ctx = document_engine.discovery_context_for("proposed_solution", answers)
+    assert len(ctx) <= 3500
+    assert "LASTFACT 8 vCPU and 32 GB per node" in ctx          # the short fact survives
+    assert "Meridian Bank" in ctx and "SailPoint" in ctx        # so does who it is for
+    assert "A very long narrative" in ctx and "…" in ctx        # the long one is shortened, and shown as cut
+    for key in wanted[1:-1]:
+        assert f"value for {key}" in ctx, key
+    # Nothing is shortened when everything fits.
+    short = document_engine.discovery_context_for(
+        "proposed_solution", {**answers, first: "Short."})
+    assert "…" not in short
+
+
+def test_names_and_country_do_not_count_as_a_briefed_section():
+    """F30: a section with weak evidence was spared its review banner whenever
+    the facts block passed 200 characters, which a long client name, vendor
+    list, industry and country do on their own."""
+    async def no_chunks(*a, **k):
+        return []
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    async def fake_draft(client, system_prompt, user_prompt, max_tokens):
+        return "Body."
+
+    identity_only = {
+        "client_name": "The Saudi Mining Services Company, a subsidiary of the national mining group",
+        "iam_vendor": "Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM",
+        "industry": "Mining, metals and mineral processing services for the Kingdom",
+        "country": "Kingdom of Saudi Arabia, with operations across the Eastern Province"}
+    assert len(document_engine.discovery_context_for("proposed_solution", identity_only)) >= 200
+    briefed = {**identity_only, "hardware_sizing_inputs":
+               "Production: three nodes, each 8 vCPU, 32 GB memory and 500 GB disk. "
+               "DR: two nodes of the same size in the second data centre. "
+               "UAT and development share one node of 4 vCPU and 16 GB memory. " * 2}
+
+    from proposal_templates import get_template
+
+    def needs_review(answers):
+        ctx = {"client_name": "C", "iam_vendor": "V", "proposal_type": "implementation",
+               "rfp_text": "", "discovery_answers": answers}
+        spec = next(s for s in get_template("implementation") if s.id == "proposed_solution")
+        orig = document_engine._draft_with_retry
+        document_engine._draft_with_retry = fake_draft
+        try:
+            return asyncio.run(document_engine.draft_section(
+                None, spec, ctx, embed_fn=stub_embed, retrieve_fn=no_chunks,
+                build_grounded_system_fn=lambda chunks: "EVIDENCE",
+                top_k=8, subsections=1, max_tokens=3500))["needs_sme_review"]
+        finally:
+            document_engine._draft_with_retry = orig
+
+    assert needs_review(identity_only) is True
+    assert needs_review(briefed) is False

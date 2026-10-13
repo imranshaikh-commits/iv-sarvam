@@ -221,6 +221,11 @@ class RfpExtraction:
     pages_total: int = 0      # pages in the source; more than pages_read = cut off
     used_vision: bool = False
     source_name: str = ""
+    # In a document that HAS a text layer: the pages that did not (scans bound
+    # into it) and were read as images, and the ones that could not be read at
+    # all. An unread page is reported, never passed over.
+    vision_pages: list[int] = field(default_factory=list)
+    unread_pages: list[int] = field(default_factory=list)
 
     def answers(self) -> dict[str, str]:
         """The extraction as a discovery answer dict."""
@@ -238,6 +243,13 @@ def needs_vision(text_by_page: list[str]) -> bool:
         return True
     total = sum(len((t or "").strip()) for t in text_by_page)
     return total / max(len(text_by_page), 1) < MIN_CHARS_PER_PAGE
+
+
+def page_is_thin(text: str) -> bool:
+    """Does THIS page lack a usable text layer? needs_vision answers for the
+    document as an average, which a text PDF with scanned annexures passes
+    while the annexures carry nothing but an image (audit F12)."""
+    return len((text or "").strip()) < MIN_CHARS_PER_PAGE
 
 
 # --- Requirement register -----------------------------------------------------
@@ -398,10 +410,21 @@ def describe_extraction(ex: RfpExtraction, total_fields: int) -> str:
     """
     got = len(ex.fields)
     how = "read visually (no text layer)" if ex.used_vision else "read from the text layer"
+    if ex.vision_pages:
+        how += (f"; {len(ex.vision_pages)} scanned page(s) read visually "
+                f"(p. {', '.join(str(p) for p in ex.vision_pages)})")
     lines = [
         f"**{ex.source_name or 'Document'}** — {ex.pages_read} pages, {how}.",
         "",
     ]
+    if ex.unread_pages:
+        lines += [
+            f"**NOT READ: page {', '.join(str(p) for p in ex.unread_pages)}** "
+            f"{'has' if len(ex.unread_pages) == 1 else 'have'} no text layer and could "
+            f"not be read as an image. If anything is written there, it is NOT in what "
+            f"follows. Check those pages against the source before relying on this.",
+            "",
+        ]
     if ex.pages_total > ex.pages_read:
         # Audit 2026-10-12 finding 7: a capped read looked like a complete one.
         lines += [
@@ -504,8 +527,13 @@ def read_text_layer(pdf_path: str) -> list[str]:
     except Exception as e:  # noqa: BLE001
         log.warning("text-layer read failed for %s: %s", pdf_path, e)
         return []
-    # pdftotext separates pages with a form-feed character.
-    return out.stdout.split("\x0c")
+    # pdftotext ENDS every page with a form feed, the last one included, so a
+    # plain split yields one empty page too many. That phantom page made a
+    # fully read scanned tender report "only the first N of N+1 pages".
+    pages = out.stdout.split("\x0c")
+    if pages and not pages[-1].strip():
+        pages.pop()
+    return pages
 
 
 # --- Vision extraction ---------------------------------------------------------
@@ -627,8 +655,13 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
         # SAME per-page loop runs, just against text instead of images.
         pass
 
-    if use_vision:
+    # Pages to read as images: all of them when the document has no text layer;
+    # otherwise only the pages that have none of their own.
+    thin = set() if use_vision else {i for i, t in enumerate(text_pages) if page_is_thin(t)}
+    images: list[str] = []
+    if use_vision or thin:
         images = rasterise(pdf_path, tmp_dir)
+    if use_vision:
         if not images:
             log.error("could not rasterise %s; extraction is EMPTY, not partial",
                      source_name)
@@ -659,12 +692,21 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
     _SKIP_VALUES = {"", "skip", "n/a", "na", "none", "unknown"}
 
     for i in range(ex.pages_read):
+        page_no = i + 1
         if use_vision:
             page_ex = await extract_page_vision(images[i], field_ids, structured_fn)
+        elif i in thin and i < len(images):
+            page_ex = await extract_page_vision(images[i], field_ids, structured_fn)
+            ex.vision_pages.append(page_no)
+        elif i in thin:
+            # No text and no picture of it (rasterising failed, or the page is
+            # past the page cap). It may be blank; that cannot be told from
+            # here, so it is reported rather than assumed.
+            ex.unread_pages.append(page_no)
+            continue
         else:
             page_ex = await _extract_page_text(text_pages[i], field_ids, structured_fn)
 
-        page_no = i + 1
         for fv in (page_ex.field_values or []):
             fid = (fv.field_id or "").strip()
             val = (fv.value or "").strip()

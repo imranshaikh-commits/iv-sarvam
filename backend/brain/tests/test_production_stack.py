@@ -69,3 +69,52 @@ def test_libreoffice_turns_a_docx_into_a_pdf_and_poppler_reads_it(tmp_path):
     path.write_bytes(pdf)
     pages = rfp_intake.rasterise(str(path), str(tmp_path / "pages"))
     assert len(pages) == 1
+
+
+def _mixed_docx() -> bytes:
+    """Page 1: a page of text. Page 2: nothing but a picture (a scanned annexure)."""
+    from docx.shared import Inches
+    doc = Document()
+    doc.add_paragraph("Section 4. Access management requirements for the tender. " * 12)
+    doc.add_page_break()
+    pic = io.BytesIO()
+    Image.new("RGB", (600, 800), "white").save(pic, "PNG")
+    pic.seek(0)
+    doc.add_picture(pic, width=Inches(5))
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+def test_poppler_counts_pages_as_they_are_and_a_scanned_page_is_read_as_an_image(tmp_path):
+    """Deep audit F12, with the real binaries. pdftotext ends every page with a
+    form feed, so a plain split counted one page too many; and a page with no
+    text layer inside a text PDF has to reach the vision reader, with the right
+    page's image."""
+    import asyncio
+    _need("soffice")
+    _need("pdftotext")
+    _need("pdftoppm")
+    pdf, err = export_engine.export_pdf(_mixed_docx())
+    assert err is None and pdf
+    path = tmp_path / "mixed.pdf"
+    path.write_bytes(pdf)
+    text_pages = rfp_intake.read_text_layer(str(path))
+    assert len(text_pages) == 2                                   # not 3
+    assert not rfp_intake.page_is_thin(text_pages[0]) and rfp_intake.page_is_thin(text_pages[1])
+    assert not rfp_intake.needs_vision(text_pages)                # the average hides page 2
+
+    seen = []
+
+    class _Empty:
+        field_values, requirements, eligibility_gates, structure_headings = [], [], [], []
+
+    async def fake_structured(model, messages):
+        content = messages[1]["content"]
+        seen.append("vision" if isinstance(content, list) else "text")
+        return _Empty()
+
+    ex = asyncio.run(rfp_intake.extract_rfp(
+        str(path), "mixed.pdf", [], fake_structured, str(tmp_path / "pages")))
+    assert seen == ["text", "vision"]
+    assert ex.pages_total == 2 and ex.vision_pages == [2] and ex.unread_pages == []

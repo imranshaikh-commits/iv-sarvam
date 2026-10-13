@@ -367,7 +367,7 @@ def test_a_later_fuller_page_wins_over_an_earlier_thinner_one(monkeypatch):
         page_no = call_count["n"]
         return _PageEx(pages.get(page_no, []))
 
-    text_pages = [f"page {i} filler text" for i in range(1, 16)]
+    text_pages = [f"page {i} filler text " * 15 for i in range(1, 16)]
     monkeypatch.setattr(R, "read_text_layer", lambda path: text_pages)
     monkeypatch.setattr(R, "needs_vision", lambda pages: False)
 
@@ -408,7 +408,7 @@ def test_a_brief_later_mention_does_not_overwrite_a_fuller_earlier_one(monkeypat
         call_count["n"] += 1
         return _PageEx(pages.get(call_count["n"], []))
 
-    text_pages = ["page 1 filler", "page 2 filler"]
+    text_pages = ["page 1 filler " * 20, "page 2 filler " * 20]
     monkeypatch.setattr(R, "read_text_layer", lambda path: text_pages)
     monkeypatch.setattr(R, "needs_vision", lambda pages: False)
 
@@ -450,7 +450,7 @@ def test_skip_and_na_values_are_never_merged_in(monkeypatch):
         call_count["n"] += 1
         return _PageEx(pages.get(call_count["n"], []))
 
-    text_pages = ["page 1 filler", "page 2 filler"]
+    text_pages = ["page 1 filler " * 20, "page 2 filler " * 20]
     monkeypatch.setattr(R, "read_text_layer", lambda path: text_pages)
     monkeypatch.setattr(R, "needs_vision", lambda pages: False)
 
@@ -534,3 +534,56 @@ def test_a_long_requirement_is_not_cut_off(monkeypatch):
     # The text-layer register reader keeps it whole too.
     line = "IGA-07 " + long_text.strip()
     assert R.extract_requirements([line])[0].text.endswith("administration;")
+
+
+# --- Deep audit F12: a scanned page inside a text PDF -------------------------
+
+def _mixed_pdf_run(monkeypatch, tmp_path, images_available=True):
+    """Page 1 has a text layer; page 2 is a scan (no text). Returns the
+    extraction and which pages were read as (page, 'text' | 'vision')."""
+    import asyncio
+    how = []
+
+    class _Req:
+        def __init__(self, ref, text):
+            self.ref, self.text = ref, text
+
+    class _PageEx:
+        def __init__(self, reqs):
+            self.field_values, self.eligibility_gates, self.structure_headings = [], [], []
+            self.requirements = reqs
+
+    async def fake_structured(model, messages):
+        visual = isinstance(messages[1]["content"], list)
+        how.append("vision" if visual else "text")
+        return _PageEx([_Req("ANX-01", "Mandatory clause that exists only on the scanned annexure page")]
+                       if visual else [_Req("AM-01", "Single sign-on for all workforce applications")])
+
+    images = []
+    for i in (1, 2):
+        img = tmp_path / f"pg-{i}.png"
+        img.write_bytes(b"\x89PNG fake")
+        images.append(str(img))
+    monkeypatch.setattr(R, "read_text_layer",
+                        lambda path: ["Section 4. Access management requirements. " * 12, "  \n "])
+    monkeypatch.setattr(R, "rasterise", lambda path, out: images if images_available else [])
+    ex = asyncio.run(R.extract_rfp("mixed.pdf", "Tender.pdf", [], fake_structured, str(tmp_path)))
+    return ex, how
+
+
+def test_a_scanned_page_inside_a_text_pdf_is_read_visually(monkeypatch, tmp_path):
+    """One average over the whole document decided text or vision, so a text
+    PDF with scanned annexures was read as text and the annexures vanished,
+    with no flag at all."""
+    ex, how = _mixed_pdf_run(monkeypatch, tmp_path)
+    assert how == ["text", "vision"]
+    assert [(r.ref, r.page) for r in ex.requirements] == [("AM-01", 1), ("ANX-01", 2)]
+    assert ex.vision_pages == [2] and ex.unread_pages == [] and not ex.used_vision
+    assert "p. 2" in R.describe_extraction(ex, 96)          # says which page was a scan
+
+
+def test_a_scanned_page_that_cannot_be_read_is_reported_not_skipped(monkeypatch, tmp_path):
+    ex, how = _mixed_pdf_run(monkeypatch, tmp_path, images_available=False)
+    assert how == ["text"] and ex.unread_pages == [2]
+    text = R.describe_extraction(ex, 96)
+    assert "NOT READ" in text and "page 2" in text.lower()

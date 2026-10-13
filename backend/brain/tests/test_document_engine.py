@@ -2696,3 +2696,47 @@ def test_names_and_country_do_not_count_as_a_briefed_section():
 
     assert needs_review(identity_only) is True
     assert needs_review(briefed) is False
+
+
+# --- Deep audit F26: fan-out de-duplication ----------------------------------
+
+def _fanout(retrieve, **kw):
+    from proposal_templates import get_template
+    spec = next(s for s in get_template("implementation") if s.id == "proposed_solution")
+    ctx = {"client_name": "Acme", "iam_vendor": "SailPoint", "iam_vendors": ["SailPoint"],
+           "proposal_type": "implementation", "rfp_text": "", "discovery_answers": {}}
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    return asyncio.run(document_engine._retrieve_fanout(
+        None, spec, ctx, embed_fn=stub_embed, retrieve_fn=retrieve, top_k=8, fanout=2, **kw))
+
+
+def test_evidence_sharing_an_opening_is_not_treated_as_one_chunk():
+    """Fan-out merged chunks on their first 160 characters. Proposal chunks
+    share boilerplate openings, so two chunks with different sizing rows after
+    the same introduction were one "duplicate", and one of them was dropped."""
+    opening = "Inspirit Vision proposes the following production sizing for the platform. " * 3
+    assert len(opening) > 160
+    prod = {"chunk_id": "c-prod", "chunk_text": opening + "Production: 8 vCPU, 32 GB per node.",
+            "similarity": 0.70}
+    dr = {"chunk_id": "c-dr", "chunk_text": opening + "DR: 4 vCPU, 16 GB per node.",
+          "similarity": 0.69}
+    calls = []
+
+    async def retrieve(client, embedding, query, k=8, **kw):
+        calls.append(query)
+        return [dict(prod), dict(dr)]          # every fan-out query returns both
+
+    chunks, _ = _fanout(retrieve)
+    assert len(calls) >= 2
+    assert sorted(c["chunk_id"] for c in chunks) == ["c-dr", "c-prod"]   # both, each once
+
+    # Rows with no id (an older RPC) are compared on their whole text.
+    async def retrieve_no_ids(client, embedding, query, k=8, **kw):
+        return [{"chunk_text": prod["chunk_text"], "similarity": 0.7},
+                {"chunk_text": dr["chunk_text"], "similarity": 0.69}]
+
+    chunks, _ = _fanout(retrieve_no_ids)
+    assert len(chunks) == 2

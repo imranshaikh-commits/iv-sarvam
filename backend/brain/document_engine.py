@@ -1140,6 +1140,16 @@ def _fanout_queries(section_spec: SectionSpec, context: dict, fanout: int) -> li
     return queries[:fanout]
 
 
+def _evidence_key(chunk: dict) -> str:
+    """What makes two retrieved chunks the same chunk: its id; for a row with
+    no id, its whole text. This was the first 160 characters of the text, and
+    proposal chunks share boilerplate openings, so two chunks with different
+    sizing rows after the same introduction were merged into one (audit F26)."""
+    if chunk.get("chunk_id"):
+        return f"id:{chunk['chunk_id']}"
+    return " ".join((chunk.get("chunk_text") or chunk.get("heading") or "").split())
+
+
 async def _retrieve_fanout(
     client: httpx.AsyncClient,
     section_spec: SectionSpec,
@@ -1185,7 +1195,7 @@ async def _retrieve_fanout(
             log.error("draft_section retrieval failed for %s: %s", section_spec.id, e)
             chunks = []
         for c in chunks:
-            key = (c.get("chunk_text") or c.get("heading") or "")[:160]
+            key = _evidence_key(c)
             if key and key in seen:
                 continue
             if key:
@@ -1223,7 +1233,7 @@ async def _retrieve_fanout(
                            section_spec.id, v, e)
                 p_chunks = []
             for c in p_chunks or []:
-                key = (c.get("chunk_text") or c.get("heading") or "")[:160]
+                key = _evidence_key(c)
                 if key and key in seen_product:
                     continue
                 if key:

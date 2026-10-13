@@ -288,8 +288,13 @@ _REFERENCE_TTL_S = float(os.environ.get("SHILPI_REFERENCE_TTL_S", "3600"))
 
 
 async def _rest_all(client: httpx.AsyncClient, table: str, params: dict) -> list[dict]:
-    """Every row of a PostgREST query, 1,000 at a time."""
+    """Every row of a PostgREST query, 1,000 at a time, in primary-key order.
+
+    Paging without ORDER BY is not a stable walk: Postgres may order each page
+    request differently, so one row comes back twice and another never. The
+    caller's own "order" wins if it gives one."""
     rows, start = [], 0
+    params = {"order": "id", **params}
     while True:
         resp = await client.get(
             f"{SUPABASE_URL}/rest/v1/{table}",

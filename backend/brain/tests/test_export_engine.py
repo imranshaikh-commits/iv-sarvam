@@ -997,3 +997,26 @@ def test_a_requirement_read_cut_short_reaches_the_chat_reply(monkeypatch):
         "filename": "Shilpi_Proposal_X.docx", "signed_urls": {"docx": "https://e/d"},
         "compliance_text_cut": True})
     assert "requirement" in reply.lower() and "12,000" in reply
+
+
+def test_paged_reads_ask_for_a_stable_order():
+    """Deep audit F67: _rest_all walked a table 1,000 rows at a time with no
+    ORDER BY. Postgres may then return rows in a different order on each page
+    request, so a row can be read twice and another not at all. The reference
+    list that goes into every proposal is read this way."""
+    import asyncio
+    import httpx
+    seen = []
+
+    def handler(req):
+        seen.append((req.url.params.get("order"), req.headers.get("range")))
+        start = int(req.headers["range"].split("-")[0])
+        size = 1000 if start == 0 else 5
+        return httpx.Response(200, json=[{"id": start + i} for i in range(size)])
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await app_module._rest_all(c, "proposals", {"select": "id"})
+    rows = asyncio.run(run())
+    assert len(rows) == 1005 and len({r["id"] for r in rows}) == 1005
+    assert seen == [("id", "0-999"), ("id", "1000-1999")]

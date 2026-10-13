@@ -1,5 +1,7 @@
 # Phase 0 report: the system can be rebuilt and tells no secrets
 
+> **Update 2026-10-13:** this branch was pushed after the report was written, and CI passed all three jobs (`test`, `brain-image`, `webui-image`). Statements below that it is not pushed, or that CI has not run, are out of date.
+
 Branch `audit/phase-0`, off `main` at `74ae8a3`. For review by the main
 session against `ARCHITECT_DECISIONS.md` before merge. 2026-10-12.
 

@@ -1,5 +1,7 @@
 # Phase 1 report: the document tells the truth
 
+> **Update 2026-10-13:** this branch was pushed after the report was written, and CI passed all three jobs (`test`, `brain-image`, `webui-image`). Statements below that it is not pushed, or that CI has not run, are out of date.
+
 Branch `audit/phase-1`, **stacked on `audit/phase-0`** (not on `main`: Phase 0
 was not yet pushed or merged when this was built). For review by the main
 session against `ARCHITECT_DECISIONS.md`. 2026-10-13.

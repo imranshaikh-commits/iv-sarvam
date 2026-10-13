@@ -1,5 +1,7 @@
 # Phase 2 report: the chat tells the truth, and each colleague sees only their own
 
+> **Update 2026-10-13:** this branch was pushed after the report was written, and CI passed all three jobs (`test`, `brain-image`, `webui-image`). Statements below that it is not pushed, or that CI has not run, are out of date.
+
 Branch `audit/phase-2`, **stacked on `audit/phase-1`**, which is stacked on
 `audit/phase-0`. None of the three is pushed. For review by the main session
 against `ARCHITECT_DECISIONS.md`. 2026-10-13.

@@ -1,11 +1,12 @@
 # Phase 3 report: reading the tender and the evidence
 
-Branch `audit/phase-3`, stacked on `audit/phase-2` (which is on `phase-1`, on
-`phase-0`; those three are pushed with CI green, none merged). For review by
+Branch `audit/phase-3`, stacked on `audit/phase-2`, which is rebased on `main`
+at `2148424` (phases 0 and 1 merged, the image-kit change). For review by
 the main session against `ARCHITECT_DECISIONS.md`. 2026-10-14.
 
-Thirteen findings, eleven fix commits, plus one for the measurement script.
-Suite: **820 passed, 4 skipped** (801 at the end of Phase 2). The four skips
+Thirteen findings, eleven fix commits, plus one for the measurement script,
+plus two from the Run 1 review (item (c), below). Suite: **827 passed, 4
+skipped** (801 at the end of Phase 2). The four skips
 are the real-binary tests, which run in the brain image in CI.
 
 ## What changed
@@ -28,6 +29,46 @@ are the real-binary tests, which run in the brain image in CI.
 Three older `extract_rfp` tests fed pages a few words long with the vision
 check patched off. A page that thin is now, correctly, a scan, so their pages
 were made realistic. One classification test gained the new required field.
+
+## Added after Run 1 (item (c))
+
+| Commit | Change | Test that fails without it |
+|---|---|---|
+| `7c13210` | **Relevant Engagements is a table built from facts**, with no model call: the three case studies from `slide_facts.json` (client described exactly as the deck gives it, products, engagement, scale, IV's role, outcomes, "Delivered"), then the won proposals from the reference book ("Selected (proposal won)", named only where IV already cites the client). `build_reference_book` is split into `reference_rows` (facts) and the prompt text, so the table and the drafter's list agree. If the corpus read fails, the table still carries the case studies. | `test_document_engine.py::test_relevant_engagements_is_a_table_of_facts_with_no_client_name_added`, `…::test_the_relevant_engagements_subsection_is_not_drafted_by_the_model`, `…::test_the_reference_book_carries_the_engagements_table_to_the_document` (caller side: `app.fetch_reference_book` to `generate_proposal` to the document). |
+| `4c3b2eb` | **Why Ping Identity / Why Saviynt** get that vendor's `analyst_recognition` and `vendor_facts` as the only rankings and figures they may state, each with its date; "where an entry gives no year, give none" (Saviynt's KuppingerCole entry goes in without a year, and the note asking IV to confirm the year is not passed to the model). Any other vendor is told none are on record and to argue from fit. Only the "Why" subsections get the block. | `…::test_why_vendor_gets_the_only_rankings_and_figures_it_may_state` (fails on `7c13210`: the Gartner entry is not in the Why Ping prompt). |
+
+"No ranking outside the file is offered" is tested on the prompt: each Why
+prompt holds only its own vendor's entries and the rule against any other. The
+model can still disobey; only a real run shows whether it does.
+
+**One risk in the table.** A case study is anonymised, but the reference rows
+below it can name a client with the same vendor, sector and country (a
+"Leading global bank in Saudi Arabia" on ForgeRock, and a named Saudi bank on
+ForgeRock a few rows down). A reader may link them. I cannot tell from the
+data which won proposal, if any, is the same engagement as a case study, so
+both stay. If one is, its reference row should go; that needs someone who
+knows the deals.
+
+### The 17 rows with IV precedent and no section reference
+
+Checked against Run 1's drafted sections (the DOCX, read locally; nothing from
+it is in the repo). Reconstructing `requirement_references` on that document
+agrees with the run on all 56 rows.
+
+- **Not "most".** About 7 or 8 of the 17 are really addressed in a solution or
+  scope section (two of those weakly). Two appear only in assumptions, one only
+  in training, one only in the timeline, and five are not addressed anywhere.
+- **Lowering the threshold** (0.30 today) gives a reference to 10 of 17 at
+  0.25, 15 at 0.20, 16 at 0.15. Most of those references point at the wrong
+  section: about 3 or 4 of 10 are right at 0.25, about 4 or 5 of 15 at 0.20.
+  The table would claim coverage it does not have.
+- **Embedding similarity** cannot be measured here: it needs the embedding key,
+  which this machine does not have.
+
+So `requirement_references` is unchanged. The gap is in drafting, not in the
+matcher: requirements are not allocated to the sections that should answer
+them (the parked remainder of F28). That is the fix to schedule, and Run 2 can
+measure it on the same 56 rows.
 
 ## Attribution for F26, F27 and F62: one command, on the host
 
@@ -85,14 +126,14 @@ It must be run on a build that contains this branch.
 10. **F11, one cap left.** The per-page text prompt still reads the first 6,000
     characters of a page. A denser page loses its tail with no flag.
 11. **F30 will show more "weak evidence" banners** on sections that had only
-    identity facts. That is the intent; watch the `sme <= 20` gate with F42.
+    identity facts. That is the intent; watch the `sme <= 25` gate with F42.
 
 ## Not verified
 
 - **No poppler or LibreOffice on this machine.** The real PDF and Word paths
   (F12, F16) are covered only by the two new tests in
   `test_production_stack.py`, which need this branch pushed to run in CI.
-- **CI has not run on this branch.** It is not pushed.
+- **CI**: see the main-session message for the result after the push.
 - **Nothing has run against a live model**: F09's new field, F12's vision
   pages and the wording of the new chat lines are untested on a real run.
 - **The attribution script has not run on the live corpus.**
@@ -103,11 +144,11 @@ It must be run on a build that contains this branch.
 | Phase | Findings | State |
 |---|---|---|
 | Already fixed | 4 | done |
-| 0 | 13 | pushed, CI green, not reviewed, not merged |
-| 1 | 11 | pushed, CI green, not reviewed, not merged |
-| 2 | 11 | pushed, CI green, not reviewed, not merged |
-| 3 | 13 | built, committed, **not pushed** |
+| 0 | 13 | merged to `main` |
+| 1 | 11 | merged to `main` |
+| 2 | 11 | rebased on `main`, pushed; awaiting merge and the chat walk-through |
+| 3 | 13 + item (c) | pushed; awaiting review, merge, the attribution run and Run 2 |
 | 4 | 1 (F46) | main session and Imran |
 
 All 48 findings assigned to the audit workstream are written and tested.
-None is on `main`, so none is deployed.
+Phases 0 and 1 are on `main`; whether they are deployed is Imran's to confirm.

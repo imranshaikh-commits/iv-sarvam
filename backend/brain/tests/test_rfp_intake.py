@@ -271,45 +271,10 @@ def test_a_named_file_settles_two_of_my_own_uploads(tmp_path, monkeypatch):
 # to get wrong.
 # ---------------------------------------------------------------------------
 
-def test_field_values_use_a_strict_schema_not_a_free_dict():
-    """A loosely-typed dict gives Instructor nothing to enforce, so the model
-    is free to invent whatever keys it likes."""
-    import inspect
-    sig = inspect.signature(R._PageExtraction)
-    ann = R._PageExtraction.model_fields["field_values"].annotation
-    assert "_FieldValue" in str(ann), (
-        f"field_values is {ann}, not a strict per-item schema")
-
-
 def test_requirements_use_a_strict_schema_not_a_free_dict():
     ann = R._PageExtraction.model_fields["requirements"].annotation
     assert "_RequirementItem" in str(ann), (
         f"requirements is {ann}, not a strict per-item schema")
-
-
-def test_a_field_id_that_does_not_match_is_dropped_not_guessed():
-    """An invented field id must not silently become a real one."""
-    pe = R._PageExtraction(field_values=[
-        R._FieldValue(field_id="not_a_real_field", value="x")])
-    field_ids = ["client_name"]
-    kept = []
-    for fv in pe.field_values:
-        matched = fv.field_id if fv.field_id in field_ids else None
-        if matched:
-            kept.append(matched)
-    assert kept == []
-
-
-def test_a_case_or_spacing_variant_still_matches():
-    """The strict schema fixes the structural ambiguity; a residual "Client
-    Name" vs "client_name" from the model should still resolve, not be
-    dropped as if it were a genuinely different field."""
-    fid = "Client Name"
-    field_ids = ["client_name"]
-    canon = fid.strip().lower().replace(" ", "_").replace("-", "_")
-    matched = fid if fid in field_ids else next(
-        (f for f in field_ids if f.lower() == canon), None)
-    assert matched == "client_name"
 
 
 def test_gates_are_unaffected_by_the_schema_fix():
@@ -333,134 +298,6 @@ def test_gates_are_unaffected_by_the_schema_fix():
 # Dockerfile) -- a real infra decision that deserves its own review, not a
 # side effect of a correctness fix.
 # ---------------------------------------------------------------------------
-
-def test_a_later_fuller_page_wins_over_an_earlier_thinner_one(monkeypatch):
-    """THE ESNAD pattern, verbatim: "SaaS" on an early page, "SaaS hosted
-    within the Kingdom of Saudi Arabia, in full compliance with data
-    residency requirements" on a later one. Exercises the REAL extract_rfp,
-    not a hand-copied version of its logic."""
-    import asyncio
-    import tempfile
-
-    class _FV:
-        def __init__(self, field_id, value):
-            self.field_id, self.value = field_id, value
-
-    class _PageEx:
-        def __init__(self, fields):
-            self.field_values = fields
-            self.requirements = []
-            self.eligibility_gates = []
-            self.structure_headings = []
-
-    pages = {
-        5: [_FV("deployment_model", "SaaS")],
-        12: [_FV("deployment_model",
-                 "SaaS hosted within the Kingdom of Saudi Arabia, in full "
-                 "compliance with data residency requirements")],
-    }
-
-    call_count = {"n": 0}
-
-    async def fake_structured(model, messages):
-        call_count["n"] += 1
-        page_no = call_count["n"]
-        return _PageEx(pages.get(page_no, []))
-
-    text_pages = [f"page {i} filler text " * 15 for i in range(1, 16)]
-    monkeypatch.setattr(R, "read_text_layer", lambda path: text_pages)
-    monkeypatch.setattr(R, "needs_vision", lambda pages: False)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        ex = asyncio.run(R.extract_rfp(
-            "fake.pdf", "SOW.pdf", ["deployment_model"], fake_structured, tmp))
-
-    field = next(f for f in ex.fields if f.field_id == "deployment_model")
-    assert "Kingdom of Saudi Arabia" in field.value
-    assert field.page == 12, "provenance must follow the value that was kept"
-
-
-def test_a_brief_later_mention_does_not_overwrite_a_fuller_earlier_one(monkeypatch):
-    """The comparison is symmetric: a full statement on page 1 must survive
-    a terser restatement later, not just the reverse."""
-    import asyncio
-    import tempfile
-
-    class _FV:
-        def __init__(self, field_id, value):
-            self.field_id, self.value = field_id, value
-
-    class _PageEx:
-        def __init__(self, fields):
-            self.field_values = fields
-            self.requirements = []
-            self.eligibility_gates = []
-            self.structure_headings = []
-
-    pages = {
-        1: [_FV("client_name", "ESNAD (Saudi Mining Services Company)")],
-        2: [_FV("client_name", "ESNAD")],
-    }
-
-    call_count = {"n": 0}
-
-    async def fake_structured(model, messages):
-        call_count["n"] += 1
-        return _PageEx(pages.get(call_count["n"], []))
-
-    text_pages = ["page 1 filler " * 20, "page 2 filler " * 20]
-    monkeypatch.setattr(R, "read_text_layer", lambda path: text_pages)
-    monkeypatch.setattr(R, "needs_vision", lambda pages: False)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        ex = asyncio.run(R.extract_rfp(
-            "fake.pdf", "SOW.pdf", ["client_name"], fake_structured, tmp))
-
-    field = next(f for f in ex.fields if f.field_id == "client_name")
-    assert field.value == "ESNAD (Saudi Mining Services Company)"
-    assert field.page == 1
-
-
-def test_skip_and_na_values_are_never_merged_in(monkeypatch):
-    """A model answering "skip" or "N/A" for a field on one page must never
-    win against a real value found elsewhere, however long the literal
-    string "skip" is relative to a short real answer."""
-    import asyncio
-    import tempfile
-
-    class _FV:
-        def __init__(self, field_id, value):
-            self.field_id, self.value = field_id, value
-
-    class _PageEx:
-        def __init__(self, fields):
-            self.field_values = fields
-            self.requirements = []
-            self.eligibility_gates = []
-            self.structure_headings = []
-
-    pages = {
-        1: [_FV("app_count", "N/A")],
-        2: [_FV("app_count", "9")],
-    }
-
-    call_count = {"n": 0}
-
-    async def fake_structured(model, messages):
-        call_count["n"] += 1
-        return _PageEx(pages.get(call_count["n"], []))
-
-    text_pages = ["page 1 filler " * 20, "page 2 filler " * 20]
-    monkeypatch.setattr(R, "read_text_layer", lambda path: text_pages)
-    monkeypatch.setattr(R, "needs_vision", lambda pages: False)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        ex = asyncio.run(R.extract_rfp(
-            "fake.pdf", "SOW.pdf", ["app_count"], fake_structured, tmp))
-
-    field = next(f for f in ex.fields if f.field_id == "app_count")
-    assert field.value == "9"
-
 
 def test_extraction_prompt_labels_every_field_both_paths(tmp_path):
     """ESNAD's SLA severity matrix was never extracted in three runs: the page
@@ -705,34 +542,6 @@ def test_every_intake_field_has_one_kind():
     assert "proposal_type" not in T.client_fact_ids()
 
 
-def test_an_rfp_that_says_sow_cannot_set_proposal_type(monkeypatch):
-    """Run 1: proposal_type came back "SOW", which the database rejects. IV's
-    decisions and derived fields are never taken from a client document, even
-    when a caller asks for them and the model offers them."""
-    import asyncio
-    import tempfile
-
-    class _FV:
-        def __init__(self, field_id, value):
-            self.field_id, self.value = field_id, value
-
-    class _PageEx:
-        field_values = [_FV("proposal_type", "SOW"), _FV("iam_vendor", "Okta"),
-                        _FV("required_diagram_types", "deployment"),
-                        _FV("user_count", "5,000 workforce")]
-        requirements, eligibility_gates, structure_headings = [], [], []
-
-    async def fake_structured(model, messages):
-        return _PageEx()
-
-    monkeypatch.setattr(R, "read_text_layer", lambda path: ["tender text " * 30])
-    import intake_template as T
-    every_id = [q["id"] for q in T.iter_questions(None)]
-    with tempfile.TemporaryDirectory() as tmp:
-        ex = asyncio.run(R.extract_rfp("x.pdf", "SOW.pdf", every_id, fake_structured, tmp))
-    assert ex.answers() == {"user_count": "5,000 workforce"}
-
-
 def test_the_chat_asks_the_reader_for_client_facts_only(tmp_path, monkeypatch):
     """Caller side: run_rfp_extraction must not ask the model for IV's decisions."""
     import asyncio
@@ -883,3 +692,172 @@ def test_the_rfp_readings_migration_keeps_row_level_security_on():
     assert "create table if not exists public.rfp_readings" in sql
     assert "enable row level security" in sql
     assert "primary key (sha256, extractor_version)" in sql
+
+
+# --- Design 1b: two-pass reading with evidence --------------------------------
+
+import re  # noqa: E402
+
+_FILLER = "General terms and conditions of the tender apply to this section. "
+
+
+def _two_pass_run(monkeypatch, text_pages, page_quotes, field_ids=None, combine=None,
+                  vision=None, tmp_path=None):
+    """Runs the real extract_rfp. page_quotes: {page: [(field_id, quote)]}; a
+    text page returns only the quotes present in the part it was sent. vision:
+    {page: transcription}, every page then read as an image."""
+    import asyncio
+    calls = {"pages": [], "combine": [], "prompts": []}
+
+    async def fake(model, messages):
+        if model is R._FieldReading:
+            calls["combine"].append(messages[1]["content"])
+            if combine:
+                return combine(messages)
+            fid = messages[0]["content"].split("Field: ", 1)[1].split(":", 1)[0]
+            pages = sorted({int(p) for p in re.findall(r"\(p\.(\d+)\)", messages[1]["content"])})
+            return R._FieldReading(value=f"STATED {fid}", pages=pages)
+        calls["prompts"].append(messages[0]["content"])
+        content = messages[1]["content"]
+        if isinstance(content, list):
+            page_no = sum(1 for c in calls["pages"] if c == "image") + 1
+            calls["pages"].append("image")
+            return R._PageExtraction(
+                transcription=vision.get(page_no, ""),
+                quotes=[R._FieldQuote(field_id=f, quote=q) for f, q in page_quotes.get(page_no, [])])
+        page_no = next(i + 1 for i, t in enumerate(text_pages) if content in t)
+        calls["pages"].append(page_no)
+        return R._PageExtraction(quotes=[
+            R._FieldQuote(field_id=f, quote=q) for f, q in page_quotes.get(page_no, [])
+            if q in content])
+
+    monkeypatch.setattr(R, "read_text_layer", lambda path: text_pages)
+    if vision:
+        images = []
+        for i in range(1, len(vision) + 1):
+            img = tmp_path / f"pg-{i}.png"
+            img.write_bytes(b"\x89PNG fake")
+            images.append(str(img))
+        monkeypatch.setattr(R, "needs_vision", lambda pages: True)
+        monkeypatch.setattr(R, "rasterise", lambda path, out: images)
+    ex = asyncio.run(R.extract_rfp("x.pdf", "SOW.pdf", field_ids or ["population_by_domain"],
+                                   fake, str(tmp_path or "/tmp/none")))
+    return ex, calls
+
+
+def test_an_rfp_that_says_sow_cannot_set_proposal_type(monkeypatch, tmp_path):
+    """Run 1: proposal_type came back "SOW", which the database rejects. IV's
+    decisions and derived fields are never taken from a client document, even
+    when a caller asks for them and the model offers them."""
+    import intake_template as T
+    page = ("This Statement of Work (SOW) covers the identity programme. "
+            "The organisation has 5,000 workforce users. Diagrams: deployment view. ") * 3
+    quotes = {1: [("proposal_type", "This Statement of Work (SOW) covers the identity programme."),
+                  ("required_diagram_types", "Diagrams: deployment view."),
+                  ("user_count", "The organisation has 5,000 workforce users.")]}
+    ex, calls = _two_pass_run(monkeypatch, [page], quotes, tmp_path=tmp_path,
+                              field_ids=[q["id"] for q in T.iter_questions(None)])
+    assert ex.answers() == {"user_count": "STATED user_count"}
+    assert "  proposal_type:" not in calls["prompts"][0]            # never even asked
+
+
+def test_facts_spread_over_pages_are_combined_with_their_pages(monkeypatch, tmp_path):
+    """Run 1 lost population_by_domain: WIAM and CIAM on one page, privileged
+    accounts on another, and the per-page merge kept one page's answer."""
+    pages = [_FILLER * 5] * 3 + [
+        _FILLER * 3 + "Workforce users (WIAM): 5,000. Customer identities (CIAM): 10,000. ",
+        _FILLER * 5, _FILLER * 5,
+        _FILLER * 3 + "Privileged accounts in scope for PAM: 50 accounts. "]
+    quotes = {4: [("population_by_domain",
+                   "Workforce users (WIAM): 5,000. Customer identities (CIAM): 10,000.")],
+              7: [("population_by_domain", "Privileged accounts in scope for PAM: 50 accounts.")]}
+    ex, calls = _two_pass_run(
+        monkeypatch, pages, quotes, tmp_path=tmp_path,
+        combine=lambda m: R._FieldReading(value="WIAM 5,000; CIAM 10,000; privileged 50",
+                                          pages=[4, 7, 99]))
+    field = next(f for f in ex.fields if f.field_id == "population_by_domain")
+    assert field.value == "WIAM 5,000; CIAM 10,000; privileged 50"
+    assert field.pages == [4, 7] and field.page == 4              # 99 is no quote's page
+    assert [q["page"] for q in field.quotes] == [4, 7]
+    assert len(calls["combine"]) == 1                              # one call for the field
+    assert "(p.4)" in calls["combine"][0] and "(p.7)" in calls["combine"][0]
+
+
+def test_the_reader_checks_each_quote_against_the_page_itself(monkeypatch, tmp_path):
+    """Not trusting the model: invented quotes and changed figures are dropped."""
+    import asyncio
+    page = _FILLER * 3 + "The workforce has 5,000 named users across three sites. "
+
+    async def fake(model, messages):
+        if model is R._FieldReading:
+            return R._FieldReading(value="5,000 named users", pages=[1])
+        return R._PageExtraction(quotes=[
+            R._FieldQuote(field_id="user_count",
+                          quote="The workforce has 9,000 named users across three sites."),
+            R._FieldQuote(field_id="app_count",
+                          quote="Forty business applications are to be onboarded"),
+            R._FieldQuote(field_id="user_count",
+                          quote="The workforce has 5,000 named users across three sites.")])
+
+    monkeypatch.setattr(R, "read_text_layer", lambda path: [page])
+    ex = asyncio.run(R.extract_rfp("x.pdf", "SOW.pdf", ["user_count", "app_count"], fake,
+                                   str(tmp_path)))
+    assert ex.answers() == {"user_count": "5,000 named users"}
+    assert ex.fields[0].quotes == [
+        {"page": 1, "text": "The workforce has 5,000 named users across three sites."}]
+    assert ex.dropped_quotes == 2
+
+
+def test_a_field_with_no_grounded_quote_is_not_found(monkeypatch, tmp_path):
+    ex, calls = _two_pass_run(monkeypatch, [_FILLER * 5], {}, tmp_path=tmp_path)
+    assert ex.fields == [] and calls["combine"] == []
+
+
+def test_a_dense_page_is_read_in_parts_and_none_of_it_goes_unread(monkeypatch, tmp_path):
+    """Audit F11 remainder: each page was cut at 6,000 characters."""
+    fact = "Customer identities (CIAM): 10,000 registered customers."
+    page = (_FILLER + "\n") * 220 + fact + "\n"
+    assert len(page) > 2 * R.PAGE_PART_CHARS
+    ex, calls = _two_pass_run(monkeypatch, [page], {1: [("population_by_domain", fact)]},
+                              tmp_path=tmp_path)
+    assert calls["pages"].count(1) == len(R.page_parts(page)) >= 3
+    assert "".join(R.page_parts(page)) == page
+    assert ex.answers() == {"population_by_domain": "STATED population_by_domain"}
+
+
+def test_a_scanned_page_is_checked_against_its_transcription(monkeypatch, tmp_path):
+    vision = {1: _FILLER + "Applications in scope: 6 business applications.",
+              2: _FILLER * 2}
+    quotes = {1: [("app_count", "Applications in scope: 6 business applications.")],
+              2: [("user_count", "Total users: 20,000 identities in the directory")]}
+    ex, _ = _two_pass_run(monkeypatch, ["", ""], quotes, field_ids=["app_count", "user_count"],
+                          vision=vision, tmp_path=tmp_path)
+    assert [f.field_id for f in ex.fields] == ["app_count"]
+    assert ex.dropped_quotes == 1
+
+
+def test_if_stating_a_field_fails_its_own_quotes_stand(monkeypatch, tmp_path):
+    def broken(messages):
+        raise RuntimeError("model down")
+    page = _FILLER * 3 + "Environments: Development, Test and Production. "
+    ex, _ = _two_pass_run(monkeypatch, [page],
+                          {1: [("envs", "Environments: Development, Test and Production.")]},
+                          field_ids=["envs"], combine=broken, tmp_path=tmp_path)
+    assert ex.answers() == {"envs": "Environments: Development, Test and Production."}
+
+
+def test_a_stated_skip_or_na_is_not_a_value(monkeypatch, tmp_path):
+    page = _FILLER * 3 + "Number of applications: to be confirmed by the client. "
+    ex, _ = _two_pass_run(monkeypatch, [page],
+                          {1: [("app_count", "Number of applications: to be confirmed by the client.")]},
+                          field_ids=["app_count"], tmp_path=tmp_path,
+                          combine=lambda m: R._FieldReading(value="N/A", pages=[1]))
+    assert ex.fields == []
+
+
+def test_quotes_and_values_use_strict_schemas():
+    ann = R._PageExtraction.model_fields["quotes"].annotation
+    assert "_FieldQuote" in str(ann)
+    assert set(R._FieldReading.model_fields) == {"value", "pages"}
+    assert R._match_field("Client Name", ["client_name"]) == "client_name"
+    assert R._match_field("not_a_real_field", ["client_name"]) is None   # dropped, not guessed

@@ -30,6 +30,7 @@ nothing generates until a human has seen the list.
 """
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import logging
 import os
@@ -41,12 +42,14 @@ from pydantic import BaseModel, Field as PField
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
+import document_qa
+
 log = logging.getLogger("shilpi-brain.rfp")
 
 # The version of what reading a tender produces. A stored reading is reused only
 # for the same file AND this version (design 1c): change it whenever the reader
 # would read the same file differently.
-EXTRACTOR_VERSION = "2026-10-14.1"
+EXTRACTOR_VERSION = "2026-10-14.2"  # .2: two-pass reading (1b)
 
 # Below this many characters per page, the PDF has no usable text layer and must
 # be read visually. The ESNAD SOW yielded 468 characters across 20 pages -- all
@@ -228,11 +231,14 @@ def as_pdf(path: str, tmp_dir: str) -> tuple[Optional[str], str]:
 
 @dataclass
 class ExtractedField:
-    """One discovery answer, with where it came from."""
+    """One discovery answer, with where it came from: the pages it rests on and
+    the client's own words ({"page", "text"}) that state it."""
     field_id: str
     value: str
     page: Optional[int] = None
     confidence: float = 1.0
+    pages: list[int] = field(default_factory=list)
+    quotes: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -271,6 +277,8 @@ class RfpExtraction:
     # all. An unread page is reported, never passed over.
     vision_pages: list[int] = field(default_factory=list)
     unread_pages: list[int] = field(default_factory=list)
+    # Quotes the model offered that were not on the page it named: dropped.
+    dropped_quotes: int = 0
 
     def answers(self) -> dict[str, str]:
         """The extraction as a discovery answer dict."""
@@ -599,25 +607,44 @@ def read_text_layer(pdf_path: str) -> list[str]:
     return pages
 
 
-# --- Vision extraction ---------------------------------------------------------
+# --- Reading: two passes with evidence (design 2026-10-14, part 1b) ------------
 #
-# One page per call rather than the whole document at once. A 20-page tender in
-# a single vision call risks the model summarising rather than transcribing, and
-# a truncated response loses the back half silently. One page at a time is
-# slower but each page's extraction is independently verifiable against its
-# image -- the same reason diagrams are approved one at a time in this system.
+# Pass 1, per page: for each client-fact field, the words the page uses,
+# verbatim, with no interpretation. Each quote is checked against that page's
+# text (its text layer, or for a scanned page the model's own transcription)
+# with the compliance matrix's quote-grounding test; a quote that is not there
+# is dropped and counted. A dense page is read in parts, so no text goes unread.
+#
+# Pass 2, per field: one call sees every grounded quote for that field across
+# the document and states the value, with the pages it rests on. Facts spread
+# over pages ("WIAM 5,000" on p.4, "50 privileged accounts" on p.7) are
+# combined here; the old per-page merge kept whichever single page said most.
+# A field with no grounded quote is "not found", never guessed.
+#
+# One page per call rather than the whole document at once: a 20-page tender in
+# a single vision call risks the model summarising rather than transcribing,
+# and a truncated response loses the back half silently.
 
-_PAGE_EXTRACT_PROMPT = """You are reading ONE PAGE of a client RFP or Statement
-of Work for an IAM (Identity and Access Management) proposal.
+# A page's text is sent in parts of at most this many characters (cut at line
+# breaks). It used to be cut at 6,000 and the rest never read (audit F11).
+PAGE_PART_CHARS = int(os.environ.get("SHILPI_RFP_PAGE_PART_CHARS", "6000"))
+# Pass-2 calls in flight at once.
+FIELD_CALLS_IN_FLIGHT = 6
+# A stated value longer than this is a runaway answer: kept, cut and marked.
+MAX_FIELD_CHARS = 2000
 
-Transcribe what this page states. Do not summarise, do not infer anything not
-written on the page, and do not carry over content from other pages.
+_PAGE_EXTRACT_PROMPT = """You are reading ONE PAGE (or one part of a page) of a
+client RFP or Statement of Work for an IAM (Identity and Access Management)
+proposal.
 
-Return, for THIS PAGE ONLY:
-- field_values: any of these that this page states outright. Use the id
-  (left of the colon) exactly as field_id; the text after it says what the
-  field means:
+Copy, do not interpret. Return, for THIS PAGE ONLY:
+- quotes: for each field below that this page states, the words exactly as
+  written: the whole sentence, list item or table row, not a summary and not a
+  value you worked out. A field may have several quotes. Use the id (left of
+  the colon) exactly as field_id; the text after it says what the field means:
 {field_ids}
+- transcription: when you are given an IMAGE, every line of text on it,
+  verbatim, in reading order. When you are given text, leave it empty.
 - requirements: numbered requirement lines (e.g. "AM-04", "ILM-01") with their
   reference and full text
 - eligibility_gates: mandatory bidder qualifications, ONLY if this page is
@@ -625,9 +652,18 @@ Return, for THIS PAGE ONLY:
 - structure_headings: numbered/bulleted section names, ONLY if this page
   explicitly mandates the proposal's response structure
 
-Leave anything not on THIS page empty. A wrong answer is worse than an empty
-one: this system will show every value to a human with this page number
-attached, so a value must be traceable to what is actually written here."""
+Leave anything not on THIS page empty. Every quote is checked against the
+page's text and dropped if it is not there."""
+
+_COMBINE_PROMPT = """You are given every verbatim quote a client tender makes
+about ONE discovery field, each with its page. State the field's value.
+
+Field: {field}
+
+- Use only what the quotes state. Keep every distinct fact (for example a user
+  count for each population), and keep figures exactly as written.
+- pages: the page numbers of the quotes your value rests on.
+- If the quotes do not actually state this field, return an empty value."""
 
 
 def _field_list(field_ids: list[str]) -> str:
@@ -639,32 +675,33 @@ def _field_list(field_ids: list[str]) -> str:
     return "\n".join(f"  {fid}: {labels.get(fid, fid)}" for fid in field_ids)
 
 
-class _FieldValue(BaseModel):
-    """One discovery field the page states. STRICT schema, not a free dict --
-    a loosely-typed dict[str, str] gave Instructor nothing to enforce, so the
-    model was free to key it however it liked ("client name" vs "client_name"),
-    and every value with a key not EXACTLY matching field_ids was silently
-    dropped. Both live runs on ESNAD came back with 0 fields despite the model
-    genuinely reading the pages (8 gates extracted correctly, which use free
-    text and were unaffected)."""
+class _FieldQuote(BaseModel):
+    """One verbatim quote for one discovery field. A strict schema, not a free
+    dict: a loose dict[str, str] let the model key values however it liked and
+    every key not exactly a field id was dropped (two ESNAD runs, 0 fields)."""
     field_id: str = PField(description="must be one of the provided field ids, exactly")
-    value: str
+    quote: str = PField(description="the words exactly as written on the page")
 
 
 class _RequirementItem(BaseModel):
-    """A numbered requirement line. Same fix as _FieldValue: list[dict] let the
-    model return keys as "ref"/"Ref"/"id"/"reference" interchangeably, and the
-    merge code only checked two of those spellings. A strict schema removes the
-    ambiguity instead of guessing at it after the fact."""
+    """A numbered requirement line. A strict schema for the same reason: a
+    list[dict] let the model return "ref"/"Ref"/"id"/"reference" at will."""
     ref: str = PField(description="the requirement reference, e.g. AM-04, ILM-01")
     text: str
 
 
 class _PageExtraction(BaseModel):
-    field_values: list[_FieldValue] = []
+    quotes: list[_FieldQuote] = []
+    transcription: str = ""
     requirements: list[_RequirementItem] = []
     eligibility_gates: list[str] = []
     structure_headings: list[str] = []
+
+
+class _FieldReading(BaseModel):
+    """Pass 2: one field's value from its quotes, and the pages it rests on."""
+    value: str = ""
+    pages: list[int] = []
 
 
 async def extract_page_vision(image_path: str, field_ids: list[str],
@@ -693,19 +730,90 @@ async def extract_page_vision(image_path: str, field_ids: list[str],
         return _PageExtraction()
 
 
+async def _extract_page_text(text: str, field_ids: list[str],
+                             structured_fn) -> "_PageExtraction":
+    """The text-layer counterpart to extract_page_vision, for one page part."""
+    if not (text or "").strip():
+        return _PageExtraction()
+    try:
+        messages = [
+            {"role": "system", "content": _PAGE_EXTRACT_PROMPT.format(
+                field_ids=_field_list(field_ids))},
+            {"role": "user", "content": text},
+        ]
+        return await structured_fn(_PageExtraction, messages)
+    except Exception as e:  # noqa: BLE001
+        log.warning("text extraction failed: %s", e)
+        return _PageExtraction()
+
+
+def page_parts(text: str, limit: int = PAGE_PART_CHARS) -> list[str]:
+    """The page in parts of at most `limit` characters, cut at line breaks (a
+    single longer line is cut where it must). Every character is in a part."""
+    parts, cur = [], ""
+    for line in (text or "").splitlines(keepends=True):
+        while len(line) > limit:
+            if cur:
+                parts.append(cur)
+                cur = ""
+            parts.append(line[:limit])
+            line = line[limit:]
+        if len(cur) + len(line) > limit:
+            parts.append(cur)
+            cur = ""
+        cur += line
+    if cur.strip():
+        parts.append(cur)
+    return parts
+
+
+def _match_field(fid: str, field_ids: list[str]) -> Optional[str]:
+    """The field id the model meant, tolerating case and spacing ("Client
+    Name"); an id that is not one of field_ids is dropped, not guessed."""
+    fid = (fid or "").strip()
+    if fid in field_ids:
+        return fid
+    canon = fid.lower().replace(" ", "_").replace("-", "_")
+    return next((f for f in field_ids if f.lower() == canon), None)
+
+
+async def _state_field(fid: str, quotes: list[tuple[int, str]], structured_fn,
+                       gate: asyncio.Semaphore) -> Optional[ExtractedField]:
+    """Pass 2 for one field. None when the quotes turn out not to state it."""
+    import intake_template
+    label = next((q["label"] for q in intake_template.iter_questions(None)
+                  if q["id"] == fid), fid)
+    quote_pages = sorted({p for p, _ in quotes})
+    evidence = [{"page": p, "text": q} for p, q in quotes]
+    messages = [
+        {"role": "system", "content": _COMBINE_PROMPT.format(field=f"{fid}: {label}")},
+        {"role": "user", "content": "\n".join(f"(p.{p}) {q}" for p, q in quotes)},
+    ]
+    try:
+        async with gate:
+            res = await structured_fn(_FieldReading, messages)
+        value = " ".join((res.value or "").split())
+        pages = sorted({p for p in (res.pages or []) if p in quote_pages}) or quote_pages
+    except Exception as e:  # noqa: BLE001
+        # The quotes are grounded; without the call they still are the
+        # client's own words, so they stand as the value, never a guess.
+        log.warning("stating %s from its quotes failed (%s); using the quotes", fid, e)
+        value, pages = "; ".join(q for _, q in quotes), quote_pages
+    if not value or value.lower() in _SKIP_VALUES or value.lower() == "not found":
+        return None
+    if len(value) > MAX_FIELD_CHARS:
+        value = value[:MAX_FIELD_CHARS - 1].rstrip() + "…"
+    return ExtractedField(fid, value, pages[0], pages=pages, quotes=evidence)
+
+
+_SKIP_VALUES = {"", "skip", "n/a", "na", "none", "unknown"}
+
+
 async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
                       structured_fn, tmp_dir: str) -> RfpExtraction:
-    """The whole pipeline: text-layer check -> rasterise if needed -> per-page
-    extraction -> merge.
-
-    The FULLER value wins per field, not the first: a tender states a fact
-    briefly then qualifies it two pages later ("SaaS" becomes "SaaS hosted
-    within the Kingdom of Saudi Arabia, in full compliance with the data
-    residency requirements"), and the qualification is what a proposal should
-    be written from. Every requirement and gate across all pages is kept --
-    under-collecting those costs a mark in evaluation, unlike a superseded
-    field value.
-    """
+    """Text-layer check, rasterise where needed, pass 1 per page (part), pass
+    2 per field. Every requirement and gate across all pages is kept: under-
+    collecting those costs a mark in evaluation."""
     import intake_template
     # Only client facts are read from a client document (design 1a): even a
     # caller that asks for proposal_type or the diagram list does not get them.
@@ -715,12 +823,6 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
 
     ex = RfpExtraction(source_name=source_name, pages_read=len(text_pages) or 0,
                        pages_total=len(text_pages) or 0, used_vision=use_vision)
-
-    if not use_vision:
-        # A usable text layer: mandated structure and gates can be read
-        # directly; field values still need per-page interpretation, so the
-        # SAME per-page loop runs, just against text instead of images.
-        pass
 
     # Pages to read as images: all of them when the document has no text layer;
     # otherwise only the pages that have none of their own.
@@ -739,57 +841,21 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
             log.warning("RFP %s: read %d of %d pages (SHILPI_MAX_RFP_PAGES=%d)",
                         source_name, ex.pages_read, ex.pages_total, MAX_RFP_PAGES)
 
-    # Field id -> best ExtractedField seen so far, so a later, FULLER page can
-    # replace an earlier, thinner one for the same field. Found sitting
-    # unused in an orphaned module (rfp_vision.py, written but never wired
-    # in) during Sprint 1 correctness work: the version that shipped kept
-    # whichever page mentioned a field FIRST and discarded every later
-    # mention, including the refinements that actually matter -- ESNAD's own
-    # SOW states "SaaS" on page 5 and "SaaS hosted within the Kingdom of
-    # Saudi Arabia, in full compliance with the data residency requirements"
-    # on page 12; the live extraction kept "SaaS" and threw the qualification
-    # away on every field this happened to, not just that one.
-    #
-    # Longest-value-wins is a proxy for "fuller/more specific", not a
-    # guarantee -- a page that pads a value with boilerplate would still win
-    # over a terser but more precise later page. Good enough for prose
-    # extracted from a tender, where later mentions are almost always
-    # elaborations rather than unrelated restatements.
-    best_fields: dict[str, ExtractedField] = {}
+    quotes: dict[str, list[tuple[int, str]]] = {}
     seen_requirements: set[tuple[str, str]] = set()
-    _SKIP_VALUES = {"", "skip", "n/a", "na", "none", "unknown"}
 
-    for i in range(ex.pages_read):
-        page_no = i + 1
-        if use_vision:
-            page_ex = await extract_page_vision(images[i], field_ids, structured_fn)
-        elif i in thin and i < len(images):
-            page_ex = await extract_page_vision(images[i], field_ids, structured_fn)
-            ex.vision_pages.append(page_no)
-        elif i in thin:
-            # No text and no picture of it (rasterising failed, or the page is
-            # past the page cap). It may be blank; that cannot be told from
-            # here, so it is reported rather than assumed.
-            ex.unread_pages.append(page_no)
-            continue
-        else:
-            page_ex = await _extract_page_text(text_pages[i], field_ids, structured_fn)
-
-        for fv in (page_ex.field_values or []):
-            fid = (fv.field_id or "").strip()
-            val = (fv.value or "").strip()
-            # Tolerate the model normalising a field id slightly (a stray
-            # space, different case) rather than dropping it outright -- the
-            # STRICT schema fixes the structural ambiguity; this handles the
-            # residual case variance schemas don't catch.
-            canon = fid.strip().lower().replace(" ", "_").replace("-", "_")
-            matched = fid if fid in field_ids else next(
-                (f for f in field_ids if f.lower() == canon), None)
-            if not matched or val.lower() in _SKIP_VALUES:
+    def take(page_ex, grounding_text: str, page_no: int) -> None:
+        for fq in (getattr(page_ex, "quotes", None) or []):
+            fid = _match_field(fq.field_id, field_ids)
+            quote = " ".join((fq.quote or "").split())
+            if not fid or not quote:
                 continue
-            current = best_fields.get(matched)
-            if current is None or len(val) > len(current.value):
-                best_fields[matched] = ExtractedField(matched, val[:2000], page_no)
+            if not document_qa.quote_is_grounded(quote, grounding_text,
+                                                 numbers_must_match=True):
+                ex.dropped_quotes += 1
+                continue
+            if (page_no, quote) not in quotes.setdefault(fid, []):
+                quotes[fid].append((page_no, quote))
         for r in (page_ex.requirements or []):
             ref, text = (r.ref or "").strip(), (r.text or "").strip()
             if ref and text:
@@ -809,29 +875,32 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
         if page_ex.structure_headings and not ex.mandated_structure:
             ex.mandated_structure = [str(h)[:80] for h in page_ex.structure_headings]
 
-    ex.fields = sorted(best_fields.values(), key=lambda f: (f.page or 0, f.field_id))
+    for i in range(ex.pages_read):
+        page_no = i + 1
+        if use_vision or (i in thin and i < len(images)):
+            page_ex = await extract_page_vision(images[i], field_ids, structured_fn)
+            if not use_vision:
+                ex.vision_pages.append(page_no)
+            take(page_ex, getattr(page_ex, "transcription", "") or "", page_no)
+        elif i in thin:
+            # No text and no picture of it (rasterising failed, or the page is
+            # past the page cap). It may be blank; that cannot be told from
+            # here, so it is reported rather than assumed.
+            ex.unread_pages.append(page_no)
+        else:
+            for part in page_parts(text_pages[i]):
+                take(await _extract_page_text(part, field_ids, structured_fn), part, page_no)
 
-    log.info("RFP extraction: %s, %d pages, %d fields, %d requirements, %d gates",
-             source_name, ex.pages_read, len(ex.fields), len(ex.requirements),
-             len(ex.gates))
+    gate = asyncio.Semaphore(FIELD_CALLS_IN_FLIGHT)
+    stated = await asyncio.gather(*(_state_field(fid, qs, structured_fn, gate)
+                                    for fid, qs in quotes.items()))
+    ex.fields = sorted((f for f in stated if f),
+                       key=lambda f: (f.page or 0, f.field_id))
+
+    log.info("RFP extraction: %s, %d pages, %d fields, %d requirements, %d gates, "
+             "%d quotes dropped as not on their page", source_name, ex.pages_read,
+             len(ex.fields), len(ex.requirements), len(ex.gates), ex.dropped_quotes)
     return ex
-
-
-async def _extract_page_text(text: str, field_ids: list[str],
-                             structured_fn) -> "_PageExtraction":
-    """The text-layer counterpart to extract_page_vision, for a readable PDF."""
-    if not (text or "").strip():
-        return _PageExtraction()
-    try:
-        messages = [
-            {"role": "system", "content": _PAGE_EXTRACT_PROMPT.format(
-                field_ids=_field_list(field_ids))},
-            {"role": "user", "content": text[:6000]},
-        ]
-        return await structured_fn(_PageExtraction, messages)
-    except Exception as e:  # noqa: BLE001
-        log.warning("text extraction failed: %s", e)
-        return _PageExtraction()
 
 
 def requirement_coverage(requirements: list[Requirement],

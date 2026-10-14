@@ -486,3 +486,39 @@ def qa_report(sections: list[dict]) -> dict:
         "issues": total_issues,
         "degenerate_sections": degenerate_sections,
     }
+
+
+# --- Quote grounding -----------------------------------------------------------
+# One test, used by the compliance matrix (app.validate_coverage) and the RFP
+# reader (rfp_intake): is a quote really drawn from the text it cites?
+
+def norm_for_quote(s: str) -> str:
+    """Lowercase, alphanumerics and single spaces."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", (s or "").lower())).strip()
+
+
+def significant_tokens(s: str) -> set:
+    """Content-bearing tokens (4+ characters) of a string."""
+    return {w for w in norm_for_quote(s).split() if len(w) >= 4}
+
+
+def _numbers(s: str) -> set:
+    return {n.replace(",", "") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", s or "")}
+
+
+def quote_is_grounded(quote: str, text: str, numbers_must_match: bool = False) -> bool:
+    """The quote appears in the text once normalised, or 60% or more of its
+    significant tokens do (a faithful paraphrase passes, an invention does
+    not). Quotes under 12 characters prove nothing and fail. With
+    numbers_must_match, every number in the quote must also be in the text:
+    the token test ignores short tokens, so "9,000 users" would otherwise pass
+    against "5,000 users"."""
+    q = norm_for_quote(quote)
+    sig = significant_tokens(quote)
+    if len(q) < 12 or not sig:
+        return False
+    if numbers_must_match and not _numbers(quote) <= _numbers(text):
+        return False
+    t = norm_for_quote(text)
+    return q in t or len(sig & set(t.split())) / len(sig) >= 0.6
+

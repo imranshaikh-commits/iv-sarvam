@@ -44,6 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # does NOT import app (it receives the brain helpers as parameters), so there
 # is no circular dependency.
 import document_engine
+import document_qa
 from document_engine import build_reference_book, generate_proposal
 
 # Sprint 5 Pass 1 — structured intake + persistence. Neither module imports app.
@@ -2685,16 +2686,6 @@ async def _classify_coverage_once(req: Requirement, chunks: list[dict],
     return validate_coverage(entry, chunks)
 
 
-def _norm_for_quote(s: str) -> str:
-    """Normalize for fuzzy quote-containment checks (lowercase, alnum+space, collapsed)."""
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", (s or "").lower())).strip()
-
-
-def _significant_tokens(s: str) -> set:
-    """Content-bearing tokens (len>=4) of a string, for overlap matching."""
-    return {w for w in _norm_for_quote(s).split() if len(w) >= 4}
-
-
 def _truncate_at_sentence(s: str, limit: int) -> str:
     """Belt-and-suspenders clamp: cut a string at the last sentence boundary
     <= limit chars (falling back to a hard cut). Guards against a degenerate
@@ -2724,15 +2715,7 @@ def validate_coverage(entry: CoverageEntry, chunks: list[dict]) -> CoverageEntry
         idx = (ref.evidence_id - 1) if isinstance(ref.evidence_id, int) else -1
         if not (0 <= idx < len(chunks)):
             continue
-        quote = _norm_for_quote(ref.quote)
-        if len(quote) < 12:
-            continue
-        sig = _significant_tokens(ref.quote)
-        if not sig:
-            continue
-        chunk_text = _norm_for_quote(chunks[idx].get("chunk_text", ""))
-        overlap = len(sig & set(chunk_text.split())) / len(sig)
-        if quote in chunk_text or overlap >= 0.6:
+        if document_qa.quote_is_grounded(ref.quote, chunks[idx].get("chunk_text", "")):
             valid.append(ref)
     entry.evidence_refs = valid
     if entry.status in ("covered", "partial") and any(r.stance == "contradicts" for r in valid):

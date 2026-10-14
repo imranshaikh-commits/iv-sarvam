@@ -491,6 +491,31 @@ def requirement_references(entries, sections: list[dict]) -> dict:
     return out
 
 
+def tag_references(sections: list[dict], allocation: dict) -> dict:
+    """requirement id -> 'Section > Subsection' from the drafter's tags. Where a
+    requirement is tagged in several places, the place it was allocated to
+    wins, then the first."""
+    out: dict[str, str] = {}
+    for sec in sections:
+        for tag in sec.get("requirement_tags") or []:
+            label = " > ".join(t for t in (sec.get("title"), tag.get("subsection")) if t)
+            rid = tag["id"]
+            if rid not in out or label == allocation.get(rid):
+                out[rid] = label
+    return out
+
+
+def matrix_references(entries, sections: list[dict], allocation: dict) -> dict:
+    """The matrix's Proposal Reference per requirement (design part 2): the
+    tag; for a requirement that was allocated but never tagged, none (To be
+    confirmed); keyword overlap only for one that was never allocated."""
+    tagged = tag_references(sections, allocation)
+    keyword = requirement_references(
+        [e for e in entries if getattr(e, "requirement_id", "") not in allocation], sections)
+    return {getattr(e, "requirement_id", ""): tagged.get(getattr(e, "requirement_id", ""))
+            or keyword.get(getattr(e, "requirement_id", "")) for e in entries}
+
+
 # What the client matrix may say (audit 2026-10-12, finding 1). The client never
 # sees the corpus grading ("Partial", "Missing"), but the document must not
 # assert more than is known either. Only a requirement with full IV precedent
@@ -3509,7 +3534,7 @@ async def generate_proposal(
             compliance_unassessed = int(getattr(matrix, "unassessed", 0) or 0)
             compliance_text_cut = bool(getattr(matrix, "text_cut", False))
             if getattr(matrix, "entries", None):
-                _refs = requirement_references(matrix.entries, list(drafted))
+                _refs = matrix_references(matrix.entries, list(drafted), allocation)
                 compliance_markdown, compliance_to_confirm = render_client_matrix(
                     matrix.entries, _refs)
                 compliance_breakdown = matrix_breakdown(matrix.entries, _refs)
@@ -3602,6 +3627,7 @@ async def generate_proposal(
         "draft_markdown": draft_markdown,
         "filename": filename,
         "included_compliance_matrix": compliance_markdown is not None,
+        "compliance_markdown": compliance_markdown,
         "compliance_to_confirm": compliance_to_confirm,
         "compliance_unassessed": compliance_unassessed,
         "compliance_text_cut": compliance_text_cut,

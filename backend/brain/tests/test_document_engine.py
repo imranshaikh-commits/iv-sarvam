@@ -3118,3 +3118,58 @@ def test_tags_are_recorded_with_their_paragraph_and_never_reach_the_text():
     assert out["requirement_tags"] == [{
         "id": "AM-04", "subsection": first,
         "paragraph": "Conditional access evaluates location and device on every sign-in."}]
+
+
+def _matrix_fns(statuses=None):
+    class _M:
+        unassessed, text_cut = 0, False
+
+    async def run_matrix(client, rfp_text, extracted, top_k):
+        m = _M()
+        m.entries = [_E(r["id"], r["text"], (statuses or {}).get(r["id"], "covered"))
+                     for r in extracted]
+        return m
+    return {"run_compliance_matrix_fn": run_matrix, "render_matrix_markdown_fn": lambda m: "",
+            "include_compliance_matrix": True}
+
+
+def _scope_subsections():
+    import proposal_templates
+    spec = next(s for s in proposal_templates.get_template("implementation")
+                if s.id == "scope_understanding")
+    ctx = {"client_name": CLIENT_NAME, "iam_vendor": "SailPoint", "proposal_type": "implementation",
+           "rfp_text": ""}
+    return [t for t, _ in document_engine.section_facets(spec, ctx, 1)]
+
+
+def _matrix_row(markdown, rid):
+    return next(l for l in markdown.splitlines() if l.startswith(f"| {rid} |"))
+
+
+def test_the_matrix_reference_comes_from_the_tag():
+    first, second = _scope_subsections()[:2]
+
+    async def allocate(client, requirements, outline):
+        idx = {o["subsection"]: i for i, o in enumerate(outline)}
+        return {"AM-04": idx[first], "X-01": idx[second]}
+
+    def draft(prompt):
+        if "AM-04:" in prompt:
+            return "Location and device feed every access decision. [[AM-04]]"
+        return "Body."
+    result, _ = _run_allocated(allocate, draft=draft, **_matrix_fns())
+    matrix = result["compliance_markdown"]
+    assert f"| Our Understanding of Scope > {first} |" in _matrix_row(matrix, "AM-04")
+    assert "| Compliant |" in _matrix_row(matrix, "AM-04")
+    # Allocated but never tagged: To be confirmed, no keyword guess, on the bid list.
+    assert _matrix_row(matrix, "X-01").endswith("| To be confirmed | - |")
+    assert result["compliance_to_confirm"] == ["X-01"]
+
+
+def test_without_an_allocation_the_keyword_match_still_applies():
+    async def failing(client, requirements, outline):
+        raise RuntimeError("model down")
+    result, _ = _run_allocated(
+        failing, draft=lambda p: "Risk-based conditional access policies cover location and device.",
+        **_matrix_fns())
+    assert "| Our Understanding of Scope >" in _matrix_row(result["compliance_markdown"], "AM-04")

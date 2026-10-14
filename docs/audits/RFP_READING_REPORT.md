@@ -1,6 +1,6 @@
 # Report: reliable RFP reading and requirement-to-section matching
 
-Branch `rfp/v1-reading`, off `main` at `cbe0638`. Built against
+Branch `rfp/v1-reading`, rebased on `main` at `e15195b` (F28 follow-up included). Built against
 `DESIGN_RFP_READING_AND_MATRIX.md`, in the order its last section gives: 1a
 and 1c, then 1b and 1d, then 1e, then part 2. For review by the main session.
 2026-10-14.
@@ -55,15 +55,19 @@ it is `reading`.
    `travel`, `validity_period`, `support_terms`) stay client facts; the old
    list called them IV decisions but still extracted them. Only the four the
    design names are asked in the block.
-2. **The derived diagram rule.** Solution Architecture and Integration, then
-   Identity Lifecycle (IGA), Privileged Access Management (PAM), Identity
-   Governance (IGA), Authentication Journey (WIAM), Customer Journey (CIAM),
-   at most five. That ordering is what reproduces run 0930 for Ping + Saviynt
-   (read from the stored plan of the 2026-09-30 session); it also means a
-   four-domain deal never gets the WIAM and CIAM journeys. With no scope known
-   the plan stays one Solution Architecture diagram, as before. **The
-   interview no longer asks for diagram types**, so BTPN and Amlak through the
-   interview get the derived plan too; the plan step still edits it.
+2. **The derived diagram rule** (changed after review, `d938082`). Solution
+   Architecture and Integration, then Identity Lifecycle (IGA), Privileged
+   Access Management (PAM), Identity Governance (IGA), Authentication Journey
+   (WIAM), Customer Journey (CIAM), skipping any topic the proposed vendors'
+   kit already pictures (the document's own `_KIT_COVERS` rule, checked
+   against `kit_for` for the vendors, domains and deployment in scope), at
+   most five. ESNAD plans Solution Architecture, Integration, Authentication
+   Journey, Customer Journey. The planner reads the kit manifest; the document
+   checks the images it actually downloaded. Every covering image is in the
+   bucket today; if one failed to download at draft time, its topic would be
+   missing from both. With no scope known the plan stays one Solution
+   Architecture diagram. **The interview no longer asks for diagram types**,
+   so BTPN and Amlak get the derived plan too; the plan step still edits it.
 3. **Cost of reading.** Pass 2 is one call per field that has a grounded
    quote, six at a time; a full tender is likely 30-50 extra small calls on
    top of one call per page part. The stored reading means a file is paid for
@@ -71,8 +75,9 @@ it is `reading`.
 4. **A scanned page is checked against the model's own transcription.** The
    design allows it; it catches a quote the model did not also write into the
    transcription, not a transcription that is itself wrong. A long dense scan
-   whose transcription is cut by the output cap loses its later quotes, and
-   they are counted as dropped (`dropped_quotes`), not shown in chat yet.
+   whose transcription is cut by the output cap loses its later quotes; since
+   `36c0bc2` the review names the pages and fields of every dropped quote and
+   tells the consultant to check those pages.
 5. **Short facts.** The grounding test rejects quotes under 12 characters, so
    the prompt asks for the whole sentence or table row. A table cell holding
    only "6" must be quoted with its row label to count.
@@ -118,3 +123,16 @@ it is `reading`.
   critical fact right, more than 90% of the 56 rows with a reference a reader
   agrees with; set the similarity threshold from it), then BTPN or Amlak
   through the interview.
+
+## Draft test set (`docs/evals/rfp/`, not in git)
+
+Four of the five fixtures are drafted from the tenders themselves, each fact
+with its pages and the tender's words; Imran confirms them, and the main
+session checks ESNAD against IV's V3.0. **The C-DAC GeM bid is not on this
+machine** (only IV's C-DAC proposal is), so it has no fixture yet.
+
+The ESNAD SOW states one population: "10,000 users including 50 privileged
+accounts" (p.20). The workforce/customer split in the design note (5,000 /
+10,000 / 50, 6 applications) is IV's V3.0 from client conversations, not the
+SOW, so no reader can get it from this file; the fixture expects what the SOW
+says. Run 1's `user_count` matched the SOW.

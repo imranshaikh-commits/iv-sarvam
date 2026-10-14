@@ -2633,25 +2633,45 @@ def test_a_requirement_nobody_judged_is_never_printed_as_compliant():
 def test_a_long_answer_cannot_push_a_sections_other_facts_out_of_its_prompt():
     """F28: the facts block was built in a fixed order and cut at 3,500
     characters from the end, so one long answer early in the list removed
-    every fact after it, sizing included."""
+    every fact after it, sizing included. A section's own fields now come
+    first and are never shortened; only the general fields may be."""
     wanted = [k for k in document_engine._SECTION_DISCOVERY_FIELDS["proposed_solution"]
-              if k not in document_engine._EXCLUDED_DISCOVERY_FIELDS]
+              if k not in document_engine._EXCLUDED_DISCOVERY_FIELDS
+              and k not in document_engine._UNIVERSAL_DISCOVERY_FIELDS]
     first, last = wanted[0], wanted[-1]
+    long_answer = "A very long narrative about the client. " * 200
     answers = {k: f"value for {k}" for k in wanted}
     answers.update({"client_name": "Meridian Bank", "iam_vendor": "SailPoint",
-                    first: "A very long narrative about the client. " * 200,
+                    "industry": "Banking and financial services. " * 20,
+                    first: long_answer,
                     last: "LASTFACT 8 vCPU and 32 GB per node"})
     ctx = document_engine.discovery_context_for("proposed_solution", answers)
-    assert len(ctx) <= 3500
-    assert "LASTFACT 8 vCPU and 32 GB per node" in ctx          # the short fact survives
-    assert "Meridian Bank" in ctx and "SailPoint" in ctx        # so does who it is for
-    assert "A very long narrative" in ctx and "…" in ctx        # the long one is shortened, and shown as cut
+    assert " ".join(long_answer.split()) in ctx                 # the section's own field, whole
+    assert "LASTFACT 8 vCPU and 32 GB per node" in ctx
     for key in wanted[1:-1]:
         assert f"value for {key}" in ctx, key
+    assert "Meridian Bank" in ctx and "SailPoint" in ctx        # short general fields kept
+    industry = next(l for l in ctx.splitlines() if l.startswith("- Industry:"))
+    assert industry.endswith("…")                                # a long general one is cut
+    lines = ctx.splitlines()                                     # own fields come first
+    assert lines[0].startswith(f"- {document_engine._humanise_field(first)}:")
     # Nothing is shortened when everything fits.
     short = document_engine.discovery_context_for(
-        "proposed_solution", {**answers, first: "Short."})
-    assert "…" not in short
+        "proposed_solution", {**answers, first: "Short.", "industry": "Banking"})
+    assert "…" not in short and len(short) <= 3500
+
+
+def test_a_sections_own_field_longer_than_the_budget_still_reaches_it_whole():
+    """A cut scope or sizing answer is the silent-loss class: the drafter
+    writes from half an answer and nothing says so."""
+    sizing = "Production: three nodes of 8 vCPU / 32 GB; DR: two warm nodes. " * 100
+    assert len(sizing) > 3500
+    answers = {"hardware_sizing_inputs": sizing, "client_name": "Meridian Bank", "iam_vendor": "SailPoint"}
+    assert "hardware_sizing_inputs" in document_engine._SECTION_DISCOVERY_FIELDS["proposed_solution"]
+    ctx = document_engine.discovery_context_for("proposed_solution", answers)
+    assert " ".join(sizing.split()) in ctx
+    assert "…" not in ctx.splitlines()[0]
+    assert "Meridian Bank" in ctx and "SailPoint" in ctx        # who it is for, still there
 
 
 def test_names_and_country_do_not_count_as_a_briefed_section():

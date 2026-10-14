@@ -857,6 +857,11 @@ def section_fact_chars(section_id: str, answers: Optional[dict]) -> int:
     return sum(len(line) for line in _section_fact_lines(section_id, answers))
 
 
+# A general line ("- Client Name: ...") is never cut shorter than this, so who
+# the proposal is for survives a section whose own facts fill the block.
+_GENERAL_LINE_FLOOR = 80
+
+
 def discovery_context_for(section_id: str, answers: Optional[dict],
                           limit: int = 3500) -> str:
     """Render the discovery answers relevant to one section.
@@ -865,30 +870,34 @@ def discovery_context_for(section_id: str, answers: Optional[dict],
     unchanged for callers that have no intake data (the REST path).
 
     The block used to be cut at `limit` from the end, so one long answer early
-    in the list removed every fact after it, sizing included (audit F28). When
-    it is too long now, the LONGEST answers are shortened (and marked "…")
-    until it fits: every answered field keeps a line.
+    in the list removed every fact after it, sizing included (audit F28). Now
+    the section's own fields come first and are never shortened: a cut scope or
+    sizing answer is a silent loss. Only the general fields (who the proposal
+    is for) are shortened, longest first and marked "…", to fit what is left.
     """
     if not answers:
         return ""
-    lines = (_discovery_lines(_UNIVERSAL_DISCOVERY_FIELDS, answers)
-             + _section_fact_lines(section_id, answers))
-    if not lines:
+    own = _section_fact_lines(section_id, answers)
+    general = _discovery_lines(_UNIVERSAL_DISCOVERY_FIELDS, answers)
+    if not own and not general:
         return ""
-    budget = limit - (len(lines) - 1)            # the newlines between lines
-    if sum(len(line) for line in lines) > budget:
-        # The largest per-line length at which everything fits.
-        cap, remaining = 0, budget
-        for i, length in enumerate(sorted(len(line) for line in lines)):
-            share = remaining // (len(lines) - i)
+    # ponytail: own fields can take the block past `limit`; it is a safety net
+    # for the general lines, which keep at least _GENERAL_LINE_FLOOR characters.
+    budget = limit - sum(len(line) for line in own) - (len(own) + len(general) - 1)
+    if general and sum(len(line) for line in general) > budget:
+        # The largest per-line length at which every general line fits.
+        cap, remaining = 0, max(budget, 0)
+        for i, length in enumerate(sorted(len(line) for line in general)):
+            share = remaining // (len(general) - i)
             if length <= share:
                 remaining -= length
             else:
                 cap = share
                 break
-        lines = [line if len(line) <= cap else line[:max(cap - 1, 0)].rstrip() + "…"
-                 for line in lines]
-    return "\n".join(lines)
+        cap = max(cap, _GENERAL_LINE_FLOOR)
+        general = [line if len(line) <= cap else line[:cap - 1].rstrip() + "…"
+                   for line in general]
+    return "\n".join(own + general)
 
 
 def _draft_payload(model: str, system_prompt: str, user_prompt: str,

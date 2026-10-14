@@ -1,11 +1,11 @@
 # Phase 3 report: reading the tender and the evidence
 
-Branch `audit/phase-3`, stacked on `audit/phase-2`, which is rebased on `main`
-at `2148424` (phases 0 and 1 merged, the image-kit change). For review by
+Branch `audit/phase-3`, rebased on `main` at `ed014ed` (phases 0, 1 and 2
+merged; the ten case studies in `slide_facts.json`). For review by
 the main session against `ARCHITECT_DECISIONS.md`. 2026-10-14.
 
 Thirteen findings, eleven fix commits, plus one for the measurement script,
-plus two from the Run 1 review (item (c), below). Suite: **827 passed, 4
+plus three from the Run 1 review (item (c), below). Suite: **829 passed, 4
 skipped** (801 at the end of Phase 2). The four skips
 are the real-binary tests, which run in the brain image in CI.
 
@@ -34,8 +34,9 @@ were made realistic. One classification test gained the new required field.
 
 | Commit | Change | Test that fails without it |
 |---|---|---|
-| `7c13210` | **Relevant Engagements is a table built from facts**, with no model call: the three case studies from `slide_facts.json` (client described exactly as the deck gives it, products, engagement, scale, IV's role, outcomes, "Delivered"), then the won proposals from the reference book ("Selected (proposal won)", named only where IV already cites the client). `build_reference_book` is split into `reference_rows` (facts) and the prompt text, so the table and the drafter's list agree. If the corpus read fails, the table still carries the case studies. | `test_document_engine.py::test_relevant_engagements_is_a_table_of_facts_with_no_client_name_added`, `…::test_the_relevant_engagements_subsection_is_not_drafted_by_the_model`, `…::test_the_reference_book_carries_the_engagements_table_to_the_document` (caller side: `app.fetch_reference_book` to `generate_proposal` to the document). |
+| `7c13210` | **Relevant Engagements is a table built from facts**, with no model call: the case studies from `slide_facts.json` (client described exactly as the deck gives it, products, engagement, scale, IV's role, outcomes, "Delivered"), then the won proposals from the reference book ("Selected (proposal won)", named only where IV already cites the client). `build_reference_book` is split into `reference_rows` (facts) and the prompt text, so the table and the drafter's list agree. If the corpus read fails, the table still carries the case studies. | `test_document_engine.py::test_relevant_engagements_is_a_table_of_facts_with_no_client_name_added`, `…::test_the_relevant_engagements_subsection_is_not_drafted_by_the_model`, `…::test_the_reference_book_carries_the_engagements_table_to_the_document` (caller side: `app.fetch_reference_book` to `generate_proposal` to the document). |
 | `4c3b2eb` | **Why Ping Identity / Why Saviynt** get that vendor's `analyst_recognition` and `vendor_facts` as the only rankings and figures they may state, each with its date; "where an entry gives no year, give none" (Saviynt's KuppingerCole entry goes in without a year, and the note asking IV to confirm the year is not passed to the model). Any other vendor is told none are on record and to argue from fit. Only the "Why" subsections get the block. | `…::test_why_vendor_gets_the_only_rankings_and_figures_it_may_state` (fails on `7c13210`: the Gartner entry is not in the Why Ping prompt). |
+| `3b5683a` | **Only the proposed vendors' case studies.** `slide_facts.json` now has ten, each with a vendor; the table shows those whose vendor is proposed (whole words; `ping` also covers ForgeRock). `fetch_reference_book` returns the reference rows and `generate_proposal` builds the table per proposal, since the filter needs the deal's vendors. Nothing to show gives an empty table and the subsection falls back to its review marker. | `…::test_only_case_studies_for_the_proposed_vendors_are_shown`, `…::test_the_reference_book_carries_the_engagements_table_to_the_document` (a SailPoint-only deal shows the two SailPoint case studies and none of the others), `…::test_a_sailpoint_deal_shows_the_sailpoint_case_studies_even_without_the_corpus`. |
 
 "No ranking outside the file is offered" is tested on the prompt: each Why
 prompt holds only its own vendor's entries and the rule against any other. The
@@ -146,7 +147,7 @@ It must be run on a build that contains this branch.
 | Already fixed | 4 | done |
 | 0 | 13 | merged to `main` |
 | 1 | 11 | merged to `main` |
-| 2 | 11 | rebased on `main`, pushed; awaiting merge and the chat walk-through |
+| 2 | 11 | merged to `main`; awaiting the chat walk-through |
 | 3 | 13 + item (c) | pushed; awaiting review, merge, the attribution run and Run 2 |
 | 4 | 1 (F46) | main session and Imran |
 

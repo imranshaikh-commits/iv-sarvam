@@ -2650,3 +2650,67 @@ def test_continue_with_an_invalid_proposal_type_asks_for_it_with_the_choices(mon
     content = resp.json()["choices"][0]["message"]["content"]
     assert cs.decode_marker(content).mode == cs.MODE_RFP_REVIEW
     assert "**proposal_type**" in content and "implementation, mss, migration" in content
+
+
+def test_the_rfp_reading_is_stored_with_its_evidence(monkeypatch):
+    """Design 1d, caller side: what was read lands with its pages and quotes."""
+    import rfp_intake
+    saved = []
+
+    async def fake_create(*a, **kw):
+        return "sess-ev"
+
+    async def fake_extract(text):
+        return rfp_intake.RfpExtraction(
+            fields=[rfp_intake.ExtractedField("envs", "Dev, Test, Prod", 3, pages=[3],
+                                              quotes=[{"page": 3, "text": "Dev, Test and Prod."}])],
+            pages_read=5, source_name="SOW.pdf"), ""
+
+    async def fake_patch(client_, sid, partial):
+        saved.append(partial)
+        return {"id": sid}
+
+    monkeypatch.setattr(app.supabase_client, "create_intake_session", fake_create)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+    monkeypatch.setattr(app, "run_rfp_extraction", fake_extract)
+    client.post("/v1/chat/completions", json={"messages": [
+        {"role": "assistant", "content": "ok " + cs.encode_marker(cs.ChatState(mode=cs.MODE_ROUTER))},
+        {"role": "user", "content": "1b"}], "stream": False})
+    assert saved[0]["envs"] == "Dev, Test, Prod"
+    assert saved[0][rfp_intake.EVIDENCE_KEY]["envs"]["pages"] == [3]
+
+
+def test_a_correction_in_rfp_review_is_marked_as_the_consultants(monkeypatch):
+    import rfp_intake
+    saved = []
+
+    async def fake_resolve(bucket, text, ptype):
+        return {"envs": "Dev, UAT, Prod"}
+
+    async def fake_get(client_, sid):
+        return {"answers": {"envs": "Dev, Test, Prod", rfp_intake.CONSULTANT_KEY: ["app_count"]}}
+
+    async def fake_patch(client_, sid, partial):
+        saved.append(partial)
+        return {"id": sid}
+
+    monkeypatch.setattr(app, "resolve_bucket_answers", fake_resolve)
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+    resp = client.post("/v1/chat/completions", json={"messages": [
+        {"role": "assistant", "content": "ok " + cs.encode_marker(
+            cs.ChatState(mode=cs.MODE_RFP_REVIEW, session="sess-mark"))},
+        {"role": "user", "content": "envs: Dev, UAT, Prod"}], "stream": False})
+    reply = resp.json()["choices"][0]["message"]["content"]
+    assert "Dev, UAT, Prod" in reply and rfp_intake.CONSULTANT_KEY not in reply
+    assert saved[0]["envs"] == "Dev, UAT, Prod"
+    assert saved[0][rfp_intake.CONSULTANT_KEY] == ["app_count", "envs"]
+
+
+def test_internal_rfp_keys_stay_out_of_the_diagram_context():
+    import rfp_intake
+    ctx = app._answers_summary({"envs": "Dev, Prod",
+                                  rfp_intake.EVIDENCE_KEY: {"envs": {"pages": [3]}},
+                                  rfp_intake.CONSULTANT_KEY: ["envs"]})
+    assert "Dev, Prod" in ctx and rfp_intake.EVIDENCE_KEY not in ctx
+    assert rfp_intake.CONSULTANT_KEY not in ctx

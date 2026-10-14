@@ -1599,7 +1599,7 @@ def _answers_summary(answers: dict, limit: int = 12000) -> str:
     """
     parts = []
     for k, v in (answers or {}).items():
-        if k.startswith("_raw_") or v in (None, "", []):
+        if k.startswith("_raw_") or k in rfp_intake.INTERNAL_KEYS or v in (None, "", []):
             continue
         parts.append(f"{k}: {v}")
     return "\n".join(parts)[:limit]
@@ -3865,7 +3865,10 @@ async def chat_completions(request: Request):
                             # prefer it (see app.py's generate_proposal_from_chat
                             # and run_compliance_matrix), closes that gap
                             # without needing rfp_text to exist at all.
-                            to_persist = dict(ex.answers())
+                            # Each value with its pages and quotes (design
+                            # 1d); a fresh session has nothing the
+                            # consultant set yet.
+                            to_persist = rfp_intake.answers_to_store(ex, {})
                             if ex.requirements:
                                 to_persist["extracted_requirements"] = json.dumps([
                                     {"id": r.ref, "text": r.text,
@@ -4039,10 +4042,22 @@ async def chat_completions(request: Request):
             recorded = await resolve_bucket_answers(_all_questions_bucket(None), q, None)
             correction_saved = True
             if recorded and state.session:
+                # A fact the consultant corrects is theirs: a re-read of the
+                # tender never overwrites it (design 1d).
+                try:
+                    async with httpx.AsyncClient() as sclient:
+                        row = await supabase_client.get_intake_session(sclient, state.session)
+                    mine = set(((row or {}).get("answers") or {}).get(rfp_intake.CONSULTANT_KEY) or [])
+                except Exception as e:  # noqa: BLE001
+                    log.warning("reading consultant-set fields failed: %s", e)
+                    mine = set()
+                to_save = {**recorded,
+                           rfp_intake.CONSULTANT_KEY: sorted(mine | set(recorded))}
+
                 try:
                     async with httpx.AsyncClient() as sclient:
                         result = await supabase_client.patch_intake_answers(
-                            sclient, state.session, recorded)
+                            sclient, state.session, to_save)
                         correction_saved = result is not None
                 except Exception as e:  # noqa: BLE001
                     log.warning("RFP correction patch failed: %s", e)
@@ -4063,7 +4078,7 @@ async def chat_completions(request: Request):
                 try:
                     async with httpx.AsyncClient() as sclient:
                         result = await supabase_client.patch_intake_answers(
-                            sclient, state.session, recorded)
+                            sclient, state.session, to_save)
                         correction_saved = result is not None
                 except Exception as e:  # noqa: BLE001
                     log.warning("RFP correction patch retry failed: %s", e)

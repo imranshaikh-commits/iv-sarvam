@@ -861,3 +861,35 @@ def test_quotes_and_values_use_strict_schemas():
     assert set(R._FieldReading.model_fields) == {"value", "pages"}
     assert R._match_field("Client Name", ["client_name"]) == "client_name"
     assert R._match_field("not_a_real_field", ["client_name"]) is None   # dropped, not guessed
+
+
+# --- Design 1d: one-screen confirmation ---------------------------------------
+
+def test_the_review_shows_the_critical_facts_first_with_pages_and_names_the_missing():
+    ex = R.RfpExtraction(
+        fields=[R.ExtractedField("industry", "Mining", 2, pages=[2]),
+                R.ExtractedField("population_by_domain", "WIAM 5,000; CIAM 10,000; privileged 50",
+                                 4, pages=[4, 7]),
+                R.ExtractedField("deployment_model", "SaaS hosted in KSA", 5, pages=[5, 12])],
+        mandated_structure=["Executive Summary", "Technical Approach", "Pricing"],
+        pages_read=20, pages_total=20, source_name="SOW.pdf")
+    text = R.describe_extraction(ex, 96)
+    critical = text[text.index("Critical facts"):]
+    assert "WIAM 5,000; CIAM 10,000; privileged 50" in critical and "p.4, 7" in critical
+    assert "SaaS hosted in KSA" in critical and "p.5, 12" in critical
+    for label, _fid in R.CRITICAL_FACTS:
+        assert label in critical, label
+    assert critical.count("**missing**") == len(R.CRITICAL_FACTS) - 2
+    assert text.index("Critical facts") < text.index("Executive Summary") < text.index("Mining")
+
+
+def test_a_reread_never_overwrites_what_the_consultant_corrected():
+    ex = R.RfpExtraction(fields=[
+        R.ExtractedField("envs", "Dev, Test, Prod", 3, pages=[3],
+                         quotes=[{"page": 3, "text": "Environments: Dev, Test, Prod."}]),
+        R.ExtractedField("app_count", "6", 4, pages=[4],
+                         quotes=[{"page": 4, "text": "Six applications are in scope."}])])
+    out = R.answers_to_store(ex, {"envs": "Dev, UAT, Prod", R.CONSULTANT_KEY: ["envs"]})
+    assert "envs" not in out and out["app_count"] == "6"
+    assert out[R.EVIDENCE_KEY] == {"app_count": {
+        "pages": [4], "quotes": [{"page": 4, "text": "Six applications are in scope."}]}}

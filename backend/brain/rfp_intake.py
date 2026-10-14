@@ -474,6 +474,41 @@ def describe_decisions(answers: dict) -> str:
     return "\n".join(lines)
 
 
+# The facts the consultant confirms before the architecture step (design 1d),
+# shown first with their pages; a missing one is listed as missing.
+CRITICAL_FACTS = (
+    ("Populations", "population_by_domain"),
+    ("Total users", "user_count"),
+    ("Environments", "envs"),
+    ("Applications in scope", "app_count"),
+    ("Deployment model (SaaS / self-hosted)", "deployment_model"),
+    ("Key integrations", "target_integrations"),
+    ("Out of scope", "out_of_scope"),
+)
+# Session answer keys this module owns. Neither is a discovery answer.
+EVIDENCE_KEY = "_rfp_evidence"        # {field: {"pages": [...], "quotes": [...]}}
+CONSULTANT_KEY = "_consultant_fields"  # fields the consultant set: never re-read
+INTERNAL_KEYS = frozenset({EVIDENCE_KEY, CONSULTANT_KEY})
+
+
+def answers_to_store(ex: RfpExtraction, current: dict) -> dict:
+    """What a reading writes to a session: each value with its evidence, never
+    over a field the consultant set themselves."""
+    mine = set((current or {}).get(CONSULTANT_KEY) or [])
+    fields = [f for f in ex.fields if f.value and f.field_id not in mine]
+    out: dict = {f.field_id: f.value for f in fields}
+    if fields:
+        out[EVIDENCE_KEY] = {**((current or {}).get(EVIDENCE_KEY) or {}),
+                             **{f.field_id: {"pages": f.pages or ([f.page] if f.page else []),
+                                             "quotes": f.quotes} for f in fields}}
+    return out
+
+
+def _pages(f: ExtractedField) -> str:
+    pages = f.pages or ([f.page] if f.page else [])
+    return f" _(p.{', '.join(str(p) for p in pages)})_" if pages else ""
+
+
 def describe_extraction(ex: RfpExtraction, total_fields: int) -> str:
     """What was read, from where, and what still needs a person.
 
@@ -515,6 +550,14 @@ def describe_extraction(ex: RfpExtraction, total_fields: int) -> str:
         + (f", **{len(ex.gates)}** eligibility conditions." if ex.gates else "."),
         "",
     ]
+    by_id = {f.field_id: f for f in ex.fields}
+    lines += ["**Critical facts** — check these against the tender before the "
+              "architecture step; one reply corrects any of them:", ""]
+    for label, fid in CRITICAL_FACTS:
+        f = by_id.get(fid)
+        lines.append(f"  - **{label}** (`{fid}`): " + (
+            f"{f.value}{_pages(f)}" if f else "**missing** — not found in the tender"))
+    lines.append("")
     if ex.mandated_structure:
         # Said honestly: the structure is not stored or used by drafting. This
         # used to promise "I will follow it instead of IV's house template".
@@ -523,11 +566,14 @@ def describe_extraction(ex: RfpExtraction, total_fields: int) -> str:
         lines += [f"  {i}. {h}" for i, h in enumerate(ex.mandated_structure, start=1)]
         lines += ["", "I draft in IV's own structure, not this one. Reorder the "
                       "draft to match the list above before it is submitted.", ""]
-    for f in ex.fields[:40]:
-        page = f" _(p.{f.page})_" if f.page else ""
-        lines.append(f"  - **{f.field_id}** — {f.value[:110]}{page}")
-    if got > 40:
-        lines.append(f"  - _…and {got - 40} more_")
+    critical = {fid for _, fid in CRITICAL_FACTS}
+    rest = [f for f in ex.fields if f.field_id not in critical]
+    if rest:
+        lines += ["Also read:", ""]
+    for f in rest[:40]:
+        lines.append(f"  - **{f.field_id}** — {f.value[:110]}{_pages(f)}")
+    if len(rest) > 40:
+        lines.append(f"  - _…and {len(rest) - 40} more_")
 
     decisions = describe_decisions(ex.answers())
     if decisions:

@@ -3034,7 +3034,9 @@ def test_requirements_are_allocated_before_drafting_to_what_will_be_drafted():
     assert [r["id"] for r in seen["reqs"]] == ["AM-04", "X-01"]
     drafted = re.findall(r"(?m)^### (.+)$", result["draft_markdown"])
     outline_subs = [o["subsection"] for o in seen["outline"] if o["section_id"] == "scope_understanding"]
-    assert outline_subs == drafted                      # exactly the subsections that get drafted
+    # Exactly the subsections that get drafted (X-01, placed nowhere, adds
+    # Additional Requirements after the allocation).
+    assert outline_subs + ["Additional Requirements"] == drafted
     first = next(o for o in seen["outline"] if o["subsection"])
     assert result["requirement_allocation"] == {
         "AM-04": f"{first['section']} > {first['subsection']}", "X-01": "not_in_template"}
@@ -3216,3 +3218,35 @@ def test_with_no_threshold_set_the_similarity_is_measured_and_nothing_is_rejecte
     result, first = _tagged_allocation_run(monkeypatch, None, "Our invoices are issued monthly.")
     assert "AM-04" in result["requirement_tag_similarity"]
     assert f"> {first} |" in _matrix_row(result["compliance_markdown"], "AM-04")
+
+
+def test_requirements_no_section_covers_are_answered_under_additional_requirements():
+    seen = {}
+
+    async def allocate(client, requirements, outline):
+        seen["outline"] = [o["subsection"] for o in outline]
+        first = next(i for i, o in enumerate(outline) if o["subsection"])
+        return {"AM-04": first, "X-01": None}
+
+    def draft(prompt):
+        if '"Additional Requirements"' in prompt:
+            assert "X-01: The bidder shall place the source code in escrow" in prompt
+            assert "AM-04" not in prompt
+            return "IV will place the source code with an escrow agent at contract signature. [[X-01]]"
+        return "Body. [[AM-04]]" if "AM-04:" in prompt else "Body."
+    result, _ = _run_allocated(allocate, draft=draft, **_matrix_fns())
+    assert "Additional Requirements" not in seen["outline"]       # not a place to allocate to
+    assert "### Additional Requirements" in result["draft_markdown"]
+    assert result["draft_markdown"].index("### Additional Requirements") > \
+        result["draft_markdown"].index("### " + _scope_subsections()[-1])
+    assert _matrix_row(result["compliance_markdown"], "X-01").endswith(
+        "| Our Understanding of Scope > Additional Requirements |")
+    assert "[[" not in result["draft_markdown"]
+
+
+def test_with_every_requirement_placed_there_is_no_additional_requirements_subsection():
+    async def allocate(client, requirements, outline):
+        first = next(i for i, o in enumerate(outline) if o["subsection"])
+        return {"AM-04": first, "X-01": first}
+    result, _ = _run_allocated(allocate, **_matrix_fns())
+    assert "Additional Requirements" not in result["draft_markdown"]

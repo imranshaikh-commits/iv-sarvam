@@ -1749,6 +1749,14 @@ def _all_requirement_ids(context: dict) -> set:
             | {r["id"] for r in context.get("additional_requirements") or []})
 
 
+ADDITIONAL_REQUIREMENTS_SECTION = "scope_understanding"
+ADDITIONAL_REQUIREMENTS_TITLE = "Additional Requirements"
+_ADDITIONAL_FACET = ("a brief answer to each client requirement listed below, which no other "
+                     "part of this proposal covers: one or two sentences each on how IV will "
+                     "meet it, or what must be confirmed with the client. Do not restate the "
+                     "requirement.")
+
+
 def section_facets(section_spec: SectionSpec, context: dict,
                    subsections: int) -> list[tuple[str, str]]:
     """The (title, facet) subsections draft_section drafts for this section, in
@@ -1773,6 +1781,11 @@ def section_facets(section_spec: SectionSpec, context: dict,
     else:
         n_sub = max(1, min(int(subsections), len(SUBSECTION_FACETS)))
         facets = SUBSECTION_FACETS[:n_sub] if n_sub > 1 else []
+    # Requirements no section covers are answered here, briefly, so none is
+    # silently unaddressed (design part 2, step 5). Never an allocation target:
+    # it exists only once the allocation has put something in it.
+    if section_spec.id == ADDITIONAL_REQUIREMENTS_SECTION and context.get("additional_requirements"):
+        facets = list(facets) + [(ADDITIONAL_REQUIREMENTS_TITLE, _ADDITIONAL_FACET)]
     return facets
 
 
@@ -3528,6 +3541,9 @@ async def generate_proposal(
                 else:
                     additional.append(r)
                     allocation[r["id"]] = "not_in_template"
+            if additional:
+                allocated.setdefault(ADDITIONAL_REQUIREMENTS_SECTION, {})[
+                    ADDITIONAL_REQUIREMENTS_TITLE] = additional
             context["allocated_requirements"] = allocated
             context["additional_requirements"] = additional
 

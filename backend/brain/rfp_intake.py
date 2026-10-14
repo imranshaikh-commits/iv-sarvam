@@ -49,7 +49,7 @@ log = logging.getLogger("shilpi-brain.rfp")
 # The version of what reading a tender produces. A stored reading is reused only
 # for the same file AND this version (design 1c): change it whenever the reader
 # would read the same file differently.
-EXTRACTOR_VERSION = "2026-10-14.2"  # .2: two-pass reading (1b)
+EXTRACTOR_VERSION = "2026-10-14.3"  # .2: two-pass reading (1b); .3: dropped quotes keep their pages
 
 # Below this many characters per page, the PDF has no usable text layer and must
 # be read visually. The ESNAD SOW yielded 468 characters across 20 pages -- all
@@ -277,8 +277,9 @@ class RfpExtraction:
     # all. An unread page is reported, never passed over.
     vision_pages: list[int] = field(default_factory=list)
     unread_pages: list[int] = field(default_factory=list)
-    # Quotes the model offered that were not on the page it named: dropped.
-    dropped_quotes: int = 0
+    # Quotes the model offered that were not on the page it named: dropped,
+    # never used; the review names their pages ({"page", "field_id"}).
+    dropped_quotes: list[dict] = field(default_factory=list)
 
     def answers(self) -> dict[str, str]:
         """The extraction as a discovery answer dict."""
@@ -558,6 +559,13 @@ def describe_extraction(ex: RfpExtraction, total_fields: int) -> str:
         lines.append(f"  - **{label}** (`{fid}`): " + (
             f"{f.value}{_pages(f)}" if f else "**missing** — not found in the tender"))
     lines.append("")
+    if ex.dropped_quotes:
+        pages = sorted({d["page"] for d in ex.dropped_quotes})
+        fields = sorted({d["field_id"] for d in ex.dropped_quotes})
+        lines += [f"**{len(ex.dropped_quotes)} quote(s) the reader offered were not found on "
+                  f"p. {', '.join(str(p) for p in pages)}**, so they were not used "
+                  f"(for {', '.join(f'`{f}`' for f in fields)}). Check those pages: a fact "
+                  f"stated there may be missing or incomplete above.", ""]
     if ex.mandated_structure:
         # Said honestly: the structure is not stored or used by drafting. This
         # used to promise "I will follow it instead of IV's house template".
@@ -898,7 +906,7 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
                 continue
             if not document_qa.quote_is_grounded(quote, grounding_text,
                                                  numbers_must_match=True):
-                ex.dropped_quotes += 1
+                ex.dropped_quotes.append({"page": page_no, "field_id": fid})
                 continue
             if (page_no, quote) not in quotes.setdefault(fid, []):
                 quotes[fid].append((page_no, quote))
@@ -945,7 +953,7 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
 
     log.info("RFP extraction: %s, %d pages, %d fields, %d requirements, %d gates, "
              "%d quotes dropped as not on their page", source_name, ex.pages_read,
-             len(ex.fields), len(ex.requirements), len(ex.gates), ex.dropped_quotes)
+             len(ex.fields), len(ex.requirements), len(ex.gates), len(ex.dropped_quotes))
     return ex
 
 

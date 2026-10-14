@@ -809,7 +809,8 @@ def test_the_reader_checks_each_quote_against_the_page_itself(monkeypatch, tmp_p
     assert ex.answers() == {"user_count": "5,000 named users"}
     assert ex.fields[0].quotes == [
         {"page": 1, "text": "The workforce has 5,000 named users across three sites."}]
-    assert ex.dropped_quotes == 2
+    assert ex.dropped_quotes == [{"page": 1, "field_id": "user_count"},
+                                 {"page": 1, "field_id": "app_count"}]
 
 
 def test_a_field_with_no_grounded_quote_is_not_found(monkeypatch, tmp_path):
@@ -837,7 +838,7 @@ def test_a_scanned_page_is_checked_against_its_transcription(monkeypatch, tmp_pa
     ex, _ = _two_pass_run(monkeypatch, ["", ""], quotes, field_ids=["app_count", "user_count"],
                           vision=vision, tmp_path=tmp_path)
     assert [f.field_id for f in ex.fields] == ["app_count"]
-    assert ex.dropped_quotes == 1
+    assert ex.dropped_quotes == [{"page": 2, "field_id": "user_count"}]
 
 
 def test_if_stating_a_field_fails_its_own_quotes_stand(monkeypatch, tmp_path):
@@ -897,3 +898,22 @@ def test_a_reread_never_overwrites_what_the_consultant_corrected():
     assert "envs" not in out and out["app_count"] == "6"
     assert out[R.EVIDENCE_KEY] == {"app_count": {
         "pages": [4], "quotes": [{"page": 4, "text": "Six applications are in scope."}]}}
+
+
+
+def test_the_review_names_the_pages_whose_quotes_were_dropped():
+    """A quote the reader could not find on its page is dropped, never used;
+    the consultant is told which pages to check, since a fact stated there
+    may be missing from the list."""
+    ex = R.RfpExtraction(
+        fields=[R.ExtractedField("envs", "Dev, Test, Prod", 3, pages=[3])],
+        dropped_quotes=[{"page": 7, "field_id": "user_count"},
+                        {"page": 4, "field_id": "app_count"},
+                        {"page": 7, "field_id": "population_by_domain"}],
+        pages_read=12, pages_total=12, source_name="SOW.pdf")
+    text = R.describe_extraction(ex, 96)
+    line = next(l for l in text.splitlines() if "not found on" in l)
+    assert "p. 4, 7" in line and "check" in line.lower()
+    assert "app_count" in line and "user_count" in line and "population_by_domain" in line
+    assert "not found on" not in R.describe_extraction(
+        R.RfpExtraction(fields=ex.fields, pages_read=12, source_name="SOW.pdf"), 96)

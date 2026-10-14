@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""How accurately the brain reads real tenders: field accuracy per tender, and
+whether two reads of the same file agree.
+
+WHY THIS EXISTS
+---------------
+Design 2026-10-14, part 1e (docs/audits/DESIGN_RFP_READING_AND_MATRIX.md).
+Run 1 read ESNAD's SOW wrong in three ways nobody saw until the proposal. The
+target before v1.0: every critical fact right on all five test tenders, and
+two consecutive reads identical.
+
+FIXTURES ARE CLIENT CONTENT
+---------------------------
+They live in docs/evals/rfp/, which is gitignored (check with
+`git check-ignore -v docs/evals/rfp/x.json`). One JSON file per tender, next
+to the tender file itself:
+
+    {"tender": "ESNAD SOW (scanned)",
+     "file": "esnad_sow.pdf",
+     "expected": {
+        "population_by_domain": {"contains": ["5,000", "10,000", "50"]},
+        "user_count": {"contains": ["5,000"], "not_contains": ["including"]},
+        "out_of_scope": {"missing": true}}}
+
+"contains": every piece must be in the value (case-insensitive; a number must
+match a whole number, so "50" is not found in "5,000"). "not_contains": none
+may be. "missing": the tender does not state it, so nothing may be read.
+
+HOW TO RUN (it calls models, so on demand, never in CI). On the host, inside
+the running brain, which has the keys and the PDF tools:
+
+    docker cp docs/evals/rfp sarvam-brain:/tmp/rfp-evals
+    docker exec -i sarvam-brain python - /tmp/rfp-evals < scripts/rfp_accuracy.py
+
+Each tender is read twice from scratch (no stored reading); --once reads it
+once. Nothing from the tenders is printed except field ids and the values the
+reader produced for fields it got wrong.
+"""
+from __future__ import annotations
+
+import asyncio
+import glob
+import json
+import os
+import re
+import sys
+import tempfile
+
+
+def _numbers(s: str) -> set:
+    return {n.replace(",", "") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", s or "")}
+
+
+def _has(value: str, piece: str) -> bool:
+    if re.fullmatch(r"[\d,.]+", piece.strip()):
+        return piece.strip().replace(",", "") in _numbers(value)
+    return piece.lower() in (value or "").lower()
+
+
+def score_fact(value, expected: dict) -> bool:
+    """Is what was read right against the expected entry?"""
+    if expected.get("missing"):
+        return not value
+    if not value:
+        return False
+    return (all(_has(value, p) for p in expected.get("contains", []))
+            and not any(_has(value, p) for p in expected.get("not_contains", [])))
+
+
+def score_tender(answers: dict, expected: dict) -> dict:
+    import rfp_intake
+    wrong = [{"field": f, "got": answers.get(f), "expected": e}
+             for f, e in expected.items() if not score_fact(answers.get(f), e)]
+    return {"scored": len(expected), "right": len(expected) - len(wrong), "wrong": wrong,
+            "no_expected_value": [fid for _, fid in rfp_intake.CRITICAL_FACTS
+                                  if fid not in expected]}
+
+
+def differences(first: dict, second: dict) -> list[str]:
+    """Fields whose value differs between two reads (or is in only one)."""
+    return sorted(k for k in set(first) | set(second) if first.get(k) != second.get(k))
+
+
+async def read_with_the_brain(path: str) -> dict:
+    """The brain's own reader, from scratch: no stored reading is used."""
+    import app
+    import intake_template
+    import rfp_intake
+    with tempfile.TemporaryDirectory(prefix="rfp-eval-") as tmp:
+        pdf, why = await asyncio.to_thread(rfp_intake.as_pdf, path, tmp)
+        if not pdf:
+            raise RuntimeError(why)
+        ex = await rfp_intake.extract_rfp(pdf, os.path.basename(path),
+                                          intake_template.client_fact_ids(),
+                                          app.rfp_structured_call, os.path.join(tmp, "pages"))
+    return ex.answers()
+
+
+async def run(folder: str, read=read_with_the_brain, twice: bool = True) -> list[dict]:
+    results = []
+    for fixture in sorted(glob.glob(os.path.join(folder, "*.json"))):
+        with open(fixture, encoding="utf-8") as fh:
+            spec = json.load(fh)
+        path = os.path.join(os.path.dirname(fixture), spec["file"])
+        first = await read(path)
+        result = {"tender": spec.get("tender") or spec["file"],
+                  **score_tender(first, spec.get("expected") or {})}
+        if twice:
+            result["second_read_differs"] = differences(first, await read(path))
+        results.append(result)
+    return results
+
+
+def report(results: list[dict]) -> str:
+    lines = []
+    for r in results:
+        same = r.get("second_read_differs")
+        lines.append(f"{r['tender']}: {r['right']}/{r['scored']} right"
+                     + ("" if same is None else
+                        "; two reads identical" if not same else
+                        f"; two reads differ on {', '.join(same)}"))
+        for w in r["wrong"]:
+            lines.append(f"  WRONG {w['field']}: got {w['got']!r}, expected {w['expected']}")
+        if r["no_expected_value"]:
+            lines.append(f"  no expected value written for: {', '.join(r['no_expected_value'])}")
+    return "\n".join(lines)
+
+
+def main(argv: list[str]) -> int:
+    args = [a for a in argv if not a.startswith("--")]
+    if not args:
+        print("usage: rfp_accuracy.py <fixture folder> [--once]")
+        return 2
+    results = asyncio.run(run(args[0], twice="--once" not in argv))
+    print(report(results))
+    print("JSON:")
+    print(json.dumps(results))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

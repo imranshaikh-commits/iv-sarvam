@@ -61,3 +61,12 @@ reach the output. Two silent truncation bugs have already done exactly that (a
 2500-char answers cap, and guidance sliced off by a 4000-char context cap). If
 specifics go missing from a generated proposal, suspect truncation before
 suspecting the model.
+
+## RFP reading test set (`docs/evals/rfp/`)
+
+Five real tenders and, for each, the expected values of the critical facts
+(design 2026-10-14, part 1e): ESNAD SOW (scanned), ANB `CIAM RFP V1.0.docx`
+(Word), NWC RFP, Tiqmo RFP and the C-DAC GeM bid. One JSON file per tender,
+next to the tender file; the format and the run command are at the top of
+`scripts/rfp_accuracy.py`. Same rule as above: tenders and fixtures are client
+content and are never committed.

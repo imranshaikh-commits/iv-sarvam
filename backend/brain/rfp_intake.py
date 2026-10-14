@@ -38,10 +38,15 @@ import sqlite3
 import time
 
 from pydantic import BaseModel, Field as PField
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 log = logging.getLogger("shilpi-brain.rfp")
+
+# The version of what reading a tender produces. A stored reading is reused only
+# for the same file AND this version (design 1c): change it whenever the reader
+# would read the same file differently.
+EXTRACTOR_VERSION = "2026-10-14.1"
 
 # Below this many characters per page, the PDF has no usable text layer and must
 # be read visually. The ESNAD SOW yielded 468 characters across 20 pages -- all
@@ -270,6 +275,17 @@ class RfpExtraction:
     def answers(self) -> dict[str, str]:
         """The extraction as a discovery answer dict."""
         return {f.field_id: f.value for f in self.fields if f.value}
+
+    def to_dict(self) -> dict:
+        """JSON-safe, for the stored reading (rfp_readings)."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "RfpExtraction":
+        d = dict(d)
+        return cls(fields=[ExtractedField(**f) for f in d.pop("fields", [])],
+                   requirements=[Requirement(**r) for r in d.pop("requirements", [])],
+                   gates=[EligibilityGate(**g) for g in d.pop("gates", [])], **d)
 
 
 def needs_vision(text_by_page: list[str]) -> bool:

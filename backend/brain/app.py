@@ -21,6 +21,7 @@ import functools
 import hmac
 import io
 import ipaddress
+import hashlib
 import json
 import logging
 import os
@@ -692,6 +693,22 @@ async def run_rfp_extraction(display_name_: str) -> tuple[Optional[rfp_intake.Rf
                       "Attach the RFP or SOW file and try again.")
 
     field_ids = intake_template.client_fact_ids()
+    # Same file, same answers (design 1c): a file read before with this
+    # extractor version is not read again.
+    try:
+        with open(path, "rb") as fh:
+            sha256 = hashlib.sha256(fh.read()).hexdigest()
+    except OSError as e:
+        log.error("could not read upload %s: %s", path, e)
+        return None, "I could not open that file. Attach it again."
+    async with httpx.AsyncClient() as sclient:
+        stored = await supabase_client.get_rfp_reading(
+            sclient, sha256, rfp_intake.EXTRACTOR_VERSION)
+    if stored:
+        ex = rfp_intake.RfpExtraction.from_dict(stored)
+        ex.source_name = rfp_intake.display_name(path)
+        log.info("RFP %s: stored reading reused (%s)", ex.source_name, sha256[:12])
+        return ex, ""
     with tempfile.TemporaryDirectory(prefix="rfp-") as tmp:
         # A Word tender is converted to PDF first; a type that cannot be read
         # is refused here, by name. LibreOffice blocks, so off the event loop.
@@ -706,6 +723,12 @@ async def run_rfp_extraction(display_name_: str) -> tuple[Optional[rfp_intake.Rf
             log.error("RFP extraction failed: %s", e)
             return None, ("Reading that document failed. Try again, or use the "
                           "interview instead.")
+    if ex.fields or ex.requirements:
+        async with httpx.AsyncClient() as sclient:
+            if not await supabase_client.save_rfp_reading(
+                    sclient, sha256, rfp_intake.EXTRACTOR_VERSION, ex.to_dict()):
+                log.warning("RFP %s: reading not stored; the next upload reads it again",
+                            ex.source_name)
     if not ex.fields and not ex.requirements:
         return None, ("I read the document but could not extract anything "
                       "usable from it. Use the interview instead.")

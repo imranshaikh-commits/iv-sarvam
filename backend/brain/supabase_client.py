@@ -217,6 +217,44 @@ async def create_intake_session(
     return rows[0]["id"]
 
 
+async def get_rfp_reading(client: httpx.AsyncClient, sha256: str,
+                          extractor_version: str) -> dict | None:
+    """The stored reading of one tender file (sarvam_023), or None. Fail-soft:
+    a failed lookup only means the file is read again."""
+    try:
+        resp = await client.get(
+            _table_url("rfp_readings"), headers=_headers(prefer_representation=False),
+            params={"sha256": f"eq.{sha256}", "extractor_version": f"eq.{extractor_version}",
+                    "select": "reading", "limit": "1"},
+            timeout=30.0)
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as e:  # noqa: BLE001
+        log.warning("get_rfp_reading failed: %s", _why(e))
+        return None
+    return rows[0]["reading"] if rows else None
+
+
+async def save_rfp_reading(client: httpx.AsyncClient, sha256: str,
+                           extractor_version: str, reading: dict) -> bool:
+    """Store a reading under the file's hash and the extractor version. False
+    when it did not land."""
+    try:
+        resp = await client.post(
+            _table_url("rfp_readings"),
+            headers={**_headers(prefer_representation=False),
+                     "Prefer": "resolution=merge-duplicates,return=minimal"},
+            params={"on_conflict": "sha256,extractor_version"},
+            json={"sha256": sha256, "extractor_version": extractor_version,
+                  "reading": reading},
+            timeout=30.0)
+        resp.raise_for_status()
+    except Exception as e:  # noqa: BLE001
+        log.warning("save_rfp_reading failed: %s", _why(e))
+        return False
+    return True
+
+
 async def get_intake_session(client: httpx.AsyncClient, session_id: str) -> dict | None:
     """Fetch a single intake session by id. Fail-soft -> None."""
     try:

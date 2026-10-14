@@ -779,3 +779,107 @@ def test_a_decision_outside_its_choices_is_not_an_answer():
     assert T.unanswered_decisions(answers) == ["proposal_type"]
     assert T.unanswered_decisions({**answers, "proposal_type": "Implementation"}) == []
     assert T.unanswered_decisions({}) == list(T.ASKED_DECISIONS)
+
+
+# --- Design 1c: same file, same answers --------------------------------------
+
+def _sample_extraction():
+    return R.RfpExtraction(
+        fields=[R.ExtractedField("user_count", "5,000 workforce", 4)],
+        requirements=[R.Requirement("AM-04", "Risk-based access", "Access", 7)],
+        gates=[R.EligibilityGate("Five years of IAM delivery", 3)],
+        mandated_structure=["Executive Summary", "Approach", "Pricing"],
+        pages_read=20, pages_total=20, used_vision=True, source_name="SOW.pdf",
+        vision_pages=[2], unread_pages=[9])
+
+
+def test_a_stored_reading_comes_back_identical():
+    ex = _sample_extraction()
+    back = R.RfpExtraction.from_dict(ex.to_dict())
+    assert back == ex
+
+
+def test_the_same_file_uploaded_again_reuses_its_reading(tmp_path, monkeypatch):
+    """No model call, identical answers. A new extractor version reads it fresh."""
+    import asyncio
+    os.environ.setdefault("OPENROUTER_API_KEY", "test-key")
+    os.environ.setdefault("SUPABASE_URL", "https://example.invalid")
+    os.environ.setdefault("SUPABASE_KEY", "test-key")
+    import app
+    store, reads = {}, []
+
+    async def fake_get(client, sha256, version):
+        return store.get((sha256, version))
+
+    async def fake_save(client, sha256, version, reading):
+        store[(sha256, version)] = reading
+        return True
+
+    async def fake_extract(pdf_path, source_name, field_ids, structured_fn, tmp):
+        reads.append(source_name)
+        return _sample_extraction()
+
+    first = tmp_path / "1b4e28ba-2fa1-11d2-883f-0016d3cca427_SOW.pdf"
+    again = tmp_path / "2c5f39cb-2fa1-11d2-883f-0016d3cca427_SOW copy.pdf"
+    first.write_bytes(b"%PDF-1.7 same bytes")
+    again.write_bytes(b"%PDF-1.7 same bytes")
+    monkeypatch.setattr(app.supabase_client, "get_rfp_reading", fake_get)
+    monkeypatch.setattr(app.supabase_client, "save_rfp_reading", fake_save)
+    monkeypatch.setattr(R, "extract_rfp", fake_extract)
+
+    monkeypatch.setattr(R, "pick_upload", lambda **k: (str(first), [], ""))
+    one, err = asyncio.run(app.run_rfp_extraction("use this RFP"))
+    monkeypatch.setattr(R, "pick_upload", lambda **k: (str(again), [], ""))
+    two, err2 = asyncio.run(app.run_rfp_extraction("use this RFP"))
+    assert err == err2 == "" and reads == ["SOW.pdf"]
+    assert two.answers() == one.answers() and two.requirements == one.requirements
+    assert two.source_name == "SOW copy.pdf"                  # named as uploaded this time
+
+    monkeypatch.setattr(R, "EXTRACTOR_VERSION", R.EXTRACTOR_VERSION + "-next")
+    asyncio.run(app.run_rfp_extraction("use this RFP"))
+    assert len(reads) == 2
+
+
+def test_rfp_readings_are_stored_under_hash_and_version():
+    import asyncio
+    import supabase_client as S
+    sent = []
+
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._body
+
+    class _Client:
+        async def get(self, url, **kw):
+            sent.append(("get", url, kw.get("params")))
+            return _Resp([{"reading": {"pages_read": 3}}])
+
+        async def post(self, url, **kw):
+            sent.append(("post", url, kw.get("params"), kw.get("json"), kw["headers"].get("Prefer")))
+            return _Resp([{}])
+
+    got = asyncio.run(S.get_rfp_reading(_Client(), "ab" * 32, "v1"))
+    assert got == {"pages_read": 3}
+    assert sent[0][1].endswith("/rest/v1/rfp_readings")
+    assert sent[0][2]["sha256"] == "eq." + "ab" * 32 and sent[0][2]["extractor_version"] == "eq.v1"
+    assert asyncio.run(S.save_rfp_reading(_Client(), "ab" * 32, "v1", {"pages_read": 3})) is True
+    assert sent[1][3] == {"sha256": "ab" * 32, "extractor_version": "v1",
+                          "reading": {"pages_read": 3}}
+    assert "resolution=merge-duplicates" in sent[1][4]
+
+
+def test_the_rfp_readings_migration_keeps_row_level_security_on():
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "supabase",
+                        "migrations", "sarvam_023_rfp_readings.sql")
+    sql = open(path).read().lower()
+    assert "create table if not exists public.rfp_readings" in sql
+    assert "enable row level security" in sql
+    assert "primary key (sha256, extractor_version)" in sql

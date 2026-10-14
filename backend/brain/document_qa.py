@@ -140,10 +140,11 @@ _SENTINEL_GUARD = "\x00SMEREVIEW\x00"
 
 
 def strip_review_markers(text: str) -> str:
-    """Remove internal review asides from client-facing prose.
+    """Replace each internal review aside with the one review marker.
 
-    Genuine gaps still need flagging, but in a review appendix rather than
-    inline in a document going to a client. Callers collect what is removed.
+    "(needs SME confirmation)", "[to be confirmed]", "- requires client
+    input ..." and the like become [SME REVIEW], Shilpi's own marker, which a
+    consultant resolves before the document goes out.
     """
     if not text:
         return text
@@ -151,7 +152,11 @@ def strip_review_markers(text: str) -> str:
     # the note. Deleting the whole bracket left "The incumbent IAM platform is."
     out = re.sub(r"\[\s*SME REVIEW\s*[:\-–][^\]]*\]", SME_REVIEW_SENTINEL, text)
     out = out.replace(SME_REVIEW_SENTINEL, _SENTINEL_GUARD)
-    out = _REVIEW_ASIDE_RE.sub("", out)
+    # The aside goes; the marker stays in its place (audit F10, decided on
+    # Run 1: 5 asides in a whole proposal). Removing the aside alone left the
+    # claim it qualified ("99.99% availability") reading as settled.
+    out = _REVIEW_ASIDE_RE.sub(" " + _SENTINEL_GUARD, out)
+    out = re.sub(rf"(?:\s*{re.escape(_SENTINEL_GUARD)}){{2,}}", " " + _SENTINEL_GUARD, out)
     out = re.sub(r"\s+([.,;:!?])", r"\1", out)
     out = re.sub(r"\(\s*\)|\[\s*\]", "", out)
     out = re.sub(r"[ \t]{2,}", " ", out)

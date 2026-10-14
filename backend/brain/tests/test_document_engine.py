@@ -2599,6 +2599,7 @@ def test_stripped_review_asides_are_counted_per_section_not_lost():
     assert meta["stripped_asides"] == 2 * len(calls) > 0
     assert result["stripped_asides"] == meta["stripped_asides"]
     assert "needs SME confirmation" not in result["draft_markdown"]      # still stripped
+    assert "[SME REVIEW]" in result["draft_markdown"]                   # and marked (Run 1 decision)
 
 
 def test_a_requirement_nobody_judged_is_never_printed_as_compliant():

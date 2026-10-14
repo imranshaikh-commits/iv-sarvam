@@ -205,14 +205,16 @@ def test_parenthetical_review_markers_are_removed():
     text = ("The deployment model is on-premises. (needs SME confirmation) "
             "Four environments are in scope (needs SME confirmation on sizing).")
     out = qa.strip_review_markers(text)
-    assert "SME" not in out, out
+    # The asides go; the marker takes their place (deep audit F10).
+    assert "needs SME confirmation" not in out and out.count("[SME REVIEW]") == 2, out
     assert "The deployment model is on-premises." in out
     assert "Four environments are in scope" in out
 
 
 def test_dash_led_review_markers_are_still_removed():
     text = "DR is included - needs SME confirmation on the replication target."
-    assert "SME" not in qa.strip_review_markers(text)
+    out = qa.strip_review_markers(text)
+    assert "needs SME confirmation" not in out and "[SME REVIEW]" in out, out
 
 
 def test_tbc_and_unverified_asides_are_removed():
@@ -238,7 +240,7 @@ def test_qa_text_applies_every_cleaner_and_reports_them():
             "The architecture is proven — and repeatable.")
     out, issues = qa.qa_text(text)
     assert "[1]" not in out
-    assert "SME" not in out
+    assert "needs SME confirmation" not in out and "[SME REVIEW]" in out
     assert "—" not in out
     joined = " ".join(issues)
     assert "citation" in joined and "review aside" in joined and "em-dash" in joined
@@ -280,8 +282,8 @@ def test_review_aside_with_nested_parenthetical_is_removed_whole():
     src = ("We serve retail. [to be confirmed: certifications (e.g. Ping "
            "Advanced) and partner tier status for insertion here.] We deliver.")
     out = qa.strip_review_markers(src)
-    assert "insertion here" not in out and "]" not in out, out
-    assert out.startswith("We serve retail.") and out.endswith("We deliver.")
+    assert "insertion here" not in out and "certifications" not in out, out
+    assert out == "We serve retail. [SME REVIEW] We deliver.", out
     # An SME note keeps its flag and loses only the note, so the sentence
     # around it survives ("The incumbent IAM platform is." in 09-24).
     out = qa.strip_review_markers("The incumbent platform is [SME REVIEW: unknown (e.g. X)].")
@@ -336,3 +338,15 @@ def test_bracketed_values_are_not_deleted_as_citations():
         "Access reviews run quarterly [3]. Roles are mined [1, 4-6] "
         "[Saviynt EIC 1] and certified [6-Saviynt refs].")
     assert "[" not in gone, gone
+
+
+def test_a_stripped_review_aside_leaves_the_marker_in_its_place():
+    """Deep audit F10, decided on Run 1 (5 asides, ten or fewer): the aside is
+    still taken out of the client text, and [SME REVIEW] stays where it was, so
+    the claim it qualified does not read as settled."""
+    out = qa.strip_review_markers(
+        "Availability is guaranteed at 99.99% (needs SME confirmation). DR is in scope.")
+    assert out == "Availability is guaranteed at 99.99% [SME REVIEW]. DR is in scope.", out
+    # Two asides side by side leave one marker, not two.
+    out = qa.strip_review_markers("Sizing is agreed (TBC) [to be confirmed] for production.")
+    assert out.count("[SME REVIEW]") == 1 and "TBC" not in out, out

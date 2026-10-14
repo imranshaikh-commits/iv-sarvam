@@ -258,12 +258,13 @@ KIT: tuple[dict, ...] = (
     # IV house slides: withdrawn 2026-09-27 at Imran's instruction -- the
     # corporate deck they came from is out of date. They return when the
     # updated deck is supplied.
+    # Also withdrawn 2026-10-14 at Imran's instruction: the three Ping
+    # case-study slides (from IV's case-study deck) and the third-party
+    # marketing slides (Gartner/Forrester market leadership, Ping's customer
+    # logo wall, KuppingerCole for Saviynt). IV's proposals do not carry its
+    # slide decks; the kit keeps only the vendor diagrams that explain the
+    # proposed solution.
     # Ping Identity
-    {"file": "ping_market_leadership.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "ping"},
-    {"file": "ping_ciam_customers.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "ping", "domains": ("ciam",)},
-    {"file": "ping_case_study_1.png", "section": "similar_experience", "heading": r"^Relevant Engagements", "vendor": "ping"},
-    {"file": "ping_case_study_2.png", "section": "similar_experience", "heading": r"^Relevant Engagements", "vendor": "ping"},
-    {"file": "ping_case_study_3.png", "section": "similar_experience", "heading": r"^Relevant Engagements", "vendor": "ping"},
     {"file": "ping_workforce_challenges.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "domains": ("wiam",), "near": r"Workforce Identity|WIAM"},
     {"file": "ping_aic_multitenant.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "deployment": "saas", "near": r"Workforce Identity|WIAM|Platform|Architecture"},
     {"file": "ping_aic_tenant_isolation.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "deployment": "saas", "near": r"Workforce Identity|WIAM|Platform|Architecture"},
@@ -275,7 +276,6 @@ KIT: tuple[dict, ...] = (
     {"file": "ping_pingid_app.png", "section": "solution_overview", "heading": r"^{vendor}.* Solution Overview", "vendor": "ping", "near": r"Passwordless|FIDO|MFA"},
     # Saviynt (Frost Radar 392 px and Gartner PAM 600 px withdrawn: too small
     # to print sharp)
-    {"file": "saviynt_kuppingercole_iga.png", "section": "solution_overview", "heading": r"^Why {vendor}", "vendor": "saviynt", "domains": ("iga",)},
     # One picture per topic (ESNAD 09-28 printed two JML flows and two PAM
     # flows side by side): the IGA-only JML flow yields to the IGA+PAM one, and
     # the second PAM flow slide is withdrawn.

@@ -985,8 +985,11 @@ def test_attach_assets_places_each_image_once():
 def test_a_kit_covered_section_takes_no_keyword_matched_library_images():
     """ESNAD 09-25 put two near-identical Engagement Approach slides in one
     section: one from keyword matching, then another."""
+    # Solution Overview: since 2026-10-14 the kit has no Similar Experience
+    # slides, so the kit-covered section here is the vendor overview.
     lib = [{"id": "a1", "storage_path": "p/1.png", "asset_kind": "corporate",
-            "approved": True, "vision_description": "case study customer reference banking"}]
+            "approved": True,
+            "vision_description": "Ping Identity solution overview platform architecture"}]
 
     async def library(_c):
         return lib
@@ -994,7 +997,7 @@ def test_a_kit_covered_section_takes_no_keyword_matched_library_images():
     async def download(_c, _p, _b=None):
         return io.BytesIO(_png_bytes())
 
-    sections = [{"id": "similar_experience", "title": "Similar Experience"}]
+    sections = [{"id": "solution_overview", "title": "Solution Overview"}]
     asyncio.run(document_engine._attach_assets(
         None, sections, {"iam_vendor": "Ping Identity", "iam_vendors": ["Ping Identity"]},
         {"library": library, "download": download}))

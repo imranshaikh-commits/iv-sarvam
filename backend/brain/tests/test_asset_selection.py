@@ -99,8 +99,23 @@ def test_vendor_kit_follows_vendor_domains_and_deployment():
 
 def test_vendor_heading_is_filled_with_the_proposed_vendor():
     k = next(x for x in A.kit_for("solution_overview", {"iam_vendors": ["Ping Identity"]})
-             if x["storage_path"] == "kit/ping_market_leadership.png")
-    assert k["heading"].search("Why Ping Identity") and not k["heading"].search("Why Saviynt")
+             if x["storage_path"] == "kit/ping_orchestration.png")
+    assert k["heading"].search("Ping Identity Solution Overview")
+    assert not k["heading"].search("Saviynt Solution Overview")
+
+
+def test_no_slide_deck_or_marketing_slides_in_the_kit():
+    """Imran, 2026-10-14: no case-study deck slides, no analyst or customer-logo
+    marketing. Only diagrams that explain the proposed solution."""
+    files = {k["file"] for k in A.KIT}
+    for gone in ("ping_market_leadership.png", "ping_ciam_customers.png",
+                 "ping_case_study_1.png", "ping_case_study_2.png", "ping_case_study_3.png",
+                 "saviynt_kuppingercole_iga.png"):
+        assert gone not in files
+    everyone = {"iam_vendors": ["Ping Identity", "Saviynt"], "domains": ["wiam", "ciam", "iga", "pam"]}
+    assert not A.kit_for("similar_experience", everyone)
+    assert not any(k["heading"] and k["heading"].search("Why Ping Identity")
+                   for k in A.kit_for("solution_overview", everyone))
 
 
 def test_section_gets_material_that_suits_it():

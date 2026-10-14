@@ -27,6 +27,7 @@ import logging
 import shutil
 import os
 import re
+import itertools
 import subprocess
 import textwrap
 from typing import Awaitable, Callable, Literal, Optional
@@ -466,7 +467,8 @@ def build_stack_d2(spec: DiagramSpec) -> str:
     Graph layout (ELK) put the sources on the far side and looped arrows round
     the whole picture, at a width that printed near 5pt. A grid keeps columns in
     reading order and only draws arrows between neighbouring columns, so no
-    arrow crosses a column. Every arrow drawn is an edge of the spec.
+    arrow crosses a column. Every arrow drawn is an edge of the spec, and the
+    columns are ordered (Users first) to draw as many of them as possible.
     """
     order: list[str] = []
     members: dict[str, list[DiagramNode]] = {}
@@ -479,7 +481,39 @@ def build_stack_d2(spec: DiagramSpec) -> str:
     users = [g for g in order if g == "Users"]
     vendors = [g for g in order if _vendor_colour(g)]
     apps = [g for g in order if g not in sources + users + vendors]
-    columns = users + vendors + apps
+
+    # The spec's links between groups, by group. Every arrow drawn is one of
+    # these (audit F54): this used to draw one between EVERY pair of
+    # neighbouring columns from a fixed label table and never read spec.edges.
+    group_of = {n.id: n.group or "Other" for n in spec.nodes}
+    between: dict[tuple[str, str], list[str]] = {}
+    links: dict[frozenset, int] = {}
+    for e in spec.edges:
+        a, b = (ref[len(GROUP_REF):] if ref.startswith(GROUP_REF) else group_of.get(ref)
+                for ref in (e.source, e.target))
+        if a and b and a != b:
+            labels = between.setdefault((a, b), [])
+            if e.label and e.label not in labels:
+                labels.append(e.label)
+            links[frozenset((a, b))] = links.get(frozenset((a, b)), 0) + 1
+
+    # Column order. Arrows run only between neighbouring columns, so the order
+    # decides which links can be drawn at all: Users first, then whichever
+    # order of the other columns puts the most links between neighbours. ESNAD
+    # gets Users | Ping | applications | Saviynt and keeps Ping's SSO arrow,
+    # which Users | Ping | Saviynt | applications could not draw. On a tie,
+    # IV's order (platforms, then applications) wins: permutations() yields it
+    # first and max() keeps the first best.
+    # ponytail: tries every order, fine for the few columns a stack has (a
+    # 7-column one is 5,040 orders); beyond that it keeps IV's order.
+    def neighbour_links(cols) -> int:
+        return sum(links.get(frozenset(pair), 0) for pair in zip(cols, cols[1:]))
+
+    others = vendors + apps
+    if 1 < len(others) <= 7:
+        others = list(max(itertools.permutations(others),
+                          key=lambda perm: neighbour_links(users + list(perm))))
+    columns = users + others
 
     def container(gid: str, group: str, cols: int, indent: str) -> list[str]:
         tint = _vendor_colour(group)
@@ -512,35 +546,24 @@ def build_stack_d2(spec: DiagramSpec) -> str:
     lines.append("}")
     for g in sources:
         lines += container("sources", g, max(1, len(members[g])), "")
-    # Every arrow is an edge of the spec (audit F54). This used to draw one
-    # between EVERY pair of neighbouring columns from a fixed label table and
-    # never read spec.edges, so two vendors side by side always exchanged
-    # "identity data" and an empty spec still had arrows. The grid stays:
-    # arrows run only between neighbouring columns, so none crosses a column;
-    # an edge between columns that are not neighbours is not drawn.
-    group_of = {n.id: n.group or "Other" for n in spec.nodes}
-    between: dict[tuple[str, str], list[str]] = {}
-    for e in spec.edges:
-        a, b = (ref[len(GROUP_REF):] if ref.startswith(GROUP_REF) else group_of.get(ref)
-                for ref in (e.source, e.target))
-        if a and b and a != b:
-            labels = between.setdefault((a, b), [])
-            if e.label and e.label not in labels:
-                labels.append(e.label)
-
-    def link(ga: str, gb: str) -> Optional[tuple[str, str]]:
+    # The grid stays: arrows run only between neighbouring columns, so none
+    # crosses a column; a link between columns that are not neighbours, even
+    # in the best order, is not drawn.
+    def link(ga: str, gb: str, width: int = _WRAP_EDGE) -> Optional[tuple[str, str]]:
         """(arrow, label) for the edges between two groups, or None if there are none."""
         fwd, back = between.get((ga, gb)), between.get((gb, ga))
         if fwd is None and back is None:
             return None
         arrow = "<->" if fwd is not None and back is not None else "->" if fwd is not None else "<-"
-        # One relation per line, wrapped: the label sits in the gap between columns.
-        text = "\\n".join("\\n".join(textwrap.wrap(lab, _WRAP_EDGE)) or lab
+        # One relation per line, wrapped to the gap it sits in.
+        text = "\\n".join("\\n".join(textwrap.wrap(lab, width)) or lab
                            for lab in dict.fromkeys((fwd or []) + (back or [])))
         return arrow, _d2_label(text)
 
     for a, b, ga, gb in zip(ids, ids[1:], columns, columns[1:]):
-        found = link(ga, gb)
+        # 14 characters: the 190 px gap between columns holds about 15 at this
+        # size, and "SSO (SAML / OIDC)" on one line ran into both boxes.
+        found = link(ga, gb, width=14)
         if found:
             lines += [f'main.{a} {found[0]} main.{b}: "{found[1]}" {{', "  style: {",
                       f'    stroke: "{IV_SLATE}"', "    stroke-width: 2",

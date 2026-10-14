@@ -815,11 +815,13 @@ def test_stack_is_built_from_facts_with_the_right_products_and_systems():
     assert not any(k in labels for k in ("Ping DS", "Ping IDM", "Ping AM", "PingFederate"))
     # SSO reaches the whole application group with one arrow, not nine.
     assert any(e.target == "group:ESNAD applications" for e in spec.edges)
-    # Rendered as a fixed grid in IV's column order, arrows between columns only.
+    # Rendered as a fixed grid, arrows between neighbouring columns only. The
+    # columns are ordered to draw the most links (deep audit F54, review
+    # 2026-10-14): applications sit between the two platforms that feed them.
     d2 = diagram_engine.build_d2(spec)
     assert "grid-columns: 4" in d2 and "main.c0 -> main.c1" in d2
-    assert d2.index("Users") < d2.index("Ping Identity") < d2.index("Saviynt") \
-        < d2.index("ESNAD applications") < d2.index("Identity sources")
+    assert d2.index("Users") < d2.index("Ping Identity") < d2.index("ESNAD applications") \
+        < d2.index("Saviynt") < d2.index("Identity sources")
 
 
 def test_vendor_colours_and_legend():
@@ -1146,10 +1148,23 @@ def test_the_stack_draws_no_arrow_the_spec_does_not_contain():
 
 def test_the_stack_never_routes_an_arrow_across_a_column():
     """Non-adjacent columns stay unconnected: an arrow from column 1 to column
-    3 would cross column 2, which is what the grid exists to prevent."""
+    3 would cross column 2, which is what the grid exists to prevent. The
+    columns are ordered (Users first) to make as many links neighbours as
+    possible; what no order can place side by side is not drawn."""
     E = diagram_engine.DiagramEdge
+    # One link between Ping and the applications: they become neighbours.
     spec = _two_vendor_stack([E(source="am", target="app", label="SSO (SAML / OIDC)")])
-    assert _stack_arrows(spec) == []
+    assert _stack_arrows(spec) == [("main.c1", "->", "main.c2", "SSO (SAML / OIDC)")]
+    # Three columns all linked to each other: in a row, two pairs can be
+    # neighbours and one cannot. Every order draws two; on that tie IV's own
+    # order (platforms, then applications) is kept, and the third link is left out.
+    triangle = _two_vendor_stack([E(source="am", target="iga", label="SCIM"),
+                                  E(source="iga", target="app", label="provisioning"),
+                                  E(source="am", target="app", label="SSO")])
+    arrows = _stack_arrows(triangle)
+    assert arrows == [("main.c1", "->", "main.c2", "SCIM"),
+                      ("main.c2", "->", "main.c3", "provisioning")]
+    assert all(int(a[2][-1]) - int(a[0][-1]) == 1 for a in arrows)   # neighbours only
 
 
 def test_the_sources_band_is_linked_only_where_the_spec_links_it():
@@ -1163,7 +1178,11 @@ def test_the_esnad_stack_keeps_its_true_links_and_loses_the_invented_one():
     labels = " | ".join(a[3] for a in arrows)
     assert "identity data" not in labels                       # nobody stated it
     assert ("main.c0", "->", "main.c1", "sign-in") in arrows   # users to Ping: stated
-    assert not [a for a in arrows if {a[0], a[2]} == {"main.c1", "main.c2"}]
-    assert "provisioning" in labels and "joiner/mover/leaver feed" in labels
+    # Users | Ping | applications | Saviynt: Ping's SSO reaches the applications,
+    # and Saviynt's provisioning arrives from the other side.
+    assert ("main.c1", "->", "main.c2", "SSO (SAML / OIDC)") in arrows
+    saviynt = next(a for a in arrows if (a[0], a[2]) == ("main.c2", "main.c3"))
+    assert saviynt[1] == "<-" and "provisioning" in saviynt[3]
+    assert "joiner/mover/leaver feed" in labels
     if diagram_engine.d2_available():
         assert diagram_engine._d2_run(diagram_engine.build_d2(_esnad_stack()), 25)

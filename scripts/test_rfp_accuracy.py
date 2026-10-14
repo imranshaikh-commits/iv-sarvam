@@ -86,3 +86,16 @@ def test_a_wrong_row_shows_the_expected_pieces_not_the_fixture_notes():
     text = A.report(results)
     assert "TENDER WORDS" not in text and "'contains': ['dev', 'prod']" in text
     assert "p.6" in text
+
+
+def test_a_value_that_drafting_would_read_as_saas_fails_a_not_saas_fact():
+    """NWC leaves the model open: on-premises today, SaaS/PaaS/IaaS/hybrid may be
+    considered. Naming the options is right; a value that drafting itself would
+    take as a SaaS deployment (document_engine._looks_like_saas) is wrong."""
+    exp = {"contains": ["premis", "saas", "paas", "iaas", "hybrid"], "not_saas": True}
+    assert A.score_fact("On-premises today; SaaS, PaaS, IaaS or hybrid options may be "
+                        "considered", exp)
+    # Names every piece, yet drafting reads it as SaaS (the self-hosted terms are negated).
+    wrong = "SaaS in KSA; PaaS and IaaS were considered; not on-premises; not hybrid"
+    assert all(A._has(wrong, p) for p in exp["contains"])
+    assert not A.score_fact(wrong, exp)

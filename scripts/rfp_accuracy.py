@@ -28,6 +28,9 @@ the scorer ignores both, and the report prints the pages only.
 "contains": every piece must be in the value (case-insensitive; a number must
 match a whole number, so "50" is not found in "5,000"). "not_contains": none
 may be. "missing": the tender does not state it, so nothing may be read.
+"not_saas": drafting must not read the value as a SaaS deployment
+(document_engine._looks_like_saas), e.g. a tender that lists SaaS only as an
+option.
 
 HOW TO RUN (it calls models, so on demand, never in CI). On the host, inside
 the running brain, which has the keys and the PDF tools:
@@ -66,6 +69,10 @@ def score_fact(value, expected: dict) -> bool:
         return not value
     if not value:
         return False
+    if expected.get("not_saas"):
+        import document_engine        # drafting's own reading of a deployment answer
+        if document_engine._looks_like_saas(value):
+            return False
     return (all(_has(value, p) for p in expected.get("contains", []))
             and not any(_has(value, p) for p in expected.get("not_contains", [])))
 
@@ -125,7 +132,7 @@ def report(results: list[dict]) -> str:
         for w in r["wrong"]:
             # Only the expected pieces and pages: a fixture's notes quote the tender.
             exp = {k: v for k, v in w["expected"].items()
-                   if k in ("contains", "not_contains", "missing")}
+                   if k in ("contains", "not_contains", "missing", "not_saas")}
             pages = ", ".join(str(p) for p in w["expected"].get("pages") or [])
             lines.append(f"  WRONG {w['field']}: got {w['got']!r}, expected {exp}"
                          + (f" (p.{pages})" if pages else ""))

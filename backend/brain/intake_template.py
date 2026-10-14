@@ -395,9 +395,11 @@ def get_intake_template(proposal_type: str | None = None) -> dict:
     """
     buckets_out = []
     for bucket in _BUCKETS:
+        # Derived fields are computed, never asked (design 1a).
         questions = [
             dict(q) for q in bucket["questions"]
             if _conditional_applies(q.get("conditional"), proposal_type)
+            and q["kind"] != "derived"
         ]
         if questions:
             buckets_out.append({"id": bucket["id"], "title": bucket["title"], "questions": questions})

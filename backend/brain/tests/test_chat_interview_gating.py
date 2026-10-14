@@ -1670,22 +1670,22 @@ def _arch_bucket():
     import intake_template
     tpl = intake_template.get_intake_template("migration")
     return next(b for b in tpl["buckets"]
-                if any(q["id"] == "required_diagram_types" for q in b["questions"]))
+                if any(q["id"] == "ha_dr_requirements" for q in b["questions"]))
 
 
 def test_em_dash_answers_are_captured():
     reply = ("deployment_model — On-premise, production with high availability\n"
-             "required_diagram_types — deployment, migration phases\n"
+             "ha_dr_requirements — active-active, two data centres\n"
              "cluster_topology — 2 nodes per component across AM, IM and DS")
     got = app.parse_bucket_answers(_arch_bucket(), reply)
-    assert set(got) >= {"deployment_model", "required_diagram_types",
+    assert set(got) >= {"deployment_model", "ha_dr_requirements",
                         "cluster_topology"}, got
-    assert got["required_diagram_types"] == "deployment, migration phases"
+    assert got["ha_dr_requirements"] == "active-active, two data centres"
 
 
 def test_colon_answers_still_work():
     reply = ("deployment_model: On-premise\n"
-             "required_diagram_types: deployment, migration phases")
+             "ha_dr_requirements: active-active, two data centres")
     got = app.parse_bucket_answers(_arch_bucket(), reply)
     assert len(got) == 2, got
 
@@ -1750,7 +1750,7 @@ iam_vendor: ForgeRock
 proposal_type: migration
 user_count: 1 million customer identities
 deployment_model: On-premise with HA
-required_diagram_types: deployment, migration phases
+ha_dr_requirements: active-active, two data centres
 cluster_topology: 2 nodes per component
 delivery_phases: PM, Components, Requirements, Design, Development
 assumptions: Success criteria documented in week 1"""
@@ -1760,7 +1760,7 @@ def test_answers_for_other_areas_are_captured():
     import asyncio, intake_template
     tpl = intake_template.get_intake_template("migration")
     got = asyncio.run(app.resolve_bucket_answers(tpl["buckets"][0], _MULTI_AREA, None))
-    for far_field in ("iam_vendor", "deployment_model", "required_diagram_types",
+    for far_field in ("iam_vendor", "deployment_model", "ha_dr_requirements",
                       "cluster_topology", "delivery_phases", "assumptions"):
         assert far_field in got, f"{far_field} discarded: only got {sorted(got)}"
 

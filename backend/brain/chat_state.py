@@ -670,9 +670,38 @@ def plan_diagrams(answers: dict) -> list[tuple[str, str]]:
             continue
         planned.append((title, engine_type))
 
+    if not requested and not DOMAIN_DIAGRAM_TOPUP:
+        return derived_diagrams(answers)
     if not planned:
         planned = [("Solution Architecture", "architecture")]
     return planned
+
+
+# The diagram plan when nothing was requested (design 1a: required_diagram_types
+# is derived, never read from the RFP or asked). Run 0930's set for a Ping +
+# Saviynt deal, generalised by domain: architecture and integration always,
+# then each domain's flows in this order, at most DERIVED_DIAGRAM_LIMIT.
+DERIVED_DIAGRAM_LIMIT = 5
+_DERIVED_DIAGRAMS: tuple[tuple[Optional[str], str, str], ...] = (
+    (None, "Solution Architecture", "architecture"),
+    (None, "Integration", "component"),
+    ("iga", "Identity Lifecycle", "flow"),
+    ("pam", "Privileged Access Management", "flow"),
+    ("iga", "Identity Governance", "flow"),
+    ("wiam", "Authentication Journey", "sequence"),
+    ("ciam", "Customer Journey", "sequence"),
+)
+
+
+def derived_diagrams(answers: dict) -> list[tuple[str, str]]:
+    """The diagrams the domains in scope call for. The same answers give the
+    same plan on every run."""
+    from proposal_templates import engagement_domains
+    domains = engagement_domains(str(answers.get("iam_vendor") or ""), answers)["domains"]
+    if not domains:                      # nothing known about scope: one diagram
+        return [("Solution Architecture", "architecture")]
+    return [(title, engine_type) for needs, title, engine_type in _DERIVED_DIAGRAMS
+            if needs is None or needs in domains][:DERIVED_DIAGRAM_LIMIT]
 
 
 # (already-covered pattern, title, engine type, domain it needs or None).

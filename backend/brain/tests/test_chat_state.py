@@ -524,3 +524,37 @@ def test_domain_top_up_is_off_by_default():
         "iam_vendor": "Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM",
         "required_diagram_types": "solution/reference"})
     assert len(planned) == 1
+
+
+# --- Design 1a: the diagram plan is derived, never extracted or asked ---------
+
+def test_the_esnad_answers_give_the_0930_diagram_set_on_every_run():
+    """Run 1 got one diagram type out of the SOW; run 0930 had five. The plan
+    now follows from the domains in scope, so the same answers give the same
+    set every time."""
+    from chat_state import plan_diagrams
+    esnad = {"iam_vendor": "Ping Identity and Saviynt",
+             "vendor_scope_map": {"Ping Identity": "Access Management, CIAM",
+                                  "Saviynt": "IGA, PAM"}}
+    expected = [("Solution Architecture", "architecture"), ("Integration", "component"),
+                ("Identity Lifecycle", "flow"), ("Privileged Access Management", "flow"),
+                ("Identity Governance", "flow")]
+    assert plan_diagrams(esnad) == expected
+    assert plan_diagrams(dict(esnad)) == expected
+
+
+def test_the_derived_plan_follows_the_domains_in_scope():
+    from chat_state import plan_diagrams
+    titles = lambda a: [t for t, _ in plan_diagrams(a)]  # noqa: E731
+    assert titles({"iam_vendor": "SailPoint (IGA)"}) == [
+        "Solution Architecture", "Integration", "Identity Lifecycle", "Identity Governance"]
+    assert titles({"iam_vendor": "Ping Identity (Access Management, CIAM)"}) == [
+        "Solution Architecture", "Integration", "Authentication Journey", "Customer Journey"]
+    assert titles({"iam_vendor": "Okta"}) == ["Solution Architecture"]     # scope unknown
+
+
+def test_the_interview_does_not_ask_for_derived_fields():
+    import intake_template as T
+    asked = {q["id"] for q in T.iter_questions(None)}
+    assert "required_diagram_types" not in asked and "diagram_count" not in asked
+    assert "deployment_model" in asked

@@ -489,9 +489,18 @@ _LINK = r"(?:\W+(?:is|are|was|be|been|being|will|would|should|must|can|could|may
         r"option|model|hosting|strictly|explicitly|currently)){0,3}"
 
 
+# After the term only a negating PREDICATE counts: "SaaS is not permitted",
+# "SaaS ruled out". "SaaS without on-premise components" and "SaaS with no
+# on-prem footprint" describe the SaaS; reading their "without" and "no" as
+# negating it turned a SaaS answer into on-prem (review, 2026-10-14). Before
+# the term every negation counts: "no SaaS", "non-SaaS", "not SaaS".
+_TRAILING_NEGATION = (r"\b(?:not|never|cannot|prohibit\w*|forbid\w*|forbade|disallow\w*|"
+                      r"exclud\w*|reject\w*|ruled\s+out)\b|n['\u2019]t\b")
+
+
 def _negated(term: str, clause: str) -> bool:
     neg = scope_filter.NEGATION_RE.pattern
-    return bool(re.search(rf"(?:{neg}){_LINK}\W*{term}|{term}{_LINK}\W+(?:{neg})",
+    return bool(re.search(rf"(?:{neg}){_LINK}\W*{term}|{term}{_LINK}\W+(?:{_TRAILING_NEGATION})",
                           clause, re.I))
 
 

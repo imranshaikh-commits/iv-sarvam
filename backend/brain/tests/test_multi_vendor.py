@@ -1245,7 +1245,11 @@ def test_a_negation_about_something_else_does_not_cancel_saas():
                    "SaaS with no customer-managed infrastructure",
                    "SaaS hosted in-Kingdom, no data may leave Saudi Arabia",
                    "SaaS (Software-as-a-Service) hosted within the Kingdom of Saudi "
-                   "Arabia, in full compliance with the data residency requirements"):
+                   "Arabia, in full compliance with the data residency requirements",
+                   # Review 2026-10-14: after the term, only a negating
+                   # predicate counts. "without" and "no" describe the SaaS.
+                   "SaaS without on-premise components",
+                   "SaaS with no on-prem footprint"):
         assert de._looks_like_saas(answer), answer
 
 

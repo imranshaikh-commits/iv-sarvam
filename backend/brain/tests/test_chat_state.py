@@ -5,6 +5,7 @@ Covers the machinery that unblocked the OWUI chat: state markers surviving the
 messages round-trip, router classification, and bucket-by-bucket progression.
 """
 
+import re
 import os
 import sys
 
@@ -528,19 +529,29 @@ def test_domain_top_up_is_off_by_default():
 
 # --- Design 1a: the diagram plan is derived, never extracted or asked ---------
 
-def test_the_esnad_answers_give_the_0930_diagram_set_on_every_run():
-    """Run 1 got one diagram type out of the SOW; run 0930 had five. The plan
-    now follows from the domains in scope, so the same answers give the same
-    set every time."""
+def test_the_esnad_answers_give_the_same_diagram_set_on_every_run():
+    """Run 1 got one diagram type out of the SOW. The plan follows from the
+    domains in scope, so the same answers give the same set every time; and
+    a topic the vendors' kit already pictures (Saviynt's JML, PAM and EIC
+    slides) is not drawn again (main session, 2026-10-14)."""
     from chat_state import plan_diagrams
     esnad = {"iam_vendor": "Ping Identity and Saviynt",
              "vendor_scope_map": {"Ping Identity": "Access Management, CIAM",
                                   "Saviynt": "IGA, PAM"}}
     expected = [("Solution Architecture", "architecture"), ("Integration", "component"),
-                ("Identity Lifecycle", "flow"), ("Privileged Access Management", "flow"),
-                ("Identity Governance", "flow")]
+                ("Authentication Journey", "sequence"), ("Customer Journey", "sequence")]
     assert plan_diagrams(esnad) == expected
     assert plan_diagrams(dict(esnad)) == expected
+
+
+def test_a_topic_the_kit_covers_is_skipped_by_the_same_rule_as_the_document():
+    import document_engine
+    from chat_state import plan_diagrams
+    titles = [t for t, _ in plan_diagrams({"iam_vendor": "Saviynt (IGA)"})]
+    assert titles == ["Solution Architecture", "Integration"]   # EIC and JML slides cover IGA
+    # The planner uses the document's own rule, not a copy of it.
+    assert all(any(re.search(pat, t, re.I) for pat, _ in document_engine._KIT_COVERS)
+               for t in ("Identity Lifecycle", "Privileged Access Management", "Identity Governance"))
 
 
 def test_the_derived_plan_follows_the_domains_in_scope():

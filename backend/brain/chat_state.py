@@ -678,9 +678,10 @@ def plan_diagrams(answers: dict) -> list[tuple[str, str]]:
 
 
 # The diagram plan when nothing was requested (design 1a: required_diagram_types
-# is derived, never read from the RFP or asked). Run 0930's set for a Ping +
-# Saviynt deal, generalised by domain: architecture and integration always,
-# then each domain's flows in this order, at most DERIVED_DIAGRAM_LIMIT.
+# is derived, never read from the RFP or asked): architecture and integration
+# always, then each domain's flows in this order, skipping any topic the
+# proposed vendors' kit already pictures (document_engine._KIT_COVERS, the
+# rule the document itself drops duplicates by), at most DERIVED_DIAGRAM_LIMIT.
 DERIVED_DIAGRAM_LIMIT = 5
 _DERIVED_DIAGRAMS: tuple[tuple[Optional[str], str, str], ...] = (
     (None, "Solution Architecture", "architecture"),
@@ -696,12 +697,26 @@ _DERIVED_DIAGRAMS: tuple[tuple[Optional[str], str, str], ...] = (
 def derived_diagrams(answers: dict) -> list[tuple[str, str]]:
     """The diagrams the domains in scope call for. The same answers give the
     same plan on every run."""
-    from proposal_templates import engagement_domains
-    domains = engagement_domains(str(answers.get("iam_vendor") or ""), answers)["domains"]
+    import asset_selection
+    import document_engine
+    from proposal_templates import engagement_domains, split_vendors
+    vendor = str(answers.get("iam_vendor") or "")
+    domains = engagement_domains(vendor, answers)["domains"]
     if not domains:                      # nothing known about scope: one diagram
         return [("Solution Architecture", "architecture")]
-    return [(title, engine_type) for needs, title, engine_type in _DERIVED_DIAGRAMS
-            if needs is None or needs in domains][:DERIVED_DIAGRAM_LIMIT]
+    scope = {"iam_vendors": split_vendors(vendor), "domains": domains,
+             "is_saas": document_engine._looks_like_saas(answers.get("deployment_model"))}
+    kit_ids = {k["id"] for section in {item["section"] for item in asset_selection.KIT}
+               for k in asset_selection.kit_for(section, scope)}
+    out = []
+    for needs, title, engine_type in _DERIVED_DIAGRAMS:
+        if needs is not None and needs not in domains:
+            continue
+        if any(re.search(pat, f"{engine_type} {title}", re.I) and any(mark in k for k in kit_ids)
+               for pat, mark in document_engine._KIT_COVERS):
+            continue
+        out.append((title, engine_type))
+    return out[:DERIVED_DIAGRAM_LIMIT]
 
 
 # (already-covered pattern, title, engine type, domain it needs or None).

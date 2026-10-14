@@ -686,8 +686,12 @@ def test_rfp_readings_are_stored_under_hash_and_version():
 
 
 def test_the_rfp_readings_migration_keeps_row_level_security_on():
+    import pytest
     path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "supabase",
                         "migrations", "sarvam_023_rfp_readings.sql")
+    if not os.path.exists(path):
+        # The brain image carries backend/brain only; CI's repo job runs this.
+        pytest.skip("migrations are not in the brain image")
     sql = open(path).read().lower()
     assert "create table if not exists public.rfp_readings" in sql
     assert "enable row level security" in sql

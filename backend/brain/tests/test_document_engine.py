@@ -2779,19 +2779,19 @@ def test_each_proposed_vendor_keeps_its_own_product_evidence():
 # --- Run 1 review, Phase 3 item (c): facts from slide_facts.json -------------
 
 def test_relevant_engagements_is_a_table_of_facts_with_no_client_name_added():
-    """The three case studies (delivered, anonymised exactly as IV's deck gives
+    """The case studies (delivered, anonymised exactly as IV's deck gives
     them, with scale, IV's role and outcomes), then the reference-list rows
     (selected). Built, not written by a model."""
-    facts = document_engine.slide_facts()
-    assert len(facts["case_studies"]) == 3
+    studies = document_engine.case_studies_for(["Ping Identity"])
+    assert len(studies) == 4 and {cs["vendor"] for cs in studies} == {"ping"}
     rows = document_engine.reference_rows(
         _PROPS, [{"proposal_id": 3, "text": "Our clients include ANB and Saudi National Bank."}])
-    table = document_engine.relevant_engagements_table(facts["case_studies"], rows)
+    table = document_engine.relevant_engagements_table(studies, rows)
     lines = [l for l in table.splitlines() if l.startswith("|")]
     delivered = [l for l in lines if l.rstrip().endswith("| Delivered |")]
     selected = [l for l in lines if "Selected" in l]
-    assert len(delivered) == 3 and selected
-    for cs, line in zip(facts["case_studies"], delivered):
+    assert len(delivered) == 4 and selected
+    for cs, line in zip(studies, delivered):
         assert line.startswith(f"| {cs['client_description']} |")
         for field in ("products", "scale", "iv_role", "outcomes"):
             assert cs[field] in line, field
@@ -2890,8 +2890,42 @@ def test_why_vendor_gets_the_only_rankings_and_figures_it_may_state():
     assert "none are on record" in sailpoint and "Gartner" not in sailpoint
 
 
+def test_only_case_studies_for_the_proposed_vendors_are_shown():
+    """main ed014ed: ten case studies, each with a vendor; ping covers ForgeRock."""
+    def vendors(studies):
+        return sorted(cs["vendor"] for cs in studies)
+    assert vendors(document_engine.case_studies_for(["ForgeRock"])) == ["ping"] * 4
+    assert vendors(document_engine.case_studies_for(["Ping Identity", "Saviynt"])) == ["ping"] * 4
+    assert vendors(document_engine.case_studies_for(["Oracle Identity Manager"])) == ["oracle"] * 3
+    assert document_engine.case_studies_for(["Saviynt"]) == []
+    assert document_engine.case_studies_for(["Pingala"]) == []             # whole words
+    assert document_engine.relevant_engagements_table([], []) == ""     # nothing to show
+
+
+def _similar_experience_markdown(iam_vendor, references):
+    async def stub_draft(client, system_prompt, user_prompt, max_tokens=None):
+        return "Drafted."
+
+    async def run():
+        async with httpx.AsyncClient() as client:
+            return await generate_proposal(
+                client, rfp_text="Deliver IAM.", client_name=CLIENT_NAME,
+                proposal_type="implementation", iam_vendor=iam_vendor,
+                embed_fn=stub_embed, retrieve_fn=stub_retrieve,
+                build_grounded_system_fn=stub_build_system, sections=["similar_experience"],
+                references_fn=references)
+
+    saved = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = stub_draft
+    try:
+        return asyncio.run(run())["draft_markdown"]
+    finally:
+        document_engine.draft_with_openrouter = saved
+
+
 def test_the_reference_book_carries_the_engagements_table_to_the_document(monkeypatch):
-    """Caller side: what fetch_reference_book returns must reach the section."""
+    """Caller side: what fetch_reference_book returns must reach the section,
+    with the case studies of the deal's own vendors only."""
     import os
     for key, value in (("OPENROUTER_API_KEY", "test-key"), ("SUPABASE_KEY", "test-key"),
                        ("SUPABASE_URL", "https://example.invalid")):
@@ -2905,26 +2939,27 @@ def test_the_reference_book_carries_the_engagements_table_to_the_document(monkey
     monkeypatch.setattr(app, "_REFERENCE_BOOK", {"at": 0.0, "text": ""})
     refs = asyncio.run(app.fetch_reference_book(None))
     assert refs["text"].startswith("WON ENGAGEMENTS")
-    assert "Leading global bank in Saudi Arabia" in refs["engagements"]
+    assert any(r["client"] == "Riyad Bank" or not r["named"] for r in refs["rows"])
 
-    async def stub_draft(client, system_prompt, user_prompt, max_tokens=None):
-        return "Drafted."
+    row = {"client": "REFERENCE-ROW", "named": True, "vendors": ["SailPoint"],
+           "types": "implementation", "year": 2025}
 
     async def references(client):
-        return {"text": "WON ENGAGEMENTS -- x", "engagements": "| ENGAGEMENTS-TABLE | Delivered |"}
+        return {"text": "WON ENGAGEMENTS -- x", "rows": [row]}
 
-    async def run():
-        async with httpx.AsyncClient() as client:
-            return await generate_proposal(
-                client, rfp_text="Deliver IAM.", client_name=CLIENT_NAME,
-                proposal_type="implementation", iam_vendor="SailPoint",
-                embed_fn=stub_embed, retrieve_fn=stub_retrieve,
-                build_grounded_system_fn=stub_build_system, sections=["similar_experience"],
-                references_fn=references)
+    md = _similar_experience_markdown("SailPoint", references)
+    assert "Clinical research company in Europe" in md
+    assert "Insurance company in Europe" in md
+    assert "REFERENCE-ROW" in md
+    for cs in document_engine.slide_facts()["case_studies"]:
+        if cs["vendor"] != "sailpoint":
+            assert cs["client_description"] not in md, cs["id"]
 
-    saved = document_engine.draft_with_openrouter
-    document_engine.draft_with_openrouter = stub_draft
-    try:
-        assert "ENGAGEMENTS-TABLE" in asyncio.run(run())["draft_markdown"]
-    finally:
-        document_engine.draft_with_openrouter = saved
+
+def test_a_sailpoint_deal_shows_the_sailpoint_case_studies_even_without_the_corpus():
+    async def broken(client):
+        raise RuntimeError("database down")
+
+    md = _similar_experience_markdown("SailPoint", broken)
+    assert "Clinical research company in Europe" in md
+    assert "Leading bank in Malaysia" not in md

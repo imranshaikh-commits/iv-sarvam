@@ -370,6 +370,20 @@ def slide_facts() -> dict:
         return json.load(f)
 
 
+# A case study's vendor key, and the deal vendor names that count for it
+# (ForgeRock is now part of Ping Identity, as in _ACQUIRED_BY).
+_CASE_STUDY_VENDOR_NAMES = {"ping": ("ping", "forgerock")}
+
+
+def case_studies_for(vendors: list[str]) -> list[dict]:
+    """The delivered case studies whose vendor is proposed for this deal."""
+    deal = " ".join(v for v in vendors if v)
+    return [cs for cs in slide_facts().get("case_studies", [])
+            if any(re.search(rf"\b{re.escape(name)}\b", deal, re.I)
+                   for name in _CASE_STUDY_VENDOR_NAMES.get(cs.get("vendor"),
+                                                            (cs.get("vendor") or "-",)))]
+
+
 def _cell(text) -> str:
     return " ".join(str(text or "").split()).replace("|", "/") or "-"
 
@@ -377,7 +391,10 @@ def _cell(text) -> str:
 def relevant_engagements_table(case_studies: list[dict], rows: list[dict]) -> str:
     """Relevant Engagements, built from facts with no model writing it: the
     delivered case studies exactly as the deck describes their clients, then
-    the won proposals (selected, not delivered) from reference_rows."""
+    the won proposals (selected, not delivered) from reference_rows. "" when
+    there is neither, so the subsection falls back to its review marker."""
+    if not case_studies and not rows:
+        return ""
     out = ["| Client | Products | Engagement | Scale | IV's role | Outcomes | Status |",
            "|---|---|---|---|---|---|---|"]
     for cs in case_studies:
@@ -3286,15 +3303,16 @@ async def generate_proposal(
         **engagement_domains(iam_vendor or "", discovery_answers or {}),
     }
     # The case studies need no database, so the table survives a failed read.
-    context["relevant_engagements"] = relevant_engagements_table(
-        slide_facts().get("case_studies", []), [])
+    reference_rows_ = []
     if references_fn:
         try:
             refs = await references_fn(client)
             context["delivered_references"] = refs["text"]
-            context["relevant_engagements"] = refs["engagements"]
+            reference_rows_ = refs["rows"]
         except Exception as e:  # noqa: BLE001 - Similar Experience falls back to partner status
             log.warning("delivered references unavailable: %s", e)
+    context["relevant_engagements"] = relevant_engagements_table(
+        case_studies_for(_vendors), reference_rows_)
     if len(_vendors) > 1:
         log.info("multi-vendor proposal: %s", _vendors)
 

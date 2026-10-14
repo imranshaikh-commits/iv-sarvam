@@ -754,3 +754,28 @@ def test_the_chat_asks_the_reader_for_client_facts_only(tmp_path, monkeypatch):
     asyncio.run(app.run_rfp_extraction("use this RFP"))
     assert asked["ids"] == T.client_fact_ids()
     assert "proposal_type" not in asked["ids"] and "required_diagram_types" not in asked["ids"]
+
+
+def test_ivs_decisions_are_asked_once_with_their_choices():
+    """Design 1a: asked once, in one message, with the valid choices listed."""
+    import intake_template as T
+    import proposal_templates
+    assert set(T.PROPOSAL_TYPES) == set(proposal_templates.VALID_PROPOSAL_TYPES)
+    ex = R.RfpExtraction(fields=[R.ExtractedField("client_name", "ESNAD", 3)],
+                         pages_read=20, source_name="SOW.pdf")
+    report = R.describe_extraction(ex, 96)
+    block = report[report.index("IV's decisions"):]
+    assert "**proposal_type**" in block and "implementation, mss, migration" in block
+    assert "**proposal_depth**" in block and "brief, standard, full" in block
+    assert "**pricing_model**" in block and "fixed, t&m" in block
+    assert "**iam_vendor**" in block
+    assert report.count("IV's decisions") == 1
+
+
+def test_a_decision_outside_its_choices_is_not_an_answer():
+    import intake_template as T
+    answers = {"iam_vendor": "SailPoint", "proposal_type": "SOW",
+               "proposal_depth": "full", "pricing_model": "fixed"}
+    assert T.unanswered_decisions(answers) == ["proposal_type"]
+    assert T.unanswered_decisions({**answers, "proposal_type": "Implementation"}) == []
+    assert T.unanswered_decisions({}) == list(T.ASKED_DECISIONS)

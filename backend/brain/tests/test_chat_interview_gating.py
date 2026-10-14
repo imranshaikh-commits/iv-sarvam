@@ -2620,3 +2620,33 @@ def test_vendor_preference_no_longer_follows_the_word_mapping(monkeypatch):
     assert [c["chunk_id"] for c in out] == ["s", "p"]            # similarity order kept
     out = asyncio.run(app.retrieve_chunks(_Client(), [0.0], "Ping attribute contracts", k=2))
     assert [c["chunk_id"] for c in out] == ["p", "s"]            # a named vendor still leads
+
+
+def test_continue_with_an_invalid_proposal_type_asks_for_it_with_the_choices(monkeypatch):
+    """Design 1a: "SOW" is not a proposal type. The RFP review does not move
+    on with it; it asks IV's decisions again, with the valid choices."""
+    async def fake_get_session(client_, sid):
+        return {"answers": {
+            "client_name": "ESNAD", "industry": "Mining", "iam_vendor": "SailPoint",
+            "proposal_type": "SOW", "business_objectives": "x", "proposal_depth": "full"}}
+
+    async def fake_complete(*a, **kw):
+        return {}
+
+    async def fake_load_plan(session, answers=None):
+        raise AssertionError("must not plan diagrams with an invalid proposal type")
+
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "complete_intake_session", fake_complete)
+    monkeypatch.setattr(app, "load_plan", fake_load_plan)
+    resp = client.post("/v1/chat/completions", json={
+        "messages": [
+            {"role": "assistant", "content": "ok " + cs.encode_marker(
+                cs.ChatState(mode=cs.MODE_RFP_REVIEW, session="sess-rfp-sow"))},
+            {"role": "user", "content": "continue"},
+        ],
+        "stream": False,
+    })
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert cs.decode_marker(content).mode == cs.MODE_RFP_REVIEW
+    assert "**proposal_type**" in content and "implementation, mss, migration" in content

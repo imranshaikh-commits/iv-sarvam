@@ -427,17 +427,27 @@ def extract_mandated_structure(text_by_page: list[str]) -> list[str]:
 
 
 # --- Reporting ----------------------------------------------------------------
-#
-# Fields IV must decide. An RFP is vendor-neutral by design, so their ABSENCE is
-# expected -- reporting them as extraction failures would be wrong and would
-# train the user to ignore the gap list.
-IV_DECISION_FIELDS = (
-    "iam_vendor", "differentiators", "case_studies_to_highlight",
-    "case_studies_include", "partner_positioning", "vendor_partner_positioning",
-    "similar_projects", "pricing_model", "payment_milestones", "license_included",
-    "taxes", "travel", "support_terms", "validity_period", "proposal_depth",
-    "required_diagram_types", "diagram_count",
-)
+
+
+def describe_decisions(answers: dict) -> str:
+    """IV's decisions still to make, in one message, each with its choices.
+
+    An RFP is vendor-neutral by design, so these are never read from it
+    (intake_template's field kinds); their absence is expected, not a failure."""
+    import intake_template
+    missing = intake_template.unanswered_decisions(answers)
+    if not missing:
+        return ""
+    questions = {q["id"]: q for q in intake_template.iter_questions(None)}
+    lines = ["**IV's decisions, not the client's.** An RFP is vendor-neutral by "
+             "design, so I do not read these from it. Answer them in one reply, "
+             "as `field: value`:"]
+    for qid in missing:
+        q = questions[qid]
+        choices = (f": one of {', '.join(str(o) for o in q['options'])}"
+                   if q.get("options") else "")
+        lines.append(f"  - **{qid}** — {q['label']}{choices}")
+    return "\n".join(lines)
 
 
 def describe_extraction(ex: RfpExtraction, total_fields: int) -> str:
@@ -495,12 +505,9 @@ def describe_extraction(ex: RfpExtraction, total_fields: int) -> str:
     if got > 40:
         lines.append(f"  - _…and {got - 40} more_")
 
-    missing_iv = [k for k in IV_DECISION_FIELDS if k not in ex.answers()]
-    if missing_iv:
-        lines += ["",
-                  "These are **IV's decisions, not the client's** — an RFP is "
-                  "vendor-neutral by design, so I cannot read them from it:",
-                  "  " + " · ".join(missing_iv[:12])]
+    decisions = describe_decisions(ex.answers())
+    if decisions:
+        lines += ["", decisions]
     lines += ["",
               "Correct anything above as `field_name: value`, or say "
               "**continue** to move on."]

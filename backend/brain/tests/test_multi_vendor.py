@@ -986,21 +986,22 @@ def test_llm_add_fallback_type_is_valid():
 
 def test_industry_is_not_an_iv_decision_field():
     """The categorisation bug's root cause, confirmed directly: industry is
-    correctly ABSENT from IV_DECISION_FIELDS. The bug was never in this
-    list -- it was in code elsewhere applying the wrong framing regardless
-    of what this list actually says."""
-    assert "industry" not in rfp_intake.IV_DECISION_FIELDS
-    assert "client_name" not in rfp_intake.IV_DECISION_FIELDS
-    assert "iam_vendor" in rfp_intake.IV_DECISION_FIELDS
+    correctly a client fact. The bug was never in this list -- it was in
+    code elsewhere applying the wrong framing regardless of what this list
+    actually says. (The kinds now live in intake_template, design 1a.)"""
+    import intake_template
+    assert intake_template.field_kind("industry") == "client_fact"
+    assert intake_template.field_kind("client_name") == "client_fact"
+    assert intake_template.field_kind("iam_vendor") == "iv_decision"
 
 
 def test_the_still_need_handler_distinguishes_iv_decisions_from_client_facts():
     """CALL-SITE check — the gate message in app.py must actually branch on
-    rfp_intake.IV_DECISION_FIELDS rather than applying one hardcoded framing
-    to every missing field."""
+    the field kinds rather than applying one hardcoded framing to every
+    missing field."""
     import inspect
     src = inspect.getsource(app)
-    assert "rfp_intake.IV_DECISION_FIELDS" in src, (
+    assert 'intake_template.field_kind(m) == "client_fact"' in src, (
         "the still-need message never checks which fields are actually IV's "
         "to decide, so it can misapply that framing to a plain client fact "
         "like industry")

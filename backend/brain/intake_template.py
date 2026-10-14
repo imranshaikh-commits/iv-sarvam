@@ -348,6 +348,24 @@ def field_kind(qid: str) -> str:
             else "derived" if qid in DERIVED_FIELDS else "client_fact")
 
 
+# IV's decisions the consultant is asked for, once, in one message, with their
+# valid choices. The rest of IV_DECISION_FIELDS are optional positioning.
+ASKED_DECISIONS = ("iam_vendor", "proposal_type", "proposal_depth", "pricing_model")
+
+
+def unanswered_decisions(answers: dict) -> list[str]:
+    """ASKED_DECISIONS with no valid answer. A value outside a question's
+    choices ("SOW" for proposal_type) is not an answer."""
+    questions = {q["id"]: q for q in iter_questions(None)}
+    out = []
+    for qid in ASKED_DECISIONS:
+        val = (answers or {}).get(qid)
+        options = [str(o).lower() for o in questions[qid].get("options") or []]
+        if not _is_answered(val) or (options and str(val).strip().lower() not in options):
+            out.append(qid)
+    return out
+
+
 def client_fact_ids() -> list[str]:
     """The fields an RFP may set, in template order."""
     return [q["id"] for q in iter_questions(None) if q["kind"] == "client_fact"]

@@ -46,7 +46,8 @@ import document_engine
 from document_engine import build_reference_book, generate_proposal
 
 # Sprint 5 Pass 1 — structured intake + persistence. Neither module imports app.
-from intake_template import get_intake_template, iter_questions, missing_required
+from intake_template import (get_intake_template, iter_questions, missing_required,
+                             required_question_ids)
 import supabase_client
 import chat_state
 
@@ -3993,38 +3994,29 @@ async def chat_completions(request: Request):
                     log.warning("reading the RFP-derived session failed: %s", e)
                     answers = {}
                 marked, _ = await _mark_discovery_complete(state.session)
-                ptype = answers.get("proposal_type")
-                missing_now = missing_required(answers, ptype)
-                if missing_now:
-                    # rfp_intake.IV_DECISION_FIELDS is the actual list of
-                    # fields an RFP is vendor-neutral BY DESIGN and can never
-                    # state (iam_vendor, pricing_model, differentiators...).
-                    # missing_required() instead checks the GENERIC required-
-                    # fields list, which also includes plain client facts like
-                    # industry and client_name that an RFP normally DOES state
-                    # and this extraction may simply have missed on this pass.
-                    # The message used to claim "these are IV's decisions, not
-                    # the client's" for EVERY missing field regardless of
-                    # which kind it was -- flatly wrong for industry, which
-                    # was correctly extracted as "Mining" from page 3 on a
-                    # previous run of the same SOW.
-                    iv_only = [m for m in missing_now if m in rfp_intake.IV_DECISION_FIELDS]
-                    from_source = [m for m in missing_now if m not in rfp_intake.IV_DECISION_FIELDS]
-                    parts = [f"Before the architecture proposal, I still need: "
-                            f"{', '.join(f'`{m}`' for m in missing_now)}."]
-                    if iv_only:
-                        parts.append(
-                            f"{', '.join(f'`{m}`' for m in iv_only)} "
-                            "-- these are IV's decisions, not the client's; an "
-                            "RFP is vendor-neutral by design and does not state them.")
+                decisions = intake_template.unanswered_decisions(answers)
+                ptype = None if "proposal_type" in decisions else answers.get("proposal_type")
+                # IV's decisions (iam_vendor, proposal_type...) are asked
+                # together, with their choices; a value outside them ("SOW")
+                # is not an answer. A missing client fact is one the RFP
+                # normally states: either it isn't in this one, or the read
+                # missed it.
+                blocking = [d for d in decisions if d in required_question_ids(ptype)]
+                from_source = [m for m in missing_required(answers, ptype)
+                               if intake_template.field_kind(m) == "client_fact"]
+                if blocking or from_source:
+                    parts = []
+                    if blocking:
+                        parts.append("Before the architecture proposal:\n\n"
+                                     + rfp_intake.describe_decisions(answers))
                     if from_source:
                         parts.append(
-                            f"{', '.join(f'`{m}`' for m in from_source)} -- this "
-                            "would normally be stated in the RFP; either it isn't "
+                            f"Still missing: {', '.join(f'`{m}`' for m in from_source)} "
+                            "-- this would normally be stated in the RFP; either it isn't "
                             "in this one, or extraction missed it. Worth a quick "
                             "check against the source document before answering.")
                     return _emit_chat(
-                        " ".join(parts) + "\n\n"
+                        "\n\n".join(parts) + "\n\n"
                         + chat_state.encode_marker(state), stream)
                 plan = await load_plan(state.session, answers)
                 await save_plan(state.session, plan)

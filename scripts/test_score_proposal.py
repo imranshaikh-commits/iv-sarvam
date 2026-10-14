@@ -130,3 +130,13 @@ def test_the_compliance_matrix_is_counted_apart_from_the_tbc_gate():
     assert (m["matrix_rows"], m["matrix_tbc"], m["matrix_compliant"],
             m["matrix_subject"]) == (32, 30, 1, 1)
     assert any(g == "tbc <= 25" and ok for g, ok, _ in S.gates(m, None, {}))
+
+
+def test_the_sme_gate_allows_twenty_five_markers():
+    """Run 1 review: with stripped asides now left as [SME REVIEW] (deep audit
+    F10) and cut-off sections marked (F42), the gate moves from 20 to 25."""
+    gate = next(g for g in S.gates({"sme": 25, "tbc": 0, "exec_summary_words": 500,
+                                    "max_figure_repeats": 0, "top_repeated_figures": [],
+                                    "_body": ""}, None, {"expect_gantt": False})
+                if g[0].startswith("sme"))
+    assert gate[0] == "sme <= 25" and gate[1] is True

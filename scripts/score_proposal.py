@@ -185,7 +185,9 @@ def gates(run: dict, base: dict | None, cfg: dict) -> list[tuple[str, bool, str]
     cap = max(15, (base or {}).get("max_figure_repeats", 0) + 5)
     out.append((f"max_figure_repeats <= {cap}", run["max_figure_repeats"] <= cap,
                 str(run["top_repeated_figures"])))
-    out.append(("sme <= 20", run.get("sme", 0) <= 20, str(run.get("sme", 0))))
+    # 25 since the Run 1 review: stripped asides now leave [SME REVIEW] in
+    # place (audit F10) and cut-off sections are marked (F42).
+    out.append(("sme <= 25", run.get("sme", 0) <= 25, str(run.get("sme", 0))))
     out.append(("tbc <= 25", run.get("tbc", 0) <= 25, str(run.get("tbc", 0))))
     out.append(("no blurry images", run.get("blurry_images", 0) == 0,
                 f"{run.get('blurry_images', 0)} below {BLUR_DPI} dpi (min {run.get('min_image_dpi')})"))

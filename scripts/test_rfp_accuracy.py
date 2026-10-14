@@ -75,3 +75,14 @@ def test_the_fixture_folder_is_ignored_by_git():
     out = subprocess.run(["git", "check-ignore", "-v", "docs/evals/rfp/001-x.json"],
                          cwd=root, capture_output=True, text=True)
     assert out.returncode == 0 and ".gitignore" in out.stdout
+
+
+def test_a_wrong_row_shows_the_expected_pieces_not_the_fixture_notes():
+    """Fixtures carry the tender's own words ("source"); the report must not echo them."""
+    results = [{"tender": "T", "scored": 1, "right": 0, "no_expected_value": [],
+                "wrong": [{"field": "envs", "got": "Dev",
+                           "expected": {"contains": ["dev", "prod"], "pages": [6],
+                                        "source": "TENDER WORDS"}}]}]
+    text = A.report(results)
+    assert "TENDER WORDS" not in text and "'contains': ['dev', 'prod']" in text
+    assert "p.6" in text

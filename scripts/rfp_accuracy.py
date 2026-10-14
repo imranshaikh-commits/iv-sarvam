@@ -22,6 +22,9 @@ to the tender file itself:
         "user_count": {"contains": ["5,000"], "not_contains": ["including"]},
         "out_of_scope": {"missing": true}}}
 
+Each entry may also carry "pages" and "source" (where the tender states it);
+the scorer ignores both, and the report prints the pages only.
+
 "contains": every piece must be in the value (case-insensitive; a number must
 match a whole number, so "50" is not found in "5,000"). "not_contains": none
 may be. "missing": the tender does not state it, so nothing may be read.
@@ -120,7 +123,12 @@ def report(results: list[dict]) -> str:
                         "; two reads identical" if not same else
                         f"; two reads differ on {', '.join(same)}"))
         for w in r["wrong"]:
-            lines.append(f"  WRONG {w['field']}: got {w['got']!r}, expected {w['expected']}")
+            # Only the expected pieces and pages: a fixture's notes quote the tender.
+            exp = {k: v for k, v in w["expected"].items()
+                   if k in ("contains", "not_contains", "missing")}
+            pages = ", ".join(str(p) for p in w["expected"].get("pages") or [])
+            lines.append(f"  WRONG {w['field']}: got {w['got']!r}, expected {exp}"
+                         + (f" (p.{pages})" if pages else ""))
         if r["no_expected_value"]:
             lines.append(f"  no expected value written for: {', '.join(r['no_expected_value'])}")
     return "\n".join(lines)

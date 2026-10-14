@@ -42,6 +42,16 @@ The invented Ping-to-Saviynt "identity data" arrow is gone. The picture was
 rendered and looked at: labels sit inside the gaps and nothing overlaps a box.
 The fixture is the suite's ESNAD-shaped answers, not the real ESNAD session.
 
+## Changes after review (2026-10-14)
+
+| ID | Commit | Change |
+|---|---|---|
+| F54 | `36053dd` | Column order chosen: Users first, then the order of the other columns with the most spec links between neighbours; IV's order on a tie. Column-arrow labels wrap at 14 characters. ESNAD fixture: Users \| Ping \| applications \| Saviynt, **5 arrows** (sign-in, SSO, provisioning, two to sources), canvas 2990 x 1511 px and printed type (3.8 / 3.2 / 2.9 pt) unchanged. Left: the dashed Saviynt-to-sources line now runs diagonally across the lower corner of the applications column. |
+| F61 | `9ef17d0` | After the term only a negating predicate cancels it. "SaaS without on-premise components" and "SaaS with no on-prem footprint" read as SaaS. |
+
+Item 1 below (two true links lost) is superseded by the F54 change: the SSO
+link is drawn; privileged users to Saviynt still is not (Users is pinned first).
+
 ## Things the reviewer should look at
 
 1. **F54 loses two true links, by the rule.** With users, Ping, Saviynt and

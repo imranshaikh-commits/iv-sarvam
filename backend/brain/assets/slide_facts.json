@@ -57,7 +57,7 @@
       "id": "cs_clinical_research_eu",
       "vendor": "sailpoint",
       "client_description": "Clinical research company in Europe",
-      "industry": "Clinical research (the deck's highlights line says Insurance; confirm)",
+      "industry": "Clinical research",
       "products": "SailPoint IdentityIQ",
       "engagement": "Greenfield SailPoint IdentityIQ implementation, later upgraded, with a factory approach to application onboarding",
       "scale": "10,000 identities; 20+ applications",

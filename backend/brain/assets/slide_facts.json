@@ -1,5 +1,5 @@
 {
-  "_about": "Content of the slides withdrawn from the image kit on 2026-10-14 at Imran's instruction (no slide snapshots in a proposal; their content may be used as text). Transcribed by the main session from the slide images. Case studies are anonymised exactly as IV's own case-study deck describes them: never add a client name. Analyst positions carry the date the slide states; do not restate one without it, and do not claim any ranking not listed here.",
+  "_about": "Content of the slides withdrawn from the image kit on 2026-10-14 at Imran's instruction (no slide snapshots in a proposal; their content may be used as text). Transcribed by the main session: the first three from the withdrawn slide images, the rest from the text of IV's corporate deck (Inspirit Vision - Corporate Deck.pptx, case-study slides 24-33), 2026-10-14. Show the case studies whose vendor is proposed for the deal. Case studies are anonymised exactly as IV's own case-study deck describes them: never add a client name. Analyst positions carry the date the slide states; do not restate one without it, and do not claim any ranking not listed here.",
   "case_studies": [
     {
       "id": "ping_cs_ksa_bank",
@@ -11,7 +11,8 @@
       "iv_team": "15 ForgeRock experts, 1 shared QA, 1 DevOps SME (plus 1 ForgeRock SME from Ping Identity)",
       "iv_role": "CIAM implementation, DevOps (ForgeOps automation), application integration, MFA (PIN, biometrics, TOTP, FIDO2), Azure AD integration",
       "outcomes": "Easier customer onboarding; secure omnichannel experience; meets SAMA guidelines for MFA, privacy and consent management",
-      "evidence": "delivered (IV's Ping case-study deck)"
+      "evidence": "delivered (IV's case-study deck)",
+      "vendor": "ping"
     },
     {
       "id": "ping_cs_malaysia_bank",
@@ -23,7 +24,8 @@
       "iv_team": "5 ForgeRock experts, 1 shared QA, 1 DevOps SME (plus 1 ForgeRock SME from Ping Identity)",
       "iv_role": "IDAM and CIAM implementation, DevOps, application integration, MFA (PIN, biometrics, device binding, TOTP), Azure AD integration for automated onboarding, repeatable certification workflows and bulk certification scripts",
       "outcomes": "Identities managed on a single platform; lifecycle automation; better control through RBAC",
-      "evidence": "delivered (IV's Ping case-study deck)"
+      "evidence": "delivered (IV's case-study deck)",
+      "vendor": "ping"
     },
     {
       "id": "ping_cs_paint_manufacturer",
@@ -35,7 +37,99 @@
       "iv_team": "4 Ping experts, 1 shared QA, 1 DevOps SME (plus 1 SME from Ping Identity)",
       "iv_role": "CIAM implementation, DevOps, application integration, MFA (PIN, biometrics, device binding, TOTP), Salesforce integration for onboarding, automated certification",
       "outcomes": "Single user view; seamless customer onboarding; secure login",
-      "evidence": "delivered (IV's Ping case-study deck)"
+      "evidence": "delivered (IV's case-study deck)",
+      "vendor": "ping"
+    },
+    {
+      "id": "cs_bank_india_sg_china",
+      "vendor": "ping",
+      "client_description": "Leading bank in India, Singapore and China",
+      "industry": "Banking",
+      "products": "ForgeRock (now part of Ping Identity) Identity Platform",
+      "engagement": "ForgeRock upgrade from 5.5 to 7.2 with data migration, validation and source-code migration, live sync (old and new running in parallel)",
+      "scale": "600,000+ identities; 350+ applications",
+      "iv_team": "6 ForgeRock experts per country, 2 shared QA, 1 DevOps SME (plus 1 ForgeRock SME per country from Ping Identity)",
+      "iv_role": "Product upgrade, data and source-code migration, Identity Gateway enhancements, fine-grained authorization, performance (load and chaos) testing, monitoring and reporting, integration and support",
+      "outcomes": "Go-live and big-bang cut-over within the planned time at the first attempt; 600,000+ customers on a seamless login; 99.99% platform availability",
+      "evidence": "delivered (IV's case-study deck)"
+    },
+    {
+      "id": "cs_clinical_research_eu",
+      "vendor": "sailpoint",
+      "client_description": "Clinical research company in Europe",
+      "industry": "Clinical research (the deck's highlights line says Insurance; confirm)",
+      "products": "SailPoint IdentityIQ",
+      "engagement": "Greenfield SailPoint IdentityIQ implementation, later upgraded, with a factory approach to application onboarding",
+      "scale": "10,000 identities; 20+ applications",
+      "iv_team": "3 SailPoint experts",
+      "iv_role": "IdentityIQ implementation: Workday-driven identity resolution across multiple records, joiner workflow with email and account-name write-back to Workday, lifecycle management, 20+ application integrations, platform upgrade",
+      "outcomes": "Automated day-to-day operations for Active Directory and downstream application teams; higher productivity through lifecycle automation",
+      "evidence": "delivered (IV's case-study deck)"
+    },
+    {
+      "id": "cs_insurance_eu",
+      "vendor": "sailpoint",
+      "client_description": "Insurance company in Europe",
+      "industry": "Insurance",
+      "products": "SailPoint IdentityNow (Identity Security Cloud)",
+      "engagement": "Application integrations onto SailPoint IdentityNow using IV's factory model, with automated access certification",
+      "scale": "5,000 identities; 20+ applications",
+      "iv_team": "4 SailPoint experts",
+      "iv_role": "System integration, implementation and support: native-connector integrations, automated and repeatable certification campaigns, bulk certification scripts, lifecycle management",
+      "outcomes": "Applications onboarded at pace through the factory model; certification generation automated to each compliance need",
+      "evidence": "delivered (IV's case-study deck)"
+    },
+    {
+      "id": "cs_sg_retail",
+      "vendor": "okta",
+      "client_description": "Large retail conglomerate in Singapore",
+      "industry": "Retail",
+      "products": "Okta (workforce identity)",
+      "engagement": "Greenfield Okta implementation for workforce identity, replacing manual Active Directory provisioning and ADFS",
+      "scale": "5,000 identities; 5+ applications",
+      "iv_team": "Experienced Okta experts",
+      "iv_role": "Active Directory provisioning automation, Office 365 SSO with licence and role provisioning, SSO for Kronos and SAP SuccessFactors, user lifecycle management",
+      "outcomes": "One user ID for all systems; lower cost; better security; user-friendly reporting",
+      "evidence": "delivered (IV's case-study deck)"
+    },
+    {
+      "id": "cs_ksa_largest_bank",
+      "vendor": "oracle",
+      "client_description": "Largest bank in Saudi Arabia",
+      "industry": "Banking",
+      "products": "Oracle Identity Manager",
+      "engagement": "Upgrade (Oracle 11g to 12c) and managed support of the IAM infrastructure, with an onsite team",
+      "scale": "13,000+ identities; 100+ applications",
+      "iv_team": "5 Oracle experts (a dedicated 4-person onsite support team)",
+      "iv_role": "Infrastructure assessment, 11g to 12c migration, onsite managed support, automation of disconnected applications through file, database and web-service connectors",
+      "outcomes": "Automated operations for AD and application teams; higher productivity; better IAM utilisation and operational efficiency",
+      "evidence": "delivered (IV's case-study deck)"
+    },
+    {
+      "id": "cs_ksa_public_sector",
+      "vendor": "oracle",
+      "client_description": "Largest public-sector organisation in Saudi Arabia",
+      "industry": "Public sector",
+      "products": "Oracle Identity Manager",
+      "engagement": "Oracle 11g to 12c upgrade before end of support, onto a current Red Hat Linux, plus a self-service mobile application",
+      "scale": "3,000+ identities; 10+ applications",
+      "iv_team": "4 Oracle experts",
+      "iv_role": "Infrastructure assessment, 11g to 12c migration, bidirectional OIM-SAP identity sync, 10+ application integrations, a custom OIM self-service mobile app",
+      "outcomes": "Better IAM utilisation and efficiency; lower help-desk cost through self-service; stronger governance and compliance",
+      "evidence": "delivered (IV's case-study deck)"
+    },
+    {
+      "id": "cs_ksa_defence_manufacturer",
+      "vendor": "oracle",
+      "client_description": "State-owned Saudi defence electrical, electronics and technology provider",
+      "industry": "Manufacturing (defence)",
+      "products": "Oracle Identity Manager",
+      "engagement": "Assessment and stabilisation of the existing IAM system, then improvement ahead of an upgrade",
+      "scale": "40,000+ identities; 20+ applications",
+      "iv_team": "4 Oracle experts",
+      "iv_role": "IAM assessment, infrastructure stabilisation, Oracle E-Business Suite integration, AD and Exchange onboarding, custom connectors (SharePoint, Box, QPR, Clarity, ODD)",
+      "outcomes": "Better operational efficiency and IAM utilisation; ready for future Oracle version upgrades",
+      "evidence": "delivered (IV's case-study deck)"
     }
   ],
   "analyst_recognition": {

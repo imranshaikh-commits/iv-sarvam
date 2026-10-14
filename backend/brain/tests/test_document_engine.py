@@ -2994,7 +2994,7 @@ _REQS = [{"id": "AM-04", "text": "Risk-based conditional access policies cover l
 
 
 def _run_allocated(allocate, draft=None, sections=("scope_understanding",), reqs=_REQS,
-                   events=None, **kwargs):
+                   events=None, embed=stub_embed, **kwargs):
     events = [] if events is None else events
 
     async def stub_draft(client, system_prompt, user_prompt, max_tokens=None):
@@ -3006,7 +3006,7 @@ def _run_allocated(allocate, draft=None, sections=("scope_understanding",), reqs
             return await generate_proposal(
                 client, rfp_text="Deliver IAM.", client_name=CLIENT_NAME,
                 proposal_type="implementation", iam_vendor="SailPoint",
-                embed_fn=stub_embed, retrieve_fn=stub_retrieve,
+                embed_fn=embed, retrieve_fn=stub_retrieve,
                 build_grounded_system_fn=stub_build_system, sections=list(sections),
                 discovery_answers={"extracted_requirements": _json.dumps(reqs)},
                 allocate_fn=allocate, **kwargs)
@@ -3173,3 +3173,46 @@ def test_without_an_allocation_the_keyword_match_still_applies():
         failing, draft=lambda p: "Risk-based conditional access policies cover location and device.",
         **_matrix_fns())
     assert "| Our Understanding of Scope >" in _matrix_row(result["compliance_markdown"], "AM-04")
+
+
+def _topic_embed(client, text):
+    """Embeds by topic: access-control text one way, anything else another."""
+    async def _e():
+        t = (text or "").lower()
+        return [1.0, 0.0] if ("access" in t or "location" in t) else [0.0, 1.0]
+    return _e()
+
+
+def _tagged_allocation_run(monkeypatch, threshold, paragraph):
+    first = _scope_subsections()[0]
+
+    async def allocate(client, requirements, outline):
+        idx = {o["subsection"]: i for i, o in enumerate(outline)}
+        return {"AM-04": idx[first], "X-01": idx[first]}
+
+    def draft(prompt):
+        return f"{paragraph} [[AM-04]]" if "AM-04:" in prompt else "Body."
+    monkeypatch.setattr(document_engine, "REQ_TAG_MIN_SIMILARITY", threshold)
+    result, _ = _run_allocated(allocate, draft=draft, embed=_topic_embed, **_matrix_fns())
+    return result, first
+
+
+def test_a_tagged_paragraph_that_is_not_about_its_requirement_is_to_be_confirmed(monkeypatch):
+    result, first = _tagged_allocation_run(monkeypatch, 0.5, "Our invoices are issued monthly.")
+    assert result["requirement_tag_similarity"]["AM-04"] < 0.5
+    assert _matrix_row(result["compliance_markdown"], "AM-04").endswith("| To be confirmed | - |")
+    assert "AM-04" in result["compliance_to_confirm"]
+
+
+def test_a_tagged_paragraph_about_its_requirement_keeps_its_reference(monkeypatch):
+    result, first = _tagged_allocation_run(
+        monkeypatch, 0.5, "Location and device feed every access decision.")
+    assert result["requirement_tag_similarity"]["AM-04"] > 0.9
+    assert f"> {first} |" in _matrix_row(result["compliance_markdown"], "AM-04")
+
+
+def test_with_no_threshold_set_the_similarity_is_measured_and_nothing_is_rejected(monkeypatch):
+    """The threshold is set on the ESNAD run; until then it only measures."""
+    result, first = _tagged_allocation_run(monkeypatch, None, "Our invoices are issued monthly.")
+    assert "AM-04" in result["requirement_tag_similarity"]
+    assert f"> {first} |" in _matrix_row(result["compliance_markdown"], "AM-04")

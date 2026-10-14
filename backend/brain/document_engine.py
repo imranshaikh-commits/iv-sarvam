@@ -491,18 +491,59 @@ def requirement_references(entries, sections: list[dict]) -> dict:
     return out
 
 
-def tag_references(sections: list[dict], allocation: dict) -> dict:
-    """requirement id -> 'Section > Subsection' from the drafter's tags. Where a
-    requirement is tagged in several places, the place it was allocated to
-    wins, then the first."""
-    out: dict[str, str] = {}
+def chosen_tags(sections: list[dict], allocation: dict) -> dict:
+    """requirement id -> ('Section > Subsection', paragraph) from the drafter's
+    tags. Where a requirement is tagged in several places, the place it was
+    allocated to wins, then the first."""
+    out: dict[str, tuple[str, str]] = {}
     for sec in sections:
         for tag in sec.get("requirement_tags") or []:
             label = " > ".join(t for t in (sec.get("title"), tag.get("subsection")) if t)
             rid = tag["id"]
             if rid not in out or label == allocation.get(rid):
-                out[rid] = label
+                out[rid] = (label, tag.get("paragraph") or "")
     return out
+
+
+def tag_references(sections: list[dict], allocation: dict) -> dict:
+    """requirement id -> 'Section > Subsection' from the drafter's tags."""
+    return {rid: label for rid, (label, _) in chosen_tags(sections, allocation).items()}
+
+
+# Is a tagged paragraph about its requirement? Cosine similarity of the two
+# embeddings, below which the reference is not trusted (design part 2, step 4).
+# Unset until it is measured on the ESNAD run: until then every similarity is
+# computed and reported, and nothing is rejected on it.
+_min_sim = os.environ.get("SHILPI_REQ_TAG_MIN_SIMILARITY", "").strip()
+REQ_TAG_MIN_SIMILARITY: Optional[float] = float(_min_sim) if _min_sim else None
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+async def tag_similarities(client, sections: list[dict], allocation: dict,
+                           requirements: list[dict], embed_fn) -> dict:
+    """requirement id -> similarity of its tagged paragraph to its text, or
+    None when it could not be measured."""
+    texts = {r["id"]: r["text"] for r in requirements}
+    tags = {rid: para for rid, (_, para) in chosen_tags(sections, allocation).items()
+            if rid in texts}
+    gate = asyncio.Semaphore(8)
+
+    async def one(rid: str, para: str):
+        try:
+            async with gate:
+                a = await embed_fn(client, texts[rid])
+                b = await embed_fn(client, para)
+            return rid, round(_cosine(a, b), 4)
+        except Exception as e:  # noqa: BLE001 - unmeasured, reported as such
+            log.warning("tag similarity for %s could not be measured: %s", rid, e)
+            return rid, None
+    return dict(await asyncio.gather(*(one(rid, para) for rid, para in tags.items())))
 
 
 def matrix_references(entries, sections: list[dict], allocation: dict) -> dict:
@@ -3515,6 +3556,7 @@ async def generate_proposal(
     compliance_unassessed = 0
     compliance_text_cut = False
     compliance_breakdown: dict = {}
+    tag_similarity: dict = {}
     want_compliance = include_compliance_matrix or (
         sections is not None and COMPLIANCE_SECTION_ID in {str(s).strip().lower() for s in sections}
     )
@@ -3535,6 +3577,16 @@ async def generate_proposal(
             compliance_text_cut = bool(getattr(matrix, "text_cut", False))
             if getattr(matrix, "entries", None):
                 _refs = matrix_references(matrix.entries, list(drafted), allocation)
+                # Verify (design part 2, step 4): a tagged paragraph that is
+                # not about its requirement, or could not be checked once a
+                # threshold is set, is To be confirmed.
+                tag_similarity = await tag_similarities(
+                    client, list(drafted), allocation, requirements, embed_fn)
+                if REQ_TAG_MIN_SIMILARITY is not None:
+                    for rid, sim in tag_similarity.items():
+                        if sim is None or sim < REQ_TAG_MIN_SIMILARITY:
+                            _refs[rid] = None
+                log.info("requirement tag similarity: %s", tag_similarity)
                 compliance_markdown, compliance_to_confirm = render_client_matrix(
                     matrix.entries, _refs)
                 compliance_breakdown = matrix_breakdown(matrix.entries, _refs)
@@ -3628,6 +3680,7 @@ async def generate_proposal(
         "filename": filename,
         "included_compliance_matrix": compliance_markdown is not None,
         "compliance_markdown": compliance_markdown,
+        "requirement_tag_similarity": tag_similarity,
         "compliance_to_confirm": compliance_to_confirm,
         "compliance_unassessed": compliance_unassessed,
         "compliance_text_cut": compliance_text_cut,

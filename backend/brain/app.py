@@ -302,7 +302,7 @@ async def _fetch_partner_assets(client: httpx.AsyncClient) -> list[dict]:
     return out
 
 
-_REFERENCE_BOOK: dict = {"at": 0.0, "text": ""}
+_REFERENCE_BOOK: dict = {"at": 0.0, "text": "", "engagements": ""}
 _REFERENCE_TTL_S = float(os.environ.get("SHILPI_REFERENCE_TTL_S", "3600"))
 
 
@@ -328,12 +328,13 @@ async def _rest_all(client: httpx.AsyncClient, table: str, params: dict) -> list
         start += 1000
 
 
-async def fetch_reference_book(client: httpx.AsyncClient) -> str:
-    """Won engagements, named only where IV already cites the client
-    (document_engine.build_reference_book). Cached for an hour: it changes
-    only when the corpus does."""
+async def fetch_reference_book(client: httpx.AsyncClient) -> dict:
+    """{"text": won engagements, named only where IV already cites the client
+    (document_engine.build_reference_book), "engagements": the Relevant
+    Engagements table (case studies, then those rows)}. Cached for an hour: it
+    changes only when the corpus does."""
     if _REFERENCE_BOOK["text"] and time.time() - _REFERENCE_BOOK["at"] < _REFERENCE_TTL_S:
-        return _REFERENCE_BOOK["text"]
+        return {"text": _REFERENCE_BOOK["text"], "engagements": _REFERENCE_BOOK["engagements"]}
     proposals = await _rest_all(client, "proposals", {
         "select": "id,client_name,iam_vendor,proposal_type,year,industry,country,outcome"})
     chunks = await _rest_all(client, "proposal_chunks", {
@@ -342,8 +343,11 @@ async def fetch_reference_book(client: httpx.AsyncClient) -> str:
     text = build_reference_book(proposals, chunks)
     if not text:
         log.warning("reference book empty: no proposal is marked outcome='won'")
-    _REFERENCE_BOOK.update(at=time.time(), text=text)
-    return text
+    engagements = document_engine.relevant_engagements_table(
+        document_engine.slide_facts().get("case_studies", []),
+        document_engine.reference_rows(proposals, chunks))
+    _REFERENCE_BOOK.update(at=time.time(), text=text, engagements=engagements)
+    return {"text": text, "engagements": engagements}
 
 
 async def download_asset(client: httpx.AsyncClient, storage_path: str,

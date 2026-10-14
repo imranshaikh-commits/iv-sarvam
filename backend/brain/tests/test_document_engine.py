@@ -2774,3 +2774,102 @@ def test_each_proposed_vendor_keeps_its_own_product_evidence():
     # Each vendor's best chunks, best first.
     saviynt = [c["chunk_id"] for c in chunks if c["_for_vendor"] == "Saviynt"]
     assert saviynt == [f"Savi-{i}" for i in range(cap)]
+
+
+# --- Run 1 review, Phase 3 item (c): facts from slide_facts.json -------------
+
+def test_relevant_engagements_is_a_table_of_facts_with_no_client_name_added():
+    """The three case studies (delivered, anonymised exactly as IV's deck gives
+    them, with scale, IV's role and outcomes), then the reference-list rows
+    (selected). Built, not written by a model."""
+    facts = document_engine.slide_facts()
+    assert len(facts["case_studies"]) == 3
+    rows = document_engine.reference_rows(
+        _PROPS, [{"proposal_id": 3, "text": "Our clients include ANB and Saudi National Bank."}])
+    table = document_engine.relevant_engagements_table(facts["case_studies"], rows)
+    lines = [l for l in table.splitlines() if l.startswith("|")]
+    delivered = [l for l in lines if l.rstrip().endswith("| Delivered |")]
+    selected = [l for l in lines if "Selected" in l]
+    assert len(delivered) == 3 and selected
+    for cs, line in zip(facts["case_studies"], delivered):
+        assert line.startswith(f"| {cs['client_description']} |")
+        for field in ("products", "scale", "iv_role", "outcomes"):
+            assert cs[field] in line, field
+        for p in _PROPS:                                  # never a client name on a case study
+            assert p["client_name"] not in line
+    assert lines.index(delivered[-1]) < lines.index(selected[0])
+    assert any("Arab National Bank (ANB)" in l for l in selected)          # cited: named
+    assert "Panda" not in table                                            # not cited: described
+    assert any("retail organisation in Saudi Arabia" in l for l in selected)
+
+
+def test_the_relevant_engagements_subsection_is_not_drafted_by_the_model():
+    import proposal_templates
+    drafted = []
+
+    async def fake_draft(client, system_prompt, user_prompt, max_tokens):
+        drafted.append(user_prompt.split('"')[1])
+        return "Body."
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    async def no_chunks(*a, **kw):
+        return []
+
+    ctx = {"client_name": "C", "iam_vendor": "V", "proposal_type": "implementation",
+           "rfp_text": "", "relevant_engagements": "| A | B |\n|---|---|\n| x | Delivered |"}
+    spec = next(s for s in proposal_templates.get_template("implementation")
+                if s.id == "similar_experience")
+    orig = document_engine._draft_with_retry
+    document_engine._draft_with_retry = fake_draft
+    try:
+        out = asyncio.run(document_engine.draft_section(
+            None, spec, ctx, embed_fn=stub_embed, retrieve_fn=no_chunks,
+            build_grounded_system_fn=lambda chunks: "EVIDENCE",
+            top_k=8, subsections=1, max_tokens=3500))
+    finally:
+        document_engine._draft_with_retry = orig
+    sub = next(s for s in out["subsections"] if s["title"] == "Relevant Engagements")
+    assert sub["content"] == ctx["relevant_engagements"]
+    assert "Relevant Engagements" not in drafted and drafted          # the rest still drafted
+
+
+def test_the_reference_book_carries_the_engagements_table_to_the_document(monkeypatch):
+    """Caller side: what fetch_reference_book returns must reach the section."""
+    import os
+    for key, value in (("OPENROUTER_API_KEY", "test-key"), ("SUPABASE_KEY", "test-key"),
+                       ("SUPABASE_URL", "https://example.invalid")):
+        os.environ.setdefault(key, value)
+    import app
+
+    async def fake_rest_all(client, table, params):
+        return _PROPS if table == "proposals" else []
+
+    monkeypatch.setattr(app, "_rest_all", fake_rest_all)
+    monkeypatch.setattr(app, "_REFERENCE_BOOK", {"at": 0.0, "text": ""})
+    refs = asyncio.run(app.fetch_reference_book(None))
+    assert refs["text"].startswith("WON ENGAGEMENTS")
+    assert "Leading global bank in Saudi Arabia" in refs["engagements"]
+
+    async def stub_draft(client, system_prompt, user_prompt, max_tokens=None):
+        return "Drafted."
+
+    async def references(client):
+        return {"text": "WON ENGAGEMENTS -- x", "engagements": "| ENGAGEMENTS-TABLE | Delivered |"}
+
+    async def run():
+        async with httpx.AsyncClient() as client:
+            return await generate_proposal(
+                client, rfp_text="Deliver IAM.", client_name=CLIENT_NAME,
+                proposal_type="implementation", iam_vendor="SailPoint",
+                embed_fn=stub_embed, retrieve_fn=stub_retrieve,
+                build_grounded_system_fn=stub_build_system, sections=["similar_experience"],
+                references_fn=references)
+
+    saved = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = stub_draft
+    try:
+        assert "ENGAGEMENTS-TABLE" in asyncio.run(run())["draft_markdown"]
+    finally:
+        document_engine.draft_with_openrouter = saved

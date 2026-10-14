@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import functools
 import io
 import itertools
+import json
 import logging
 import os
 import re
@@ -274,13 +276,14 @@ def _mentions_client(text: str, alias: str) -> bool:
     return re.search(rf"(?<![\w-]){re.escape(alias)}(?![\w-])", text, flags) is not None
 
 
-def build_reference_book(proposals: list[dict], citation_chunks: list[dict]) -> str:
-    """The WON ENGAGEMENTS block for Similar Experience, or "".
+def reference_rows(proposals: list[dict], citation_chunks: list[dict]) -> list[dict]:
+    """One row per won client: {"client", "named", "vendors", "types", "year"}.
 
     proposals: corpus rows (id, client_name, iam_vendor, proposal_type, year,
     industry, country, outcome). citation_chunks: (proposal_id, text) from the
     similar-experience and company-profile sections of IV's proposals. A client
-    is nameable when a proposal addressed to a DIFFERENT client mentions it."""
+    is nameable when a proposal addressed to a DIFFERENT client mentions it;
+    "client" is then its name, otherwise its description."""
     by_id = {p.get("id"): p for p in proposals}
     won: dict[str, dict] = {}
     for p in proposals:
@@ -304,9 +307,7 @@ def build_reference_book(proposals: list[dict], citation_chunks: list[dict]) -> 
             e["types"].add(p["proposal_type"])
         if p.get("year"):
             e["years"].add(int(p["year"]))
-    if not won:
-        return ""
-    lines = []
+    rows = []
     for client in sorted(won):
         e = won[client]
         aliases = _client_aliases(client)
@@ -321,13 +322,24 @@ def build_reference_book(proposals: list[dict], citation_chunks: list[dict]) -> 
         ind = "" if ind in ("other", "unknown", "none", "n/a") else ind
         noun = f"{ind} organisation" if ind else "organisation"
         art = "an" if noun[0] in "aeiou" else "a"
-        who = (f"{client} (named)" if cited else
-               f"{art} {noun} in {country or 'the region'} (do not name)")
-        years = f", {max(e['years'])}" if e["years"] else ""
         vendors = [f"{v} (now part of {_ACQUIRED_BY[v.lower()]})"
                    if v.lower() in _ACQUIRED_BY else v for v in e["vendors"]]
-        lines.append(f"- {who}: {', '.join(vendors)}; "
-                     f"{', '.join(sorted(e['types'])) or 'engagement'}{years}")
+        rows.append({"client": client if cited else
+                     f"{art} {noun} in {country or 'the region'}",
+                     "named": cited, "vendors": vendors,
+                     "types": ", ".join(sorted(e["types"])) or "engagement",
+                     "year": max(e["years"]) if e["years"] else None})
+    return rows
+
+
+def build_reference_book(proposals: list[dict], citation_chunks: list[dict]) -> str:
+    """The WON ENGAGEMENTS block for Similar Experience, or "" (reference_rows)."""
+    rows = reference_rows(proposals, citation_chunks)
+    if not rows:
+        return ""
+    lines = [f"- {r['client']} ({'named' if r['named'] else 'do not name'}): "
+             f"{', '.join(r['vendors'])}; {r['types']}"
+             + (f", {r['year']}" if r["year"] else "") for r in rows]
     return (f"{REFERENCE_LIST} -- proposals IV won, the ONLY "
             "engagements you may mention:\n" + "\n".join(lines) + "\n"
             "RULES: this list records that IV was SELECTED for the work, not that "
@@ -341,6 +353,44 @@ def build_reference_book(proposals: list[dict], citation_chunks: list[dict]) -> 
             "does not give. Where a proposed vendor has no entry here, describe "
             "IV's partner status and certified resources for it, never a past "
             "engagement.")
+
+
+# --- Facts from IV's own slides (Run 1 review, 2026-10-14) --------------------
+# assets/slide_facts.json holds IV's three delivered case studies (anonymised
+# as the deck gives them), and the analyst positions and vendor figures the
+# partner slides state. They are the only such facts a proposal may carry.
+
+_SLIDE_FACTS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "assets", "slide_facts.json")
+
+
+@functools.lru_cache(maxsize=1)
+def slide_facts() -> dict:
+    with open(_SLIDE_FACTS, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _cell(text) -> str:
+    return " ".join(str(text or "").split()).replace("|", "/") or "-"
+
+
+def relevant_engagements_table(case_studies: list[dict], rows: list[dict]) -> str:
+    """Relevant Engagements, built from facts with no model writing it: the
+    delivered case studies exactly as the deck describes their clients, then
+    the won proposals (selected, not delivered) from reference_rows."""
+    out = ["| Client | Products | Engagement | Scale | IV's role | Outcomes | Status |",
+           "|---|---|---|---|---|---|---|"]
+    for cs in case_studies:
+        out.append("| " + " | ".join(_cell(cs.get(k)) for k in (
+            "client_description", "products", "engagement", "scale", "iv_role",
+            "outcomes")) + " | Delivered |")
+    for r in rows:
+        engagement = r["types"] + (f", {r['year']}" if r["year"] else "")
+        out.append("| " + " | ".join(_cell(v) for v in (
+            r["client"], ", ".join(r["vendors"]), engagement, "", "", "")) +
+            " | Selected (proposal won) |")
+    return ("IV's delivered case studies, then engagements IV was selected for.\n\n"
+            + "\n".join(out))
 
 
 # --- Client-facing compliance matrix -----------------------------------------
@@ -1733,8 +1783,11 @@ async def draft_section(
             sub_system = (_system_for([c for c in product_chunks
                                        if c.get("_for_vendor") == sub_vendor])
                           if sub_vendor else system_prompt)
+            built = (context.get("relevant_engagements")
+                     if section_spec.id == "similar_experience"
+                     and sub_title == "Relevant Engagements" else None)
             try:
-                sub_content = await _draft_with_retry(
+                sub_content = built or await _draft_with_retry(
                     client, sub_system, user_prompt, budget)
             except Exception as e:
                 log.error("draft_section subsection %s failed for %s: %s", sub_title, section_spec.id, e)
@@ -3206,9 +3259,14 @@ async def generate_proposal(
         # scope and solution structure follow them for any vendor mix.
         **engagement_domains(iam_vendor or "", discovery_answers or {}),
     }
+    # The case studies need no database, so the table survives a failed read.
+    context["relevant_engagements"] = relevant_engagements_table(
+        slide_facts().get("case_studies", []), [])
     if references_fn:
         try:
-            context["delivered_references"] = await references_fn(client)
+            refs = await references_fn(client)
+            context["delivered_references"] = refs["text"]
+            context["relevant_engagements"] = refs["engagements"]
         except Exception as e:  # noqa: BLE001 - Similar Experience falls back to partner status
             log.warning("delivered references unavailable: %s", e)
     if len(_vendors) > 1:

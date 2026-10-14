@@ -1475,6 +1475,7 @@ async def _draft_with_retry(
     # `source` is the draft `cleaned` is derived from. If it came back marked as
     # cut off (_post_draft), the marker is put back after the trims below: they
     # drop a last line with no sentence ending, and a bare marker is one.
+    content = _guard_requirement_tags(content)
     source = content
     cleaned = strip_model_artifacts(content)
     cleaned, issues = document_qa.qa_text(cleaned)
@@ -1493,6 +1494,7 @@ async def _draft_with_retry(
             ),
             max_tokens=max_tokens)
         if not _is_blank(retry):
+            retry = _guard_requirement_tags(retry)
             retry_clean, retry_issues = document_qa.qa_text(
                 strip_model_artifacts(retry))
             source = retry
@@ -1507,7 +1509,7 @@ async def _draft_with_retry(
     elif issues:
         log.info("QA: %s", "; ".join(issues))
 
-    cleaned = _trim_mid_sentence_end(cleaned)
+    cleaned = _trim_mid_sentence_end(_unguard_requirement_tags(cleaned))
     tally = _ASIDES.get()
     if tally is not None:
         tally["n"] += document_qa.count_review_markers(strip_model_artifacts(source or ""))
@@ -1628,6 +1630,59 @@ _WANTS_TABLE_RE = re.compile(r"\bmarkdown\s+TABLE\b|\bas a (?:markdown )?TABLE\b
 _WANTS_STRUCTURE_RE = re.compile(r"\bNESTED MARKDOWN\b")
 
 
+# --- Requirement tags (design part 2) -------------------------------------------
+# The drafter ends the paragraph that answers a requirement with its id in
+# double brackets ("[[AM-04]]"). The tag gives the compliance matrix the exact
+# section and subsection, and is removed before anything else sees the text,
+# like citation markers. While the draft is cleaned it is held in a guard form
+# the citation stripper does not touch ("[AM-04]" alone looks like a citation).
+_REQ_TAG_RE = re.compile(r"\[\[\s*([^\[\]\n]{1,40}?)\s*\]\]")
+_REQ_GUARD_RE = re.compile(r"⟦REQ:([^⟧\n]{1,40})⟧")
+
+
+def _guard_requirement_tags(text: Optional[str]) -> Optional[str]:
+    return _REQ_TAG_RE.sub(lambda m: f"⟦REQ:{m.group(1)}⟧", text) if text else text
+
+
+def _unguard_requirement_tags(text: Optional[str]) -> Optional[str]:
+    return _REQ_GUARD_RE.sub(lambda m: f"[[{m.group(1)}]]", text) if text else text
+
+
+def take_requirement_tags(text: str, valid_ids: set) -> tuple[str, list[tuple[str, str]]]:
+    """(text without tags, [(requirement id, the paragraph it tags)]). A tag
+    naming no known requirement is removed and not recorded."""
+    if not text or "[[" not in text:
+        return text, []
+    found: list[tuple[str, str]] = []
+    pieces = re.split(r"(\n\s*\n)", text)
+    for i in range(0, len(pieces), 2):
+        ids = [m.strip() for m in _REQ_TAG_RE.findall(pieces[i])]
+        if not ids:
+            continue
+        para = _REQ_TAG_RE.sub("", pieces[i])
+        para = re.sub(r"[ \t]+([.,;:!?])", r"\1", re.sub(r"[ \t]{2,}", " ", para)).strip()
+        pieces[i] = para
+        found += [(rid, para) for rid in dict.fromkeys(ids) if rid in valid_ids]
+    return "".join(pieces), found
+
+
+def _requirements_block(reqs: list[dict], where: str) -> str:
+    if not reqs:
+        return ""
+    return (f"\n\nREQUIREMENTS THIS {where} MUST ANSWER (the client's own numbered "
+            f"register; each is scored line by line):\n"
+            + "\n".join(f"- {r['id']}: {r['text']}" for r in reqs)
+            + f"\nAnswer each one explicitly. End the paragraph that answers a "
+              f"requirement with its id in double brackets, e.g. [[{reqs[0]['id']}]]. "
+              f"Tag only what you actually answer, never a requirement you only mention.")
+
+
+def _all_requirement_ids(context: dict) -> set:
+    allocated = context.get("allocated_requirements") or {}
+    return ({r["id"] for subs in allocated.values() for rs in subs.values() for r in rs}
+            | {r["id"] for r in context.get("additional_requirements") or []})
+
+
 def section_facets(section_spec: SectionSpec, context: dict,
                    subsections: int) -> list[tuple[str, str]]:
     """The (title, facet) subsections draft_section drafts for this section, in
@@ -1732,6 +1787,12 @@ async def draft_section(
     section_context = f"\n\n{client_facts}RFP / requirement context:\n{rfp_ctx}"
     if section_spec.id == "similar_experience" and context.get("delivered_references"):
         section_context += "\n\n" + context["delivered_references"]
+    # The requirements allocated here before drafting (design part 2). Those
+    # placed on the section itself apply to every subsection of it.
+    allocated = (context.get("allocated_requirements") or {}).get(section_spec.id) or {}
+    section_context += _requirements_block(allocated.get("", []), "SECTION")
+    valid_req_ids = _all_requirement_ids(context)
+    requirement_tags: list[dict] = []
 
     def _system_for(pchunks: list[dict]) -> str:
         evidence_block = build_grounded_system_fn(chunks)
@@ -1787,6 +1848,9 @@ async def draft_section(
                         section_spec.id)
             content = _assumption_placeholder(context, section_title)
             needs_sme_review = True
+        content, tags = take_requirement_tags(content, valid_req_ids)
+        requirement_tags += [{"id": rid, "subsection": "", "paragraph": para}
+                             for rid, para in tags]
     else:
         # Independent drafting call per facet (the structured fan-out).
         parts: list[str] = []
@@ -1841,6 +1905,7 @@ async def draft_section(
             sub_system = (_system_for([c for c in product_chunks
                                        if c.get("_for_vendor") == sub_vendor])
                           if sub_vendor else system_prompt)
+            user_prompt += _requirements_block(allocated.get(sub_title, []), "SUBSECTION")
             if section_spec.id == "solution_overview" and sub_title.startswith("Why "):
                 user_prompt += vendor_recognition_block(
                     sub_vendor or context.get("iam_vendor") or "")
@@ -1866,6 +1931,9 @@ async def draft_section(
                 sub_content = _assumption_placeholder(context, section_title, sub_title, facet)
                 needs_sme_review = True
             sub_content = _strip_echoed_title(sub_content, sub_title)
+            sub_content, tags = take_requirement_tags(sub_content, valid_req_ids)
+            requirement_tags += [{"id": rid, "subsection": sub_title, "paragraph": para}
+                                 for rid, para in tags]
             subsection_results.append({"title": sub_title, "content": sub_content})
             # An untitled subsection is continuous prose under the section
             # heading (IV's executive summary), so no "### " marker.
@@ -1902,6 +1970,7 @@ async def draft_section(
         "max_similarity": max_similarity,
         "needs_sme_review": needs_sme_review,
         "stripped_asides": asides["n"],
+        "requirement_tags": requirement_tags,
     }
 
 

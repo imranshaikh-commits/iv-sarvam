@@ -3049,3 +3049,72 @@ def test_without_extracted_requirements_nothing_is_allocated():
 
     result, _ = _run_allocated(allocate, reqs=[])
     assert called == [] and result["requirement_allocation"] == {}
+
+
+def _draft_scope_section(allocated, reply):
+    """draft_section for Our Understanding of Scope with an allocation in the
+    context. reply(user_prompt) -> draft text. Returns (section, prompts)."""
+    import proposal_templates
+    prompts = []
+
+    async def fake_draft(client, system_prompt, user_prompt, max_tokens):
+        prompts.append((system_prompt, user_prompt))
+        return reply(user_prompt)
+
+    async def no_chunks(*a, **kw):
+        return []
+
+    ctx = {"client_name": "C", "iam_vendor": "SailPoint", "proposal_type": "implementation",
+           "rfp_text": "", "allocated_requirements": allocated}
+    spec = next(s for s in proposal_templates.get_template("implementation")
+                if s.id == "scope_understanding")
+    saved = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = fake_draft
+    try:
+        out = asyncio.run(document_engine.draft_section(
+            None, spec, ctx, embed_fn=stub_embed, retrieve_fn=no_chunks,
+            build_grounded_system_fn=lambda chunks: "EVIDENCE", top_k=8, subsections=1,
+            max_tokens=3500))
+    finally:
+        document_engine.draft_with_openrouter = saved
+    return out, prompts, spec, ctx
+
+
+def test_each_subsection_drafts_with_its_own_requirements_in_hand():
+    import proposal_templates
+    spec = next(s for s in proposal_templates.get_template("implementation")
+                if s.id == "scope_understanding")
+    ctx0 = {"client_name": "C", "iam_vendor": "SailPoint", "proposal_type": "implementation",
+            "rfp_text": ""}
+    first, second = [t for t, _ in document_engine.section_facets(spec, ctx0, 1)][:2]
+    allocated = {"scope_understanding": {first: [_REQS[0]], "": [_REQS[1]]}}
+    out, prompts, _, _ = _draft_scope_section(allocated, lambda p: "Body.")
+    by_sub = {p.split('"')[1]: (sysp, p) for sysp, p in prompts}
+    assert "AM-04: Risk-based conditional access" in by_sub[first][1]
+    assert "[[AM-04]]" in by_sub[first][1]                      # how to tag it
+    assert "AM-04" not in by_sub[second][1]
+    # A requirement placed on the section itself is in every subsection's system prompt.
+    assert all("X-01: The bidder shall place the source code in escrow" in sysp
+               for sysp, _ in prompts)
+
+
+def test_tags_are_recorded_with_their_paragraph_and_never_reach_the_text():
+    import proposal_templates
+    spec = next(s for s in proposal_templates.get_template("implementation")
+                if s.id == "scope_understanding")
+    ctx0 = {"client_name": "C", "iam_vendor": "SailPoint", "proposal_type": "implementation",
+            "rfp_text": ""}
+    first = document_engine.section_facets(spec, ctx0, 1)[0][0]
+    allocated = {"scope_understanding": {first: [_REQS[0]]}}
+
+    def reply(prompt):
+        if "AM-04" in prompt:
+            return ("Conditional access evaluates location and device on every sign-in. "
+                    "[[AM-04]] [2]\n\nA second paragraph on something else. [[ZZ-99]]")
+        return "Body."
+    out, _, _, _ = _draft_scope_section(allocated, reply)
+    assert "[[" not in out["content"] and "AM-04" not in out["content"]
+    assert "ZZ-99" not in out["content"] and "⟦" not in out["content"]
+    assert out["requirement_tags"] == [{
+        "id": "AM-04", "subsection": first,
+        "paragraph": "Conditional access evaluates location and device on every sign-in."}]

@@ -154,7 +154,8 @@ def test_the_filters_are_actually_wired_into_drafting():
     gen = inspect.getsource(document_engine.generate_proposal)
     assert "scope_filter.select_sections" in gen, \
         "sections are drafted without the scope filter"
-    draft = inspect.getsource(document_engine.draft_section)
+    assert "section_facets(" in inspect.getsource(document_engine.draft_section)
+    draft = inspect.getsource(document_engine.section_facets)
     assert "scope_filter.filter_subsections" in draft, \
         "subsections are drafted without the evidence filter"
 
@@ -272,7 +273,8 @@ def test_the_scale_filters_are_wired_into_drafting():
     """CALL-SITE. The tests above pass whether or not document_engine calls
     them -- the built-but-never-wired failure this project has hit six times."""
     import inspect, document_engine
-    src = inspect.getsource(document_engine.draft_section)
+    assert "section_facets(" in inspect.getsource(document_engine.draft_section)
+    src = inspect.getsource(document_engine.section_facets)
     assert "scope_filter.collapse_families" in src
     assert "scope_filter.cap_for_scale" in src
 

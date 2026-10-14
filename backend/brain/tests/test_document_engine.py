@@ -2983,3 +2983,69 @@ def test_a_sailpoint_deal_shows_the_sailpoint_case_studies_even_without_the_corp
     md = _similar_experience_markdown("SailPoint", broken)
     assert "Clinical research company in Europe" in md
     assert "Leading bank in Malaysia" not in md
+
+
+# --- Design part 2: requirement-to-section matching ---------------------------
+
+import json as _json  # noqa: E402
+
+_REQS = [{"id": "AM-04", "text": "Risk-based conditional access policies cover location and device"},
+         {"id": "X-01", "text": "The bidder shall place the source code in escrow"}]
+
+
+def _run_allocated(allocate, draft=None, sections=("scope_understanding",), reqs=_REQS,
+                   events=None, **kwargs):
+    events = [] if events is None else events
+
+    async def stub_draft(client, system_prompt, user_prompt, max_tokens=None):
+        events.append(("draft", user_prompt))
+        return draft(user_prompt) if draft else "Drafted."
+
+    async def run():
+        async with httpx.AsyncClient() as client:
+            return await generate_proposal(
+                client, rfp_text="Deliver IAM.", client_name=CLIENT_NAME,
+                proposal_type="implementation", iam_vendor="SailPoint",
+                embed_fn=stub_embed, retrieve_fn=stub_retrieve,
+                build_grounded_system_fn=stub_build_system, sections=list(sections),
+                discovery_answers={"extracted_requirements": _json.dumps(reqs)},
+                allocate_fn=allocate, **kwargs)
+
+    saved = document_engine.draft_with_openrouter
+    document_engine.draft_with_openrouter = stub_draft
+    try:
+        return asyncio.run(run()), events
+    finally:
+        document_engine.draft_with_openrouter = saved
+
+
+def test_requirements_are_allocated_before_drafting_to_what_will_be_drafted():
+    seen = {}
+
+    async def allocate(client, requirements, outline):
+        seen["reqs"], seen["outline"] = requirements, outline
+        seen["drafts_before"] = len(events_ref)
+        first = next(i for i, o in enumerate(outline) if o["subsection"])
+        return {"AM-04": first, "X-01": None}
+
+    events_ref = []
+    result, events = _run_allocated(allocate, events=events_ref)
+    assert seen["drafts_before"] == 0 and events_ref
+    assert [r["id"] for r in seen["reqs"]] == ["AM-04", "X-01"]
+    drafted = re.findall(r"(?m)^### (.+)$", result["draft_markdown"])
+    outline_subs = [o["subsection"] for o in seen["outline"] if o["section_id"] == "scope_understanding"]
+    assert outline_subs == drafted                      # exactly the subsections that get drafted
+    first = next(o for o in seen["outline"] if o["subsection"])
+    assert result["requirement_allocation"] == {
+        "AM-04": f"{first['section']} > {first['subsection']}", "X-01": "not_in_template"}
+
+
+def test_without_extracted_requirements_nothing_is_allocated():
+    called = []
+
+    async def allocate(client, requirements, outline):
+        called.append(1)
+        return {}
+
+    result, _ = _run_allocated(allocate, reqs=[])
+    assert called == [] and result["requirement_allocation"] == {}

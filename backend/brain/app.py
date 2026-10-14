@@ -665,6 +665,52 @@ async def rfp_structured_call(response_model, messages: list[dict]):
         max_tokens=RFP_PAGE_MAX_TOKENS, timeout=RFP_PAGE_TIMEOUT_S, max_retries=1)
 
 
+class _AllocationItem(BaseModel):
+    requirement_id: str
+    target: int = Field(description="the number of the place that must answer it; 0 when none fits")
+
+
+class _Allocation(BaseModel):
+    items: list[_AllocationItem] = []
+
+
+_ALLOCATE_PROMPT = """You are planning an IAM proposal's response to a client's
+numbered requirement register. Each requirement must be answered in the ONE
+place of the proposal whose subject it is. The places are numbered below.
+
+Return one item per requirement: its id exactly as given, and the number of
+the place that must answer it. Use 0 only when no place's subject covers it
+(it will then be answered in an Additional Requirements subsection). Prefer the
+most specific place: a lifecycle requirement goes to the subsection about
+identity lifecycle, not to an overview."""
+
+
+async def allocate_requirements(client, requirements: list[dict],
+                                outline: list[dict]) -> dict:
+    """requirement id -> index into outline, or None (not_in_template). One
+    structured call per proposal (design part 2). Ids the model invents, and
+    numbers that name no place, are left out; generate_proposal treats a
+    requirement it has no place for as not in the template."""
+    places = "\n".join(f"{i}. " + " > ".join(t for t in (o["section"], o["subsection"]) if t)
+                       for i, o in enumerate(outline, start=1))
+    register = "\n".join(f"- {r['id']}: {r['text']}" for r in requirements)
+    res = await _structured_with_fallback(
+        _Allocation,
+        [{"role": "system", "content": _ALLOCATE_PROMPT},
+         {"role": "user", "content": f"PLACES:\n{places}\n\nREQUIREMENTS:\n{register}"}],
+        models=[PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL], temperature=0, max_retries=1)
+    asked = {r["id"] for r in requirements}
+    out: dict = {}
+    for item in res.items or []:
+        if item.requirement_id not in asked or item.requirement_id in out:
+            continue
+        if item.target == 0:
+            out[item.requirement_id] = None
+        elif 1 <= item.target <= len(outline):
+            out[item.requirement_id] = item.target - 1
+    return out
+
+
 async def run_rfp_extraction(display_name_: str) -> tuple[Optional[rfp_intake.RfpExtraction], str]:
     """Find, read and extract the RFP just attached. (extraction, error) pair.
 
@@ -3304,6 +3350,8 @@ async def _generate_proposal(request: Request, body: dict):
                 retrieve_product_fn=retrieve_product_chunks,
                 build_product_evidence_fn=build_product_evidence_block,
                 references_fn=fetch_reference_book,
+                # Requirements are placed before drafting (design part 2).
+                allocate_fn=allocate_requirements,
             )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)

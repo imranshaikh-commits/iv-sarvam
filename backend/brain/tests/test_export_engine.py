@@ -1098,3 +1098,34 @@ def test_the_stored_trace_names_the_diagrams_that_went_into_the_document(monkeyp
     assert trace[0]["id"] == "executive_summary"               # the sections are still there
     document = [t for t in trace if t.get("id") == "_document"]
     assert document == [{"id": "_document", "diagram_ids": ["d-approved"]}]
+
+
+def test_the_brain_allocates_requirements_through_its_own_structured_call(monkeypatch):
+    """Design part 2, caller side: the allocation must be wired, not just accepted."""
+    _patch_common(monkeypatch)
+    seen = {}
+
+    async def spying_generate(client, **kwargs):
+        seen["allocate_fn"] = kwargs.get("allocate_fn")
+        return await _fake_generate_proposal(client, **kwargs)
+    monkeypatch.setattr(app_module, "generate_proposal", spying_generate)
+    with TestClient(app_module.app) as tc:
+        tc.post("/v1/generate-proposal", json=_base_body())
+    assert seen["allocate_fn"] is app_module.allocate_requirements
+
+
+def test_allocation_answers_map_to_outline_positions(monkeypatch):
+    import asyncio
+
+    async def fake_structured(model, messages, **kw):
+        assert "1. Our Understanding of Scope > Current State" in messages[1]["content"]
+        return model(items=[{"requirement_id": "AM-04", "target": 1},
+                            {"requirement_id": "X-01", "target": 0},
+                            {"requirement_id": "ZZ-9", "target": 1},     # not asked about
+                            {"requirement_id": "AM-05", "target": 7}])   # no such target
+    monkeypatch.setattr(app_module, "_structured_with_fallback", fake_structured)
+    outline = [{"section_id": "scope_understanding", "section": "Our Understanding of Scope",
+                "subsection": "Current State"}]
+    reqs = [{"id": "AM-04", "text": "a"}, {"id": "X-01", "text": "b"}, {"id": "AM-05", "text": "c"}]
+    got = asyncio.run(app_module.allocate_requirements(None, reqs, outline))
+    assert got == {"AM-04": 0, "X-01": None}

@@ -1628,6 +1628,33 @@ _WANTS_TABLE_RE = re.compile(r"\bmarkdown\s+TABLE\b|\bas a (?:markdown )?TABLE\b
 _WANTS_STRUCTURE_RE = re.compile(r"\bNESTED MARKDOWN\b")
 
 
+def section_facets(section_spec: SectionSpec, context: dict,
+                   subsections: int) -> list[tuple[str, str]]:
+    """The (title, facet) subsections draft_section drafts for this section, in
+    order; [] for one undivided body. One definition: the requirement
+    allocation offers exactly these as targets."""
+    own = section_spec.render_subsections(context)
+    if own:
+        # Drop subsections whose discovery inputs are all empty. A TABLE
+        # subsection with no inputs renders a header row and "To be confirmed"
+        # in every cell, which reads as work done and figures withheld. BTPN
+        # produced a 6x6 Licence BOQ and a 6x3 Payment Milestones entirely of
+        # placeholders, against an IV proposal that had neither table.
+        _ans = context.get("discovery_answers")
+        # Three filters, narrowest last:
+        #   1. evidence   — drop subsections whose inputs are all empty
+        #   2. families   — one sizing/RACI/tranche variant, not four
+        #   3. scale      — cap per section for a compact engagement
+        facets = scope_filter.filter_subsections(
+            type("_S", (), {"subsections": own})(), _ans)
+        facets = scope_filter.collapse_families(facets, _ans)
+        facets = scope_filter.cap_for_scale(facets, _ans)
+    else:
+        n_sub = max(1, min(int(subsections), len(SUBSECTION_FACETS)))
+        facets = SUBSECTION_FACETS[:n_sub] if n_sub > 1 else []
+    return facets
+
+
 async def draft_section(
     client: httpx.AsyncClient,
     section_spec: SectionSpec,
@@ -1734,25 +1761,7 @@ async def draft_section(
     # Overview / Detailed Design / Considerations triple, which is what every
     # section used to get and why the table of contents repeated three headings
     # seven times.
-    own = section_spec.render_subsections(context)
-    if own:
-        # Drop subsections whose discovery inputs are all empty. A TABLE
-        # subsection with no inputs renders a header row and "To be confirmed"
-        # in every cell, which reads as work done and figures withheld. BTPN
-        # produced a 6x6 Licence BOQ and a 6x3 Payment Milestones entirely of
-        # placeholders, against an IV proposal that had neither table.
-        _ans = context.get("discovery_answers")
-        # Three filters, narrowest last:
-        #   1. evidence   — drop subsections whose inputs are all empty
-        #   2. families   — one sizing/RACI/tranche variant, not four
-        #   3. scale      — cap per section for a compact engagement
-        facets = scope_filter.filter_subsections(
-            type("_S", (), {"subsections": own})(), _ans)
-        facets = scope_filter.collapse_families(facets, _ans)
-        facets = scope_filter.cap_for_scale(facets, _ans)
-    else:
-        n_sub = max(1, min(int(subsections), len(SUBSECTION_FACETS)))
-        facets = SUBSECTION_FACETS[:n_sub] if n_sub > 1 else []
+    facets = section_facets(section_spec, context, subsections)
 
     async def _draft_once(user_prompt: str) -> Optional[str]:
         return await _draft_with_retry(client, system_prompt, user_prompt, max_tokens)
@@ -3205,6 +3214,37 @@ def _integration_rows(value) -> list[list[str]]:
 # Orchestration
 # ---------------------------------------------------------------------------
 
+def parse_extracted_requirements(answers: Optional[dict]) -> list[dict]:
+    """The requirement register stored with the session ([{id, text, category}]),
+    or []. Plain dicts, not app.Requirement: document_engine cannot import app
+    without a cycle; run_compliance_matrix turns them into Requirements."""
+    raw = (answers or {}).get("extracted_requirements")
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        return [{"id": r.get("id") or r.get("ref") or "", "text": r.get("text") or "",
+                 "category": r.get("category")}
+                for r in parsed if (r.get("text") or "").strip()]
+    except Exception as e:  # noqa: BLE001 - the matrix falls back to rfp_text
+        log.warning("could not parse extracted_requirements: %s", e)
+        return []
+
+
+def allocation_outline(specs: list[SectionSpec], context: dict,
+                       subsections: int) -> list[dict]:
+    """Every place a requirement can be answered: each drafted subsection, or
+    the section itself when it has none of its own."""
+    out = []
+    for spec in specs:
+        title = spec.render_title(context)
+        own = bool(spec.render_subsections(context))
+        facets = section_facets(spec, context, subsections) if own else []
+        for sub_title, _ in facets or [("", "")]:
+            out.append({"section_id": spec.id, "section": title, "subsection": sub_title})
+    return out
+
+
 async def generate_proposal(
     client: httpx.AsyncClient,
     rfp_text: str,
@@ -3229,6 +3269,7 @@ async def generate_proposal(
     retrieve_product_fn=None,
     build_product_evidence_fn=None,
     references_fn: Optional[Callable] = None,
+    allocate_fn: Optional[Callable] = None,
 ) -> dict:
     """Orchestrate: pick template, draft sections concurrently, assemble DOCX.
 
@@ -3325,6 +3366,36 @@ async def generate_proposal(
     if len(_vendors) > 1:
         log.info("multi-vendor proposal: %s", _vendors)
 
+    # Allocate before drafting (design part 2): each requirement goes to the
+    # subsection that must answer it, or to none (not_in_template). Matching
+    # after drafting, by keyword overlap, left 17 of ESNAD's 56 rows with no
+    # reference although IV had answered several of them.
+    requirements = parse_extracted_requirements(discovery_answers)
+    allocation: dict[str, str] = {}
+    if requirements and allocate_fn:
+        outline = allocation_outline(draft_specs, context, tier.subsections_per_section)
+        try:
+            placed = await allocate_fn(client, requirements, outline)
+        except Exception as e:  # noqa: BLE001 - matching falls back to keywords
+            log.warning("requirement allocation failed (%s); keyword matching only", e)
+            placed = None
+        if placed is not None:
+            allocated: dict[str, dict[str, list[dict]]] = {}
+            additional: list[dict] = []
+            for r in requirements:
+                i = placed.get(r["id"])
+                if isinstance(i, int) and 0 <= i < len(outline):
+                    o = outline[i]
+                    allocated.setdefault(o["section_id"], {}).setdefault(
+                        o["subsection"], []).append(r)
+                    allocation[r["id"]] = " > ".join(
+                        t for t in (o["section"], o["subsection"]) if t)
+                else:
+                    additional.append(r)
+                    allocation[r["id"]] = "not_in_template"
+            context["allocated_requirements"] = allocated
+            context["additional_requirements"] = additional
+
     sem = asyncio.Semaphore(DOC_CONCURRENCY)
 
     async def _draft(spec: SectionSpec) -> dict:
@@ -3362,25 +3433,7 @@ async def generate_proposal(
         # nothing to extract from, and the first live run against one (ESNAD)
         # shipped a proposal with zero requirement citations as a direct
         # result. See app.py's RFP-upload handler, which persists this list.
-        _extracted_reqs = None
-        _raw_reqs = (discovery_answers or {}).get("extracted_requirements")
-        if _raw_reqs:
-            try:
-                import json as _json
-                _parsed = _json.loads(_raw_reqs) if isinstance(_raw_reqs, str) else _raw_reqs
-                # Plain dicts, not a Requirement instance: document_engine.py
-                # cannot import app.Requirement without an import cycle (app.py
-                # already imports generate_proposal FROM this module). The
-                # dict is turned into a real Requirement on the other side, in
-                # run_compliance_matrix, the one place both the class and this
-                # data can meet without the cycle.
-                _extracted_reqs = [
-                    {"id": r.get("id") or r.get("ref") or "",
-                     "text": r.get("text") or "", "category": r.get("category")}
-                    for r in _parsed if (r.get("text") or "").strip()
-                ] or None
-            except Exception as e:  # noqa: BLE001 - fall back to rfp_text re-derivation
-                log.warning("could not parse extracted_requirements: %s", e)
+        _extracted_reqs = requirements or None
         try:
             matrix = await run_compliance_matrix_fn(
                 client, rfp_text, _extracted_reqs, top_k)
@@ -3486,6 +3539,7 @@ async def generate_proposal(
         "compliance_breakdown": compliance_breakdown,
         "diagrams_left_out": diagrams_left_out,
         "stripped_asides": stripped_asides,
+        "requirement_allocation": allocation,
         "proposal_depth": tier.name,
         "included_appendices": tier.include_appendices,
     }

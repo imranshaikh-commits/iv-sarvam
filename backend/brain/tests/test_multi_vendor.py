@@ -694,9 +694,9 @@ def test_document_engine_reads_extracted_requirements_from_discovery_answers():
     """CALL-SITE check — document_engine.py must actually READ the persisted
     field, not just have app.py write it into a void."""
     import inspect
-    src = inspect.getsource(de)
-    assert 'discovery_answers or {}).get("extracted_requirements")' in src, (
-        "document_engine.py never reads extracted_requirements back out")
+    assert '.get("extracted_requirements")' in inspect.getsource(de.parse_extracted_requirements)
+    assert "parse_extracted_requirements(discovery_answers)" in inspect.getsource(
+        de.generate_proposal), "document_engine.py never reads extracted_requirements back out"
 
 
 # ---------------------------------------------------------------------------

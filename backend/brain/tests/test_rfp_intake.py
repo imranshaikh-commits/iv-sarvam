@@ -689,3 +689,68 @@ def test_a_requirement_repeated_on_another_page_is_listed_once(monkeypatch, tmp_
     assert [(r.ref, r.page) for r in ex.requirements] == [
         ("AM-01", 1), ("AM-02", 1), ("AM-02", 2)]
     assert "privileged administrators" in ex.requirements[2].text
+
+
+# --- Design 1a: three kinds of intake field ----------------------------------
+
+def test_every_intake_field_has_one_kind():
+    import intake_template as T
+    kinds = {q["id"]: q.get("kind") for q in T.iter_questions(None)}
+    assert set(kinds.values()) <= {"client_fact", "iv_decision", "derived"}
+    for fid in ("iam_vendor", "proposal_type", "proposal_depth", "pricing_model"):
+        assert kinds[fid] == "iv_decision", fid
+    assert kinds["user_count"] == "client_fact" and kinds["envs"] == "client_fact"
+    assert T.field_kind("required_diagram_types") == "derived"
+    assert T.field_kind("diagram_count") == "derived"
+    assert "proposal_type" not in T.client_fact_ids()
+
+
+def test_an_rfp_that_says_sow_cannot_set_proposal_type(monkeypatch):
+    """Run 1: proposal_type came back "SOW", which the database rejects. IV's
+    decisions and derived fields are never taken from a client document, even
+    when a caller asks for them and the model offers them."""
+    import asyncio
+    import tempfile
+
+    class _FV:
+        def __init__(self, field_id, value):
+            self.field_id, self.value = field_id, value
+
+    class _PageEx:
+        field_values = [_FV("proposal_type", "SOW"), _FV("iam_vendor", "Okta"),
+                        _FV("required_diagram_types", "deployment"),
+                        _FV("user_count", "5,000 workforce")]
+        requirements, eligibility_gates, structure_headings = [], [], []
+
+    async def fake_structured(model, messages):
+        return _PageEx()
+
+    monkeypatch.setattr(R, "read_text_layer", lambda path: ["tender text " * 30])
+    import intake_template as T
+    every_id = [q["id"] for q in T.iter_questions(None)]
+    with tempfile.TemporaryDirectory() as tmp:
+        ex = asyncio.run(R.extract_rfp("x.pdf", "SOW.pdf", every_id, fake_structured, tmp))
+    assert ex.answers() == {"user_count": "5,000 workforce"}
+
+
+def test_the_chat_asks_the_reader_for_client_facts_only(tmp_path, monkeypatch):
+    """Caller side: run_rfp_extraction must not ask the model for IV's decisions."""
+    import asyncio
+    os.environ.setdefault("OPENROUTER_API_KEY", "test-key")
+    os.environ.setdefault("SUPABASE_URL", "https://example.invalid")
+    os.environ.setdefault("SUPABASE_KEY", "test-key")
+    import app
+    import intake_template as T
+    upload = tmp_path / "1b4e28ba-2fa1-11d2-883f-0016d3cca427_SOW.pdf"
+    upload.write_bytes(b"%PDF-1.7 x")
+    asked = {}
+
+    async def spy_extract(pdf_path, source_name, field_ids, structured_fn, tmp):
+        asked["ids"] = list(field_ids)
+        return R.RfpExtraction(fields=[R.ExtractedField("client_name", "Acme", 1)])
+
+    monkeypatch.setattr(R, "pick_upload", lambda **k: (str(upload), [], ""))
+    monkeypatch.setattr(R, "extract_rfp", spy_extract)
+    asyncio.run(app.run_rfp_extraction("use this RFP"))
+    assert asked["ids"] == T.client_fact_ids()
+    assert "proposal_type" not in asked["ids"] and "required_diagram_types" not in asked["ids"]

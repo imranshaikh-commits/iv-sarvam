@@ -320,6 +320,39 @@ _BUCKETS: list[dict] = [
 ]
 
 
+# --- field kinds (design 2026-10-14, part 1a) -----------------------------------
+# One definition, read by the RFP reader, the confirmation and the interview:
+#   client_fact  -- what the client states; read from the RFP, with evidence.
+#   iv_decision  -- IV's to decide; never read from a client document, asked.
+#   derived      -- computed from facts and decisions; never read, never asked.
+# Run 1 (ESNAD) took proposal_type "SOW" and a one-item diagram list from the
+# SOW itself: a client document cannot say what IV proposes.
+IV_DECISION_FIELDS = frozenset({
+    "iam_vendor", "proposal_type", "proposal_depth", "pricing_model",
+    "deal_size_bucket", "license_included", "differentiators",
+    "case_studies_to_highlight", "case_studies_include", "case_studies_exclude",
+    "partner_positioning", "vendor_partner_positioning", "similar_projects",
+    "partner_tier_certifications",
+})
+DERIVED_FIELDS = frozenset({"required_diagram_types", "diagram_count"})
+
+for _bucket in _BUCKETS:
+    for _question in _bucket["questions"]:
+        _question["kind"] = ("iv_decision" if _question["id"] in IV_DECISION_FIELDS
+                             else "derived" if _question["id"] in DERIVED_FIELDS
+                             else "client_fact")
+
+
+def field_kind(qid: str) -> str:
+    return ("iv_decision" if qid in IV_DECISION_FIELDS
+            else "derived" if qid in DERIVED_FIELDS else "client_fact")
+
+
+def client_fact_ids() -> list[str]:
+    """The fields an RFP may set, in template order."""
+    return [q["id"] for q in iter_questions(None) if q["kind"] == "client_fact"]
+
+
 def _conditional_applies(rule: str | None, proposal_type: str | None) -> bool:
     """Evaluate a simple 'field==value' conditional against the proposal_type.
 

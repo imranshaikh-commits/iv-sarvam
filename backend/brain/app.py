@@ -690,7 +690,7 @@ async def run_rfp_extraction(display_name_: str) -> tuple[Optional[rfp_intake.Rf
         return None, ("I don't see a document attached in the last few minutes. "
                       "Attach the RFP or SOW file and try again.")
 
-    field_ids = [q["id"] for q in intake_template.iter_questions(None)]
+    field_ids = intake_template.client_fact_ids()
     with tempfile.TemporaryDirectory(prefix="rfp-") as tmp:
         # A Word tender is converted to PDF first; a type that cannot be read
         # is refused here, by name. LibreOffice blocks, so off the event loop.

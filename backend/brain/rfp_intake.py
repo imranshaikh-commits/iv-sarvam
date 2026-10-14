@@ -683,6 +683,10 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
     under-collecting those costs a mark in evaluation, unlike a superseded
     field value.
     """
+    import intake_template
+    # Only client facts are read from a client document (design 1a): even a
+    # caller that asks for proposal_type or the diagram list does not get them.
+    field_ids = [f for f in field_ids if intake_template.field_kind(f) == "client_fact"]
     text_pages = read_text_layer(pdf_path)
     use_vision = needs_vision(text_pages)
 

@@ -2835,6 +2835,61 @@ def test_the_relevant_engagements_subsection_is_not_drafted_by_the_model():
     assert "Relevant Engagements" not in drafted and drafted          # the rest still drafted
 
 
+def _why_prompts(vendors):
+    """The user prompt of every subsection of the Solution Overview, by heading."""
+    import proposal_templates
+    prompts = {}
+
+    async def fake_draft(client, system_prompt, user_prompt, max_tokens):
+        prompts[user_prompt.split('"')[1]] = user_prompt
+        return "Body."
+
+    async def stub_embed(c, q):
+        return [0.0] * 8
+
+    async def no_chunks(*a, **kw):
+        return []
+
+    joined = " and ".join(vendors)
+    ctx = {"client_name": "C", "iam_vendor": joined, "iam_vendors": list(vendors),
+           "proposal_type": "implementation", "rfp_text": "",
+           **proposal_templates.engagement_domains(joined, {})}
+    spec = next(s for s in proposal_templates.get_template("implementation")
+                if s.id == "solution_overview")
+    orig = document_engine._draft_with_retry
+    document_engine._draft_with_retry = fake_draft
+    try:
+        asyncio.run(document_engine.draft_section(
+            None, spec, ctx, embed_fn=stub_embed, retrieve_fn=no_chunks,
+            build_grounded_system_fn=lambda chunks: "EVIDENCE",
+            top_k=8, subsections=1, max_tokens=3500))
+    finally:
+        document_engine._draft_with_retry = orig
+    return prompts
+
+
+def test_why_vendor_gets_the_only_rankings_and_figures_it_may_state():
+    """Why Ping Identity / Why Saviynt: the analyst positions and vendor figures
+    from slide_facts.json reach the drafter as the only ones it may state, each
+    with its date; a vendor with none on record is told so."""
+    facts = document_engine.slide_facts()
+    prompts = _why_prompts(["Ping Identity", "Saviynt"])
+    ping = next(p for h, p in prompts.items() if h.startswith("Why Ping"))
+    saviynt = next(p for h, p in prompts.items() if h.startswith("Why Saviynt"))
+    for entry in facts["analyst_recognition"]["ping"] + facts["vendor_facts"]["ping"]:
+        assert entry in ping, entry
+    assert "ONLY" in ping and "no other" in ping.lower()
+    assert "Leadership Compass for Identity Governance and Administration" in saviynt
+    assert "confirm it before" not in saviynt                 # the note to us is not passed on
+    assert "where an entry gives no year, give none" in saviynt.lower()
+    assert "Gartner" not in saviynt and "Gartner" in ping     # each vendor its own
+    for heading, prompt in prompts.items():                   # only the Why subsections
+        if not heading.startswith("Why "):
+            assert "ANALYST RANKINGS" not in prompt, heading
+    sailpoint = next(p for h, p in _why_prompts(["SailPoint"]).items() if h.startswith("Why"))
+    assert "none are on record" in sailpoint and "Gartner" not in sailpoint
+
+
 def test_the_reference_book_carries_the_engagements_table_to_the_document(monkeypatch):
     """Caller side: what fetch_reference_book returns must reach the section."""
     import os

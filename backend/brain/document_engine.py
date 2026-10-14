@@ -393,6 +393,29 @@ def relevant_engagements_table(case_studies: list[dict], rows: list[dict]) -> st
             + "\n".join(out))
 
 
+_UNDATED_NOTE_RE = re.compile(r"\s*\([^)]*confirm[^)]*\)\s*$", re.I)
+
+
+def vendor_recognition_block(vendor: str) -> str:
+    """The only analyst positions and vendor figures a 'Why <vendor>'
+    subsection may state, from slide_facts.json, matched on the vendor key."""
+    facts = slide_facts()
+    entries = []
+    for kind in ("analyst_recognition", "vendor_facts"):
+        for key, items in facts.get(kind, {}).items():
+            if re.search(rf"\b{re.escape(key)}\b", vendor or "", re.I):
+                entries += [_UNDATED_NOTE_RE.sub("", i) for i in items]
+    if not entries:
+        return (f"\n\nANALYST RANKINGS AND VENDOR FIGURES for {vendor}: none are on "
+                f"record. State no analyst ranking, report position or vendor "
+                f"figure; make the case from fit to the client's drivers.")
+    return (f"\n\nANALYST RANKINGS AND VENDOR FIGURES for {vendor}: these are the "
+            f"ONLY ones you may state. Offer no other ranking, report, award or "
+            f"figure, whatever the evidence says. Give each with its date as "
+            f"written here; where an entry gives no year, give none.\n"
+            + "\n".join(f"- {e}" for e in entries))
+
+
 # --- Client-facing compliance matrix -----------------------------------------
 # The corpus grading (covered/partial/missing) says whether IV's PAST proposals
 # show a capability. ESNAD 09-27 printed it as the client's answer: 30 of 56
@@ -1783,6 +1806,9 @@ async def draft_section(
             sub_system = (_system_for([c for c in product_chunks
                                        if c.get("_for_vendor") == sub_vendor])
                           if sub_vendor else system_prompt)
+            if section_spec.id == "solution_overview" and sub_title.startswith("Why "):
+                user_prompt += vendor_recognition_block(
+                    sub_vendor or context.get("iam_vendor") or "")
             built = (context.get("relevant_engagements")
                      if section_spec.id == "similar_experience"
                      and sub_title == "Relevant Engagements" else None)

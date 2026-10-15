@@ -49,7 +49,7 @@ log = logging.getLogger("shilpi-brain.rfp")
 # The version of what reading a tender produces. A stored reading is reused only
 # for the same file AND this version (design 1c): change it whenever the reader
 # would read the same file differently.
-EXTRACTOR_VERSION = "2026-10-15.2"  # .2: two-pass reading; .3: dropped quotes keep pages; 10-15.1: failed pages
+EXTRACTOR_VERSION = "2026-10-15.3"  # .2: two-pass reading; .3: dropped quotes keep pages; 10-15.1: failed pages
 
 # Below this many characters per page, the PDF has no usable text layer and must
 # be read visually. The ESNAD SOW yielded 468 characters across 20 pages -- all
@@ -751,6 +751,13 @@ _READING_HINTS: dict[str, str] = {
     "out_of_scope": ("including work the tender leaves with the client: what "
                      "'remains with' the client, is 'provided by the client', or is "
                      "'excluded' from the vendor's scope"),
+    # Tiqmo read its hosting clouds ("OCI, GCP, and on-premises") as
+    # environments; C-DAC's data centre and DR site were not read at all.
+    "envs": ("the separate environments or sites the solution is built in: "
+             "development, test / SIT / UAT, pre-production, production, DR, or named "
+             "sites such as a primary data centre (DC) and a DR site. Cloud providers "
+             "and hosting platforms (OCI, GCP, AWS, Azure, on-premises) are not "
+             "environments"),
 }
 
 

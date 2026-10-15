@@ -1014,3 +1014,21 @@ def test_both_reading_passes_say_work_the_client_keeps_is_out_of_scope():
     asyncio.run(R._state_field("out_of_scope", [(16, "OS patching remains with ESNAD")],
                                fake, asyncio.Semaphore(1)))
     assert "remain" in seen["system"] and "provided by the client" in seen["system"]
+
+
+def test_both_reading_passes_say_what_an_environment_is():
+    """Tiqmo: 'OCI, GCP, and on-premises' read as environments. C-DAC: its
+    data centre and DR site were not read as environments at all."""
+    import asyncio
+    for prompt in (R._field_list(["envs"]), R._field_label("envs")):
+        assert "data centre" in prompt and "DR" in prompt
+        assert "not environments" in prompt and "OCI" in prompt
+    seen = {}
+
+    async def fake(model, messages):
+        seen["system"] = messages[0]["content"]
+        return R._FieldReading(value="primary DC; DR site", pages=[3, 11])
+
+    asyncio.run(R._state_field("envs", [(11, "deploy the solution on to DR site")],
+                               fake, asyncio.Semaphore(1)))
+    assert "not environments" in seen["system"]

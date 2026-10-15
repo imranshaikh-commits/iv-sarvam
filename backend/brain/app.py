@@ -646,6 +646,10 @@ RFP_PAGE_TIMEOUT_S = float(os.environ.get("SHILPI_RFP_PAGE_TIMEOUT_S", "150"))
 # No structured call should run for ten minutes; the SDK default is 600 s with
 # two silent retries, i.e. up to half an hour before a fallback even starts.
 STRUCTURED_CLIENT_TIMEOUT_S = float(os.environ.get("SHILPI_STRUCTURED_TIMEOUT_S", "300"))
+# Reading a tender should give the same answers twice: two reads of one NWC
+# tender disagreed on 57 fields (host run 2026-10-14). Temperature 0 and a fixed
+# seed on every reading call; a provider without seed support ignores it.
+RFP_READING_SEED = int(os.environ.get("SHILPI_RFP_SEED", "20261015"))
 
 
 async def rfp_structured_call(response_model, messages: list[dict]):
@@ -662,7 +666,8 @@ async def rfp_structured_call(response_model, messages: list[dict]):
     # fields, requirements and gates fit comfortably in the cap.
     return await _structured_with_fallback(
         response_model, messages, models=[PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL],
-        max_tokens=RFP_PAGE_MAX_TOKENS, timeout=RFP_PAGE_TIMEOUT_S, max_retries=1)
+        max_tokens=RFP_PAGE_MAX_TOKENS, timeout=RFP_PAGE_TIMEOUT_S, max_retries=1,
+        temperature=0, seed=RFP_READING_SEED)
 
 
 class _AllocationItem(BaseModel):

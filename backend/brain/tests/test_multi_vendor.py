@@ -2385,6 +2385,28 @@ def test_rfp_page_calls_are_bounded():
     assert app.STRUCTURED_CLIENT_TIMEOUT_S <= 300
 
 
+def test_both_reading_passes_ask_for_repeatable_answers():
+    """Host run 2026-10-14: two reads of one NWC tender disagreed on 57 fields.
+    Every reading call (pass 1 per page, pass 2 per field: both go through
+    rfp_structured_call) asks for temperature 0 and a fixed seed; providers
+    that do not support a seed ignore it."""
+    import asyncio
+    seen = {}
+
+    async def fake(response_model, messages, models=None, **kw):
+        seen.update(kw)
+        return "ok"
+
+    orig = app._structured_with_fallback
+    app._structured_with_fallback = fake
+    try:
+        asyncio.run(app.rfp_structured_call(object, []))
+    finally:
+        app._structured_with_fallback = orig
+    assert seen["temperature"] == 0 and seen["seed"] == app.RFP_READING_SEED
+    assert isinstance(app.RFP_READING_SEED, int)
+
+
 def test_client_logo_fetch_refuses_internal_addresses_and_foreign_files(tmp_path):
     """Audit 2026-10-12 finding 8: the logo answer was an open server-side GET."""
     import asyncio

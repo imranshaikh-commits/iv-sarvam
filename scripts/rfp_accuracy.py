@@ -120,6 +120,8 @@ async def run(folder: str, read=read_with_the_brain, twice: bool = True) -> list
         if twice:
             second, second_not_read = await read(path)
             result["second_read_differs"] = differences(first, second)
+            critical = {fid for _, fid in __import__("rfp_intake").CRITICAL_FACTS}
+            result["critical_differ"] = [f for f in result["second_read_differs"] if f in critical]
             result["second_read_not_read"] = second_not_read
         results.append(result)
     return results
@@ -136,6 +138,10 @@ def report(results: list[dict]) -> str:
                         "; reads not comparable (pages not read)" if gaps else
                         "; two reads identical" if not same else
                         f"; two reads differ on {', '.join(same)}"))
+        if same is not None and not gaps:
+            crit = r.get("critical_differ") or []
+            lines.append(f"  critical facts differing: {len(crit)}/7"
+                         + (f" ({', '.join(crit)})" if crit else ""))
         if gaps:
             lines.append(f"  NOT READ: {len(gaps)} page(s), p. {', '.join(str(p) for p in gaps)}"
                          " (failed calls or unreadable scans: score this tender again)")

@@ -49,7 +49,7 @@ log = logging.getLogger("shilpi-brain.rfp")
 # The version of what reading a tender produces. A stored reading is reused only
 # for the same file AND this version (design 1c): change it whenever the reader
 # would read the same file differently.
-EXTRACTOR_VERSION = "2026-10-15.1"  # .2: two-pass reading; .3: dropped quotes keep pages; 10-15.1: failed pages
+EXTRACTOR_VERSION = "2026-10-15.2"  # .2: two-pass reading; .3: dropped quotes keep pages; 10-15.1: failed pages
 
 # Below this many characters per page, the PDF has no usable text layer and must
 # be read visually. The ESNAD SOW yielded 468 characters across 20 pages -- all
@@ -743,13 +743,31 @@ Field: {field}
 - If the quotes do not actually state this field, return an empty value."""
 
 
+# What a field means when it is read from a tender, where the interview label
+# alone misleads. Measured on the five-tender test set (scripts/rfp_accuracy.py).
+_READING_HINTS: dict[str, str] = {
+    # ESNAD p.16 states its exclusions as work the client keeps ("remain with
+    # ESNAD", "provided by ESNAD"); two runs read no out_of_scope at all.
+    "out_of_scope": ("including work the tender leaves with the client: what "
+                     "'remains with' the client, is 'provided by the client', or is "
+                     "'excluded' from the vendor's scope"),
+}
+
+
+def _field_label(fid: str) -> str:
+    """The field's interview label, plus how to read it from a tender."""
+    import intake_template
+    label = next((q["label"] for q in intake_template.iter_questions(None)
+                  if q["id"] == fid), fid)
+    hint = _READING_HINTS.get(fid)
+    return f"{label} ({hint})" if hint else label
+
+
 def _field_list(field_ids: list[str]) -> str:
     """'id: label' per line. Bare ids alone ('post_sla') left the model to
     guess meaning: ESNAD's SLA severity matrix was never extracted in three
     runs, so every draft invented an SLA contradicting the client's own."""
-    import intake_template
-    labels = {q["id"]: q["label"] for q in intake_template.iter_questions(None)}
-    return "\n".join(f"  {fid}: {labels.get(fid, fid)}" for fid in field_ids)
+    return "\n".join(f"  {fid}: {_field_label(fid)}" for fid in field_ids)
 
 
 class _FieldQuote(BaseModel):
@@ -858,9 +876,7 @@ def _match_field(fid: str, field_ids: list[str]) -> Optional[str]:
 async def _state_field(fid: str, quotes: list[tuple[int, str]], structured_fn,
                        gate: asyncio.Semaphore) -> Optional[ExtractedField]:
     """Pass 2 for one field. None when the quotes turn out not to state it."""
-    import intake_template
-    label = next((q["label"] for q in intake_template.iter_questions(None)
-                  if q["id"] == fid), fid)
+    label = _field_label(fid)
     quote_pages = sorted({p for p, _ in quotes})
     evidence = [{"page": p, "text": q} for p, q in quotes]
     messages = [

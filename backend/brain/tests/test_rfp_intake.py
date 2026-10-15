@@ -995,3 +995,22 @@ def test_a_reading_with_pages_not_read_is_not_stored_for_reuse(tmp_path, monkeyp
     monkeypatch.setattr(R, "extract_rfp", partial)
     ex, err = asyncio.run(app.run_rfp_extraction("use this RFP"))
     assert err == "" and ex.failed_pages == [2] and saved == []
+
+
+# --- Step 4 (2026-10-15): what a field means when reading a tender ------------
+
+def test_both_reading_passes_say_work_the_client_keeps_is_out_of_scope():
+    """ESNAD p.16: 'excluding OS, network, and underlying platform patching,
+    which remain with ESNAD'. Two runs read no out_of_scope at all."""
+    import asyncio
+    page_prompt = R._field_list(["out_of_scope"])
+    assert "remain" in page_prompt and "provided by the client" in page_prompt
+    seen = {}
+
+    async def fake(model, messages):
+        seen["system"] = messages[0]["content"]
+        return R._FieldReading(value="OS patching stays with the client", pages=[16])
+
+    asyncio.run(R._state_field("out_of_scope", [(16, "OS patching remains with ESNAD")],
+                               fake, asyncio.Semaphore(1)))
+    assert "remain" in seen["system"] and "provided by the client" in seen["system"]

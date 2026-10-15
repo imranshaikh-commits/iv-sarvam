@@ -49,7 +49,7 @@ log = logging.getLogger("shilpi-brain.rfp")
 # The version of what reading a tender produces. A stored reading is reused only
 # for the same file AND this version (design 1c): change it whenever the reader
 # would read the same file differently.
-EXTRACTOR_VERSION = "2026-10-15.4"  # .2: two-pass reading; .3: dropped quotes keep pages; 10-15.1: failed pages
+EXTRACTOR_VERSION = "2026-10-15.3"  # .2: two-pass reading; .3: dropped quotes keep pages; 10-15.1: failed pages
 
 # Below this many characters per page, the PDF has no usable text layer and must
 # be read visually. The ESNAD SOW yielded 468 characters across 20 pages -- all
@@ -758,21 +758,6 @@ _READING_HINTS: dict[str, str] = {
              "sites such as a primary data centre (DC) and a DR site. Cloud providers "
              "and hosting platforms (OCI, GCP, AWS, Azure, on-premises) are not "
              "environments"),
-    # Tiqmo states IAM 200 users (p.11) and PAM 20 administrators (p.4-5):
-    # the 200 went to user_count and no breakdown was read.
-    "population_by_domain": ("counts stated per domain or solution, such as IAM or "
-                             "workforce users, customers, PAM administrators or "
-                             "privileged accounts, even when they are on different "
-                             "pages. A single total for the whole engagement is not a "
-                             "breakdown, even when it says how many of it are "
-                             "privileged: that total belongs in user_count"),
-}
-
-# Pass 2 for a field also sees the grounded quotes of these fields: the
-# counts for each domain are often quoted under user_count on one page and
-# under the breakdown on another.
-_RELATED_QUOTES: dict[str, tuple[str, ...]] = {
-    "population_by_domain": ("user_count", "identity_types"),
 }
 
 
@@ -1016,13 +1001,6 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
                         ex.failed_pages.append(page_no)
                     continue
                 take(page_ex, part, page_no)
-
-    for fid, related in _RELATED_QUOTES.items():
-        if fid not in field_ids:
-            continue
-        extra = [q for r in related for q in quotes.get(r, []) if q not in quotes.get(fid, [])]
-        if extra:
-            quotes[fid] = sorted(quotes.get(fid, []) + extra)
 
     gate = asyncio.Semaphore(FIELD_CALLS_IN_FLIGHT)
     stated = await asyncio.gather(*(_state_field(fid, qs, structured_fn, gate)

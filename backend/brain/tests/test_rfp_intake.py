@@ -763,7 +763,9 @@ def test_an_rfp_that_says_sow_cannot_set_proposal_type(monkeypatch, tmp_path):
                   ("user_count", "The organisation has 5,000 workforce users.")]}
     ex, calls = _two_pass_run(monkeypatch, [page], quotes, tmp_path=tmp_path,
                               field_ids=[q["id"] for q in T.iter_questions(None)])
-    assert ex.answers() == {"user_count": "STATED user_count"}
+    answers = ex.answers()
+    assert answers["user_count"] == "STATED user_count"
+    assert "proposal_type" not in answers and "required_diagram_types" not in answers
     assert "  proposal_type:" not in calls["prompts"][0]            # never even asked
 
 
@@ -1032,3 +1034,53 @@ def test_both_reading_passes_say_what_an_environment_is():
     asyncio.run(R._state_field("envs", [(11, "deploy the solution on to DR site")],
                                fake, asyncio.Semaphore(1)))
     assert "not environments" in seen["system"]
+
+
+def test_counts_for_different_domains_on_different_pages_reach_one_pass_2_call(monkeypatch, tmp_path):
+    """Tiqmo: IAM 200 users (p.11), PAM 20 administrators (p.4-5). The reader
+    put the 200 in user_count and never stated population_by_domain. Pass 2
+    for population_by_domain now also sees the user_count quotes."""
+    pages = [_FILLER * 3] * 3 + [
+        _FILLER * 3 + "PAM: up to 20 administrators for 1 year and 3 years. ",
+        _FILLER * 5, _FILLER * 5, _FILLER * 5, _FILLER * 5, _FILLER * 5, _FILLER * 5,
+        _FILLER * 3 + "The IAM environment has 200 users, 100 servers and 15 systems. "]
+    quotes = {4: [("population_by_domain", "PAM: up to 20 administrators for 1 year and 3 years.")],
+              11: [("user_count", "The IAM environment has 200 users, 100 servers and 15 systems.")]}
+    seen = {}
+
+    def combine(messages):
+        field = messages[0]["content"].split("Field: ", 1)[1].split(":", 1)[0]
+        seen[field] = messages
+        if field == "population_by_domain":
+            return R._FieldReading(value="IAM: 200 users; PAM: 20 administrators", pages=[4, 11])
+        return R._FieldReading(value="200 users", pages=[11])
+
+    ex, _ = _two_pass_run(monkeypatch, pages, quotes, tmp_path=tmp_path,
+                          field_ids=["population_by_domain", "user_count"], combine=combine)
+    sent = seen["population_by_domain"][1]["content"]
+    assert "(p.4)" in sent and "(p.11)" in sent
+    assert "single total" in seen["population_by_domain"][0]["content"]
+    assert ex.answers() == {"population_by_domain": "IAM: 200 users; PAM: 20 administrators",
+                            "user_count": "200 users"}
+    by_id = {f.field_id: f for f in ex.fields}
+    assert by_id["population_by_domain"].pages == [4, 11]
+
+
+def test_a_total_alone_still_asks_pass_2_about_domains(monkeypatch, tmp_path):
+    """A tender with only a total (ESNAD, C-DAC) asks, and pass 2 may answer
+    empty: a single total is not a breakdown."""
+    page = _FILLER * 3 + "The solution shall support 8,000 users, upgradeable to 15,000. "
+    asked = []
+
+    def combine(messages):
+        field = messages[0]["content"].split("Field: ", 1)[1].split(":", 1)[0]
+        asked.append(field)
+        return R._FieldReading(value="" if field == "population_by_domain" else "8,000 users",
+                               pages=[1])
+
+    total = "The solution shall support 8,000 users, upgradeable to 15,000."
+    ex, _ = _two_pass_run(monkeypatch, [page], {1: [("user_count", total)]},
+                          tmp_path=tmp_path, field_ids=["population_by_domain", "user_count"],
+                          combine=combine)
+    assert sorted(asked) == ["population_by_domain", "user_count"]
+    assert ex.answers() == {"user_count": "8,000 users"}

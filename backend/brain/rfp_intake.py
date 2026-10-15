@@ -49,7 +49,7 @@ log = logging.getLogger("shilpi-brain.rfp")
 # The version of what reading a tender produces. A stored reading is reused only
 # for the same file AND this version (design 1c): change it whenever the reader
 # would read the same file differently.
-EXTRACTOR_VERSION = "2026-10-14.3"  # .2: two-pass reading (1b); .3: dropped quotes keep their pages
+EXTRACTOR_VERSION = "2026-10-15.1"  # .2: two-pass reading; .3: dropped quotes keep pages; 10-15.1: failed pages
 
 # Below this many characters per page, the PDF has no usable text layer and must
 # be read visually. The ESNAD SOW yielded 468 characters across 20 pages -- all
@@ -277,6 +277,10 @@ class RfpExtraction:
     # all. An unread page is reported, never passed over.
     vision_pages: list[int] = field(default_factory=list)
     unread_pages: list[int] = field(default_factory=list)
+    # Pages whose reading call failed (refused, timed out, malformed): NOT a
+    # blank page. Host run 2026-10-14: a 402 on every page read as an empty,
+    # complete tender.
+    failed_pages: list[int] = field(default_factory=list)
     # Quotes the model offered that were not on the page it named: dropped,
     # never used; the review names their pages ({"page", "field_id"}).
     dropped_quotes: list[dict] = field(default_factory=list)
@@ -284,6 +288,11 @@ class RfpExtraction:
     def answers(self) -> dict[str, str]:
         """The extraction as a discovery answer dict."""
         return {f.field_id: f.value for f in self.fields if f.value}
+
+    def not_read_pages(self) -> list[int]:
+        """Every page whose text is not in this reading: scans that could not
+        be read, and pages whose reading call failed."""
+        return sorted(set(self.unread_pages) | set(self.failed_pages))
 
     def to_dict(self) -> dict:
         """JSON-safe, for the stored reading (rfp_readings)."""
@@ -489,7 +498,9 @@ CRITICAL_FACTS = (
 # Session answer keys this module owns. Neither is a discovery answer.
 EVIDENCE_KEY = "_rfp_evidence"        # {field: {"pages": [...], "quotes": [...]}}
 CONSULTANT_KEY = "_consultant_fields"  # fields the consultant set: never re-read
-INTERNAL_KEYS = frozenset({EVIDENCE_KEY, CONSULTANT_KEY})
+NOT_READ_KEY = "_rfp_not_read"          # pages of the tender not in the reading
+NOT_READ_ACCEPTED_KEY = "_rfp_not_read_accepted"  # the ones the consultant went on without
+INTERNAL_KEYS = frozenset({EVIDENCE_KEY, CONSULTANT_KEY, NOT_READ_KEY, NOT_READ_ACCEPTED_KEY})
 
 
 def answers_to_store(ex: RfpExtraction, current: dict) -> dict:
@@ -498,6 +509,7 @@ def answers_to_store(ex: RfpExtraction, current: dict) -> dict:
     mine = set((current or {}).get(CONSULTANT_KEY) or [])
     fields = [f for f in ex.fields if f.value and f.field_id not in mine]
     out: dict = {f.field_id: f.value for f in fields}
+    out[NOT_READ_KEY] = ex.not_read_pages()
     if fields:
         out[EVIDENCE_KEY] = {**((current or {}).get(EVIDENCE_KEY) or {}),
                              **{f.field_id: {"pages": f.pages or ([f.page] if f.page else []),
@@ -527,6 +539,17 @@ def describe_extraction(ex: RfpExtraction, total_fields: int) -> str:
         f"**{ex.source_name or 'Document'}** — {ex.pages_read} pages, {how}.",
         "",
     ]
+    if ex.not_read_pages():
+        lines += [f"**This reading is not complete: {len(ex.not_read_pages())} page(s) were "
+                  f"not read.** Nothing on them is in what follows.", ""]
+    if ex.failed_pages:
+        lines += [
+            f"**NOT READ: page {', '.join(str(p) for p in ex.failed_pages)}**: reading "
+            f"{'it' if len(ex.failed_pages) == 1 else 'them'} failed (a problem on my "
+            f"side, not with the document). Start again and attach the tender to read it "
+            f"fresh, or check those pages against the source yourself.",
+            "",
+        ]
     if ex.unread_pages:
         lines += [
             f"**NOT READ: page {', '.join(str(p) for p in ex.unread_pages)}** "
@@ -759,7 +782,7 @@ class _FieldReading(BaseModel):
 
 
 async def extract_page_vision(image_path: str, field_ids: list[str],
-                              structured_fn) -> "_PageExtraction":
+                              structured_fn) -> Optional["_PageExtraction"]:
     """One page, read visually. Fails to an empty extraction, never raises.
 
     `structured_fn` is injected (rather than importing app.py) to keep this
@@ -781,12 +804,13 @@ async def extract_page_vision(image_path: str, field_ids: list[str],
         return await structured_fn(_PageExtraction, messages)
     except Exception as e:  # noqa: BLE001 - one bad page must not sink the SOW
         log.warning("vision extraction failed for %s: %s", image_path, e)
-        return _PageExtraction()
+        return None                      # not read; never an empty page
 
 
 async def _extract_page_text(text: str, field_ids: list[str],
-                             structured_fn) -> "_PageExtraction":
-    """The text-layer counterpart to extract_page_vision, for one page part."""
+                             structured_fn) -> Optional["_PageExtraction"]:
+    """The text-layer counterpart to extract_page_vision, for one page part.
+    None when the call failed: the part was not read."""
     if not (text or "").strip():
         return _PageExtraction()
     try:
@@ -798,7 +822,7 @@ async def _extract_page_text(text: str, field_ids: list[str],
         return await structured_fn(_PageExtraction, messages)
     except Exception as e:  # noqa: BLE001
         log.warning("text extraction failed: %s", e)
-        return _PageExtraction()
+        return None
 
 
 def page_parts(text: str, limit: int = PAGE_PART_CHARS) -> list[str]:
@@ -935,6 +959,9 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
             page_ex = await extract_page_vision(images[i], field_ids, structured_fn)
             if not use_vision:
                 ex.vision_pages.append(page_no)
+            if page_ex is None:
+                ex.failed_pages.append(page_no)
+                continue
             take(page_ex, getattr(page_ex, "transcription", "") or "", page_no)
         elif i in thin:
             # No text and no picture of it (rasterising failed, or the page is
@@ -943,7 +970,14 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
             ex.unread_pages.append(page_no)
         else:
             for part in page_parts(text_pages[i]):
-                take(await _extract_page_text(part, field_ids, structured_fn), part, page_no)
+                page_ex = await _extract_page_text(part, field_ids, structured_fn)
+                if page_ex is None:
+                    # One unread part leaves the page incomplete; the rest of
+                    # it is still read and kept.
+                    if page_no not in ex.failed_pages:
+                        ex.failed_pages.append(page_no)
+                    continue
+                take(page_ex, part, page_no)
 
     gate = asyncio.Semaphore(FIELD_CALLS_IN_FLIGHT)
     stated = await asyncio.gather(*(_state_field(fid, qs, structured_fn, gate)
@@ -952,8 +986,9 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
                        key=lambda f: (f.page or 0, f.field_id))
 
     log.info("RFP extraction: %s, %d pages, %d fields, %d requirements, %d gates, "
-             "%d quotes dropped as not on their page", source_name, ex.pages_read,
-             len(ex.fields), len(ex.requirements), len(ex.gates), len(ex.dropped_quotes))
+             "%d quotes dropped as not on their page, %d pages not read", source_name,
+             ex.pages_read, len(ex.fields), len(ex.requirements), len(ex.gates),
+             len(ex.dropped_quotes), len(ex.not_read_pages()))
     return ex
 
 

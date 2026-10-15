@@ -626,7 +626,9 @@ def test_the_same_file_uploaded_again_reuses_its_reading(tmp_path, monkeypatch):
 
     async def fake_extract(pdf_path, source_name, field_ids, structured_fn, tmp):
         reads.append(source_name)
-        return _sample_extraction()
+        complete = _sample_extraction()
+        complete.unread_pages = []          # a reading with pages missing is never stored
+        return complete
 
     first = tmp_path / "1b4e28ba-2fa1-11d2-883f-0016d3cca427_SOW.pdf"
     again = tmp_path / "2c5f39cb-2fa1-11d2-883f-0016d3cca427_SOW copy.pdf"
@@ -917,3 +919,79 @@ def test_the_review_names_the_pages_whose_quotes_were_dropped():
     assert "app_count" in line and "user_count" in line and "population_by_domain" in line
     assert "not found on" not in R.describe_extraction(
         R.RfpExtraction(fields=ex.fields, pages_read=12, source_name="SOW.pdf"), 96)
+
+
+# --- A failed page call is a page not read, never a blank page ----------------
+# Host run 2026-10-14: OpenRouter returned 402 for every page of two tenders;
+# each failure was taken as a blank page, the reading looked complete, and the
+# accuracy script called the two empty reads "identical".
+
+def test_a_page_whose_call_fails_is_listed_as_not_read(monkeypatch, tmp_path):
+    import asyncio
+    pages = [_FILLER * 5, _FILLER * 4 + "Environments: Dev, Test and Prod. ", _FILLER * 5]
+
+    async def fake(model, messages):
+        if model is R._FieldReading:
+            return R._FieldReading(value="x", pages=[2])
+        if "Environments" in messages[1]["content"]:
+            raise RuntimeError("Error code: 402 - insufficient credits")
+        return R._PageExtraction()
+
+    monkeypatch.setattr(R, "read_text_layer", lambda path: pages)
+    ex = asyncio.run(R.extract_rfp("x.pdf", "SOW.pdf", ["envs"], fake, str(tmp_path)))
+    assert ex.failed_pages == [2] and ex.not_read_pages() == [2]
+    text = R.describe_extraction(ex, 96)
+    assert "NOT READ" in text and "page 2" in text and "failed" in text.lower()
+    assert "not complete" in text.lower()
+
+
+def test_a_dense_page_with_one_failed_part_is_not_read(monkeypatch, tmp_path):
+    import asyncio
+    page = (_FILLER + "\n") * 220 + "LASTPART tail of the page.\n"
+    calls = {"n": 0}
+
+    async def fake(model, messages):
+        calls["n"] += 1
+        if "LASTPART" in messages[1]["content"]:
+            raise RuntimeError("timeout")
+        return R._PageExtraction()
+
+    monkeypatch.setattr(R, "read_text_layer", lambda path: [page])
+    ex = asyncio.run(R.extract_rfp("x.pdf", "SOW.pdf", ["envs"], fake, str(tmp_path)))
+    assert ex.failed_pages == [1] and calls["n"] == len(R.page_parts(page))
+
+
+def test_scanned_and_failed_pages_make_one_not_read_list():
+    ex = R.RfpExtraction(unread_pages=[9], failed_pages=[3, 9])
+    assert ex.not_read_pages() == [3, 9]
+    assert R.answers_to_store(ex, {})[R.NOT_READ_KEY] == [3, 9]
+    assert R.answers_to_store(R.RfpExtraction(), {})[R.NOT_READ_KEY] == []
+
+
+def test_a_reading_with_pages_not_read_is_not_stored_for_reuse(tmp_path, monkeypatch):
+    """A refused page would otherwise come back on every re-upload of the file."""
+    import asyncio
+    os.environ.setdefault("OPENROUTER_API_KEY", "test-key")
+    os.environ.setdefault("SUPABASE_URL", "https://example.invalid")
+    os.environ.setdefault("SUPABASE_KEY", "test-key")
+    import app
+    saved = []
+
+    async def fake_get(client, sha256, version):
+        return None
+
+    async def fake_save(client, sha256, version, reading):
+        saved.append(reading)
+        return True
+
+    async def partial(pdf_path, source_name, field_ids, structured_fn, tmp):
+        return R.RfpExtraction(fields=[R.ExtractedField("envs", "Dev", 1)], failed_pages=[2])
+
+    upload = tmp_path / "1b4e28ba-2fa1-11d2-883f-0016d3cca427_SOW.pdf"
+    upload.write_bytes(b"%PDF-1.7 x")
+    monkeypatch.setattr(app.supabase_client, "get_rfp_reading", fake_get)
+    monkeypatch.setattr(app.supabase_client, "save_rfp_reading", fake_save)
+    monkeypatch.setattr(R, "pick_upload", lambda **k: (str(upload), [], ""))
+    monkeypatch.setattr(R, "extract_rfp", partial)
+    ex, err = asyncio.run(app.run_rfp_extraction("use this RFP"))
+    assert err == "" and ex.failed_pages == [2] and saved == []

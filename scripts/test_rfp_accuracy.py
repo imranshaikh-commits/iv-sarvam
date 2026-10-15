@@ -57,7 +57,7 @@ def test_a_fixture_folder_runs_end_to_end_with_a_fake_reader(tmp_path):
     async def fake_read(pdf_path):
         reads.append(pdf_path)
         n = len(reads)
-        return {"envs": "Dev and Prod", "app_count": "6" if n == 1 else "7"}
+        return {"envs": "Dev and Prod", "app_count": "6" if n == 1 else "7"}, []
 
     results = asyncio.run(A.run(str(tmp_path), fake_read, twice=True))
     assert len(reads) == 2 and reads[0].endswith("tender.pdf")
@@ -99,3 +99,18 @@ def test_a_value_that_drafting_would_read_as_saas_fails_a_not_saas_fact():
     wrong = "SaaS in KSA; PaaS and IaaS were considered; not on-premises; not hybrid"
     assert all(A._has(wrong, p) for p in exp["contains"])
     assert not A.score_fact(wrong, exp)
+
+
+def test_pages_not_read_are_counted_and_reported(tmp_path):
+    (tmp_path / "t.pdf").write_bytes(b"%PDF-1.7 synthetic")
+    (tmp_path / "001.json").write_text(json.dumps({
+        "tender": "T", "file": "t.pdf", "expected": {"envs": {"missing": True}}}))
+
+    async def refused(path):
+        return {}, [1, 2, 3]
+
+    (r,) = asyncio.run(A.run(str(tmp_path), refused, twice=True))
+    assert r["not_read_pages"] == [1, 2, 3] and r["second_read_not_read"] == [1, 2, 3]
+    text = A.report([r])
+    assert "NOT READ: 3 page(s)" in text and "p. 1, 2, 3" in text
+    assert "two reads identical" not in text           # two empty reads prove nothing

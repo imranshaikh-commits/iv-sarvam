@@ -91,8 +91,9 @@ def differences(first: dict, second: dict) -> list[str]:
     return sorted(k for k in set(first) | set(second) if first.get(k) != second.get(k))
 
 
-async def read_with_the_brain(path: str) -> dict:
-    """The brain's own reader, from scratch: no stored reading is used."""
+async def read_with_the_brain(path: str) -> tuple[dict, list[int]]:
+    """(answers, pages not read) from the brain's own reader, from scratch: no
+    stored reading is used."""
     import app
     import intake_template
     import rfp_intake
@@ -103,7 +104,7 @@ async def read_with_the_brain(path: str) -> dict:
         ex = await rfp_intake.extract_rfp(pdf, os.path.basename(path),
                                           intake_template.client_fact_ids(),
                                           app.rfp_structured_call, os.path.join(tmp, "pages"))
-    return ex.answers()
+    return ex.answers(), ex.not_read_pages()
 
 
 async def run(folder: str, read=read_with_the_brain, twice: bool = True) -> list[dict]:
@@ -112,11 +113,14 @@ async def run(folder: str, read=read_with_the_brain, twice: bool = True) -> list
         with open(fixture, encoding="utf-8") as fh:
             spec = json.load(fh)
         path = os.path.join(os.path.dirname(fixture), spec["file"])
-        first = await read(path)
+        first, not_read = await read(path)
         result = {"tender": spec.get("tender") or spec["file"],
-                  **score_tender(first, spec.get("expected") or {})}
+                  **score_tender(first, spec.get("expected") or {}),
+                  "not_read_pages": not_read}
         if twice:
-            result["second_read_differs"] = differences(first, await read(path))
+            second, second_not_read = await read(path)
+            result["second_read_differs"] = differences(first, second)
+            result["second_read_not_read"] = second_not_read
         results.append(result)
     return results
 
@@ -125,10 +129,16 @@ def report(results: list[dict]) -> str:
     lines = []
     for r in results:
         same = r.get("second_read_differs")
+        gaps = sorted(set(r.get("not_read_pages") or []) | set(r.get("second_read_not_read") or []))
         lines.append(f"{r['tender']}: {r['right']}/{r['scored']} right"
                      + ("" if same is None else
+                        # Two reads with pages missing prove nothing about stability.
+                        "; reads not comparable (pages not read)" if gaps else
                         "; two reads identical" if not same else
                         f"; two reads differ on {', '.join(same)}"))
+        if gaps:
+            lines.append(f"  NOT READ: {len(gaps)} page(s), p. {', '.join(str(p) for p in gaps)}"
+                         " (failed calls or unreadable scans: score this tender again)")
         for w in r["wrong"]:
             # Only the expected pieces and pages: a fixture's notes quote the tender.
             exp = {k: v for k, v in w["expected"].items()

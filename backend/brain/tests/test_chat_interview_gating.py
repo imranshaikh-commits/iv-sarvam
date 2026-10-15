@@ -2714,3 +2714,56 @@ def test_internal_rfp_keys_stay_out_of_the_diagram_context():
                                   rfp_intake.CONSULTANT_KEY: ["envs"]})
     assert "Dev, Prod" in ctx and rfp_intake.EVIDENCE_KEY not in ctx
     assert rfp_intake.CONSULTANT_KEY not in ctx
+
+
+def _rfp_continue(monkeypatch, text, answers):
+    """One reply at the RFP review with these stored answers. (reply, patches)."""
+    patches = []
+
+    async def fake_get_session(client_, sid):
+        return {"answers": answers}
+
+    async def fake_complete(*a, **kw):
+        return {}
+
+    async def fake_load_plan(session, answers=None):
+        return [("Solution Architecture", "architecture")]
+
+    async def fake_save_plan(session, plan):
+        return True
+
+    async def fake_patch(client_, sid, partial):
+        patches.append(partial)
+        return {"id": sid}
+
+    monkeypatch.setattr(app.supabase_client, "get_intake_session", fake_get_session)
+    monkeypatch.setattr(app.supabase_client, "complete_intake_session", fake_complete)
+    monkeypatch.setattr(app.supabase_client, "patch_intake_answers", fake_patch)
+    monkeypatch.setattr(app, "load_plan", fake_load_plan)
+    monkeypatch.setattr(app, "save_plan", fake_save_plan)
+    resp = client.post("/v1/chat/completions", json={"messages": [
+        {"role": "assistant", "content": "ok " + cs.encode_marker(
+            cs.ChatState(mode=cs.MODE_RFP_REVIEW, session="sess-nr"))},
+        {"role": "user", "content": text}], "stream": False})
+    return resp.json()["choices"][0]["message"]["content"], patches
+
+
+def test_continue_is_held_while_pages_of_the_tender_were_not_read(monkeypatch):
+    import rfp_intake
+    ready = {"client_name": "ESNAD", "industry": "Mining", "iam_vendor": "SailPoint",
+             "proposal_type": "implementation", "business_objectives": "x",
+             "proposal_depth": "full", "pricing_model": "fixed",
+             rfp_intake.NOT_READ_KEY: [3, 7]}
+    reply, _ = _rfp_continue(monkeypatch, "continue", ready)
+    assert cs.decode_marker(reply).mode == cs.MODE_RFP_REVIEW
+    assert "not complete" in reply.lower() and "3, 7" in reply
+    assert "continue without pages 3, 7" in reply
+
+    reply, patches = _rfp_continue(monkeypatch, "continue without pages 3, 7", ready)
+    assert cs.decode_marker(reply).mode == cs.MODE_DIAGRAM_PLAN
+    assert {rfp_intake.NOT_READ_ACCEPTED_KEY: [3, 7]} in patches
+    assert "3, 7" in reply                                    # still said, not hidden
+
+    accepted = {**ready, rfp_intake.NOT_READ_ACCEPTED_KEY: [3, 7]}
+    reply, _ = _rfp_continue(monkeypatch, "continue", accepted)
+    assert cs.decode_marker(reply).mode == cs.MODE_DIAGRAM_PLAN

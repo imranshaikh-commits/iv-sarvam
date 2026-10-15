@@ -770,13 +770,20 @@ async def run_rfp_extraction(display_name_: str) -> tuple[Optional[rfp_intake.Rf
             log.error("RFP extraction failed: %s", e)
             return None, ("Reading that document failed. Try again, or use the "
                           "interview instead.")
-    if ex.fields or ex.requirements:
+    # A reading with pages missing is never stored: the same file uploaded
+    # again would otherwise reuse the gap for good.
+    if (ex.fields or ex.requirements) and not ex.not_read_pages():
         async with httpx.AsyncClient() as sclient:
             if not await supabase_client.save_rfp_reading(
                     sclient, sha256, rfp_intake.EXTRACTOR_VERSION, ex.to_dict()):
                 log.warning("RFP %s: reading not stored; the next upload reads it again",
                             ex.source_name)
     if not ex.fields and not ex.requirements:
+        if ex.failed_pages:
+            return None, (f"Reading {len(ex.failed_pages)} of {ex.pages_read} pages failed "
+                          "(a problem on my side, not with your document), and nothing "
+                          "usable was read. Try again in a few minutes, or use the "
+                          "interview instead.")
         return None, ("I read the document but could not extract anything "
                       "usable from it. Use the interview instead.")
     return ex, ""
@@ -4031,12 +4038,16 @@ async def chat_completions(request: Request):
             # fix of it.
             wants_on = bool(chat_state.is_force(q) or re.search(r"\bcontinue\b", q, re.I)
                             or re.search(r"\ball met\b", q, re.I))
+            # "continue without pages 3, 7": the consultant goes on knowing those
+            # pages of the tender were not read. Checked before the negation
+            # guard below, which would otherwise hold it for its "without".
+            without = bool(re.search(r"\bcontinue without\b", q, re.I))
             # A reply that says to go on AND carries a negation is not a go-ahead
             # (audit F14: "Do not continue; mandatory qualification is not met"
             # advanced, because it contains the word "continue"). It is held
             # here rather than guessed at. "No issues, continue" is held too:
             # the way on is one plain word.
-            if wants_on and scope_filter.NEGATION_RE.search(q):
+            if wants_on and not without and scope_filter.NEGATION_RE.search(q):
                 return _emit_chat(
                     "I read a **no** or **not** in that, so I have **not** moved past "
                     "the eligibility conditions. If one of them is not met, tell me "
@@ -4050,6 +4061,31 @@ async def chat_completions(request: Request):
                 except Exception as e:  # noqa: BLE001
                     log.warning("reading the RFP-derived session failed: %s", e)
                     answers = {}
+                # The reading is not called complete while pages are missing.
+                not_read = sorted(answers.get(rfp_intake.NOT_READ_KEY) or [])
+                accepted = set(answers.get(rfp_intake.NOT_READ_ACCEPTED_KEY) or [])
+                pages = ", ".join(str(p) for p in not_read)
+                if not_read and not set(not_read) <= accepted:
+                    if not without:
+                        return _emit_chat(
+                            f"The reading of this tender is **not complete**: page(s) "
+                            f"{pages} were not read, so nothing on them is in the "
+                            f"answers. Start again and attach the tender to read it "
+                            f"fresh, or reply **continue without pages {pages}** to go on "
+                            f"without them.\n\n" + chat_state.encode_marker(state), stream)
+                    saved = None
+                    try:
+                        async with httpx.AsyncClient() as sclient:
+                            saved = await supabase_client.patch_intake_answers(
+                                sclient, state.session,
+                                {rfp_intake.NOT_READ_ACCEPTED_KEY: not_read})
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("recording pages gone on without failed: %s", e)
+                    if saved is None:
+                        return _emit_chat(
+                            "I could not record that you are going on without those "
+                            "pages (a database issue), so I have not moved on. Send it "
+                            "again.\n\n" + chat_state.encode_marker(state), stream)
                 marked, _ = await _mark_discovery_complete(state.session)
                 decisions = intake_template.unanswered_decisions(answers)
                 ptype = None if "proposal_type" in decisions else answers.get("proposal_type")
@@ -4077,8 +4113,10 @@ async def chat_completions(request: Request):
                         + chat_state.encode_marker(state), stream)
                 plan = await load_plan(state.session, answers)
                 await save_plan(state.session, plan)
+                gap = (f"Going on without page(s) {pages} of the tender, which were "
+                       f"not read.\n\n" if not_read else "")
                 return _emit_chat(
-                    _discovery_saved_line(marked) + "\n\n"
+                    gap + _discovery_saved_line(marked) + "\n\n"
                     + chat_state.build_plan_message(plan, answers) + "\n\n"
                     + chat_state.encode_marker(chat_state.ChatState(
                         mode=chat_state.MODE_DIAGRAM_PLAN, session=state.session)),

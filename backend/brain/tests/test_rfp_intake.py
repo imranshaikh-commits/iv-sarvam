@@ -1032,3 +1032,30 @@ def test_both_reading_passes_say_what_an_environment_is():
     asyncio.run(R._state_field("envs", [(11, "deploy the solution on to DR site")],
                                fake, asyncio.Semaphore(1)))
     assert "not environments" in seen["system"]
+
+
+def test_integrations_pass_2_also_sees_directory_and_identity_source_quotes(monkeypatch, tmp_path):
+    """NWC p.16 states Active Directory sync and Oracle EBS provisioning; the
+    reader built its integrations from the landscape pages and dropped both
+    in two of three runs. Pass 2 for target_integrations now also sees the
+    quotes read for the directory, SSO and HR-source fields."""
+    pages = [_FILLER * 3 + "The synchronization with Active Directory and provisioning with "
+             "Oracle EBS must be migrated to upgraded environment. ",
+             _FILLER * 3 + "Integrate web services from OSB, SOA and APIGEE with OAM. "]
+    quotes = {1: [("ad_exchange", "The synchronization with Active Directory and provisioning with "
+                                  "Oracle EBS must be migrated to upgraded environment.")],
+              2: [("target_integrations", "Integrate web services from OSB, SOA and APIGEE with OAM.")]}
+    seen = {}
+
+    def combine(messages):
+        field = messages[0]["content"].split("Field: ", 1)[1].split(":", 1)[0]
+        seen[field] = messages
+        return R._FieldReading(value=f"{field} value", pages=[1, 2])
+
+    ex, _ = _two_pass_run(monkeypatch, pages, quotes, tmp_path=tmp_path,
+                          field_ids=["target_integrations", "ad_exchange"], combine=combine)
+    sent = seen["target_integrations"][1]["content"]
+    assert "Active Directory" in sent and "APIGEE" in sent and "(p.1)" in sent
+    assert "every system" in seen["target_integrations"][0]["content"]
+    assert "APIGEE" not in seen["ad_exchange"][1]["content"]       # only one way
+    assert {f.field_id for f in ex.fields} == {"target_integrations", "ad_exchange"}

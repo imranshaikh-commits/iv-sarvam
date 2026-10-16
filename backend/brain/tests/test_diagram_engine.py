@@ -1210,3 +1210,28 @@ def test_two_zones_whose_names_differ_only_by_punctuation_stay_two_zones():
     assert len(set(top)) == 2, top
     if diagram_engine.d2_available():
         assert diagram_engine._d2_run(d2, 25)
+
+
+def test_edges_that_name_nodes_by_label_are_kept():
+    """ESNAD 10-16: every edge named its ends by label, all were dropped as
+    dangling, and the spec came back with 12 nodes and 0 edges."""
+    import diagram_engine as de
+    raw = de.DiagramSpec.model_validate({
+        "diagram_type": "architecture", "title": "t",
+        "nodes": [{"id": "ping_aic", "label": "PingOne Advanced Identity Cloud"},
+                  {"id": "nafath", "label": "Nafath"}],
+        "edges": [{"source": "Nafath", "target": "PingOne Advanced Identity Cloud", "label": "OIDC"},
+                  {"source": "NAFATH", "target": "ping_aic"},
+                  {"source": "nowhere", "target": "ping_aic"}]})
+    out = de.sanitize_spec(raw)
+    assert [(e.source, e.target) for e in out.edges] == [("nafath", "ping_aic"), ("nafath", "ping_aic")]
+
+
+def test_edges_under_another_key_or_with_from_to_are_read():
+    """A spec whose edge list is called "connections", with from/to ends,
+    used to validate as 0 edges: unknown keys are ignored."""
+    import diagram_engine as de
+    spec = de.DiagramSpec.model_validate({
+        "title": "t", "nodes": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+        "connections": [{"from": "a", "to": "b", "label": "OIDC"}]})
+    assert [(e.source, e.target, e.label) for e in spec.edges] == [("a", "b", "OIDC")]

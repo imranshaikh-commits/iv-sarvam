@@ -32,7 +32,7 @@ import subprocess
 import textwrap
 from typing import Awaitable, Callable, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 log = logging.getLogger("shilpi-brain.diagram-engine")
 
@@ -133,6 +133,17 @@ class DiagramEdge(BaseModel):
     target: str = Field(..., description="id of the target node (must match a node id).")
     label: Optional[str] = Field(None, description="Optional edge label, e.g. 'SCIM', 'SAML'.")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _ends_by_other_names(cls, v):
+        # Models write {"from": .., "to": ..} as often as source/target.
+        if isinstance(v, dict):
+            v = dict(v)
+            for want, alts in (("source", ("from", "src", "start")), ("target", ("to", "dst", "end"))):
+                if want not in v:
+                    v[want] = next((v[a] for a in alts if a in v), v.get(want))
+        return v
+
 
 class DiagramSpec(BaseModel):
     """Structured, safe representation of an architecture diagram.
@@ -148,6 +159,20 @@ class DiagramSpec(BaseModel):
     title: str = Field(..., description="Diagram title.")
     nodes: list[DiagramNode] = Field(default_factory=list)
     edges: list[DiagramEdge] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _edges_by_other_names(cls, v):
+        # ESNAD 10-16: 12 nodes and 0 edges on both tries. Unknown keys are
+        # ignored, so a list the model called "connections" became no edges.
+        if isinstance(v, dict) and not v.get("edges"):
+            alt = next((k for k in ("connections", "links", "relationships", "flows", "arrows")
+                        if v.get(k)), None)
+            if alt:
+                v = {**v, "edges": v[alt]}
+            elif v.get("nodes"):
+                log.warning("diagram spec has no edges; keys returned: %s", sorted(v))
+        return v
 
     @field_validator("diagram_type")
     @classmethod
@@ -220,18 +245,34 @@ def sanitize_spec(spec: DiagramSpec) -> DiagramSpec:
     # "group:<name>" connects to a whole container (the deterministic solution
     # stack points SSO at every client application at once, not nine arrows).
     valid_ids |= {f"{GROUP_REF}{n.group}" for n in safe_nodes if n.group}
+    # An edge may name its end by the node's label or by an id in another
+    # case ("PingOne Advanced Identity Cloud" for ping_aic). Those were all
+    # dropped as dangling: ESNAD 10-16 came back as 12 nodes and 0 edges.
+    by_label = {}
+    for orig, safe in zip(spec.nodes[:MAX_NODES], safe_nodes):
+        for key in (orig.id, orig.label, safe.label):
+            by_label.setdefault((key or "").strip().lower(), safe.id)
+
+    def resolve(ref: str) -> str:
+        if ref.startswith(GROUP_REF):
+            return ref
+        return (id_map.get(ref) or by_label.get(ref.strip().lower())
+                or _safe_node_id(ref, -1))
+
     safe_edges: list[DiagramEdge] = []
+    dropped: list[str] = []
     for edge in spec.edges[:MAX_EDGES]:
-        src = edge.source if edge.source.startswith(GROUP_REF) else \
-            id_map.get(edge.source, _safe_node_id(edge.source, -1))
-        tgt = edge.target if edge.target.startswith(GROUP_REF) else \
-            id_map.get(edge.target, _safe_node_id(edge.target, -1))
+        src, tgt = resolve(edge.source), resolve(edge.target)
         if src not in valid_ids or tgt not in valid_ids:
+            dropped.append(f"{edge.source!r}->{edge.target!r}")
             continue  # drop dangling edge rather than inventing a node
         safe_edges.append(
             DiagramEdge(source=src, target=tgt, label=_clip(edge.label, MAX_LABEL_LEN) or None)
         )
 
+    if dropped:
+        log.warning("diagram spec: %d of %d edge(s) dropped, their ends are not nodes "
+                    "(e.g. %s)", len(dropped), len(spec.edges[:MAX_EDGES]), "; ".join(dropped[:3]))
     return DiagramSpec(
         diagram_type=spec.diagram_type, title=title, nodes=safe_nodes, edges=safe_edges
     )

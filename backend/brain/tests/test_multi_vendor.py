@@ -2598,3 +2598,38 @@ def test_diagram_context_puts_architecture_and_feedback_inside_the_budget():
     assert ctx.startswith("REVIEWER FEEDBACK") and "SCIM" in ctx
     assert "Nafath" in ctx and "SaaS in KSA" in ctx
     assert "RRRR" not in ctx and "_rfp_evidence" not in ctx
+
+
+def test_the_scale_judgement_always_sees_the_short_decisive_facts():
+    """The listing was cut at 4,000 characters in stored order. With the
+    two-pass reader's whole-sentence answers (up to 2,000 characters each),
+    the facts that decide scale (deployment model, environments, user count)
+    fell past the cut whenever prose fields were stored first."""
+    import asyncio
+    long = "The vendor shall deliver the programme described in this section. " * 30
+    answers = {"business_objectives": long, "delivery_phases": long, "in_scope": long,
+               "out_of_scope": long, "deployment_model": "SaaS hosted in KSA",
+               "envs": "Dev, Test, Prod", "user_count": "10,000 users"}
+    sent = {}
+
+    class _R:
+        scale, reason = "full", "large programme"
+
+    async def fake(response_model, messages, models=None, **kw):
+        sent["content"] = messages[1]["content"]
+        return _R()
+
+    orig = app._structured_with_fallback
+    app._structured_with_fallback = fake
+    try:
+        assert asyncio.run(app.judge_engagement_scale(answers))[0] == "full"
+    finally:
+        app._structured_with_fallback = orig
+    content = sent["content"]
+    for line in ("deployment_model: SaaS hosted in KSA", "envs: Dev, Test, Prod",
+                 "user_count: 10,000 users"):
+        assert line in content, line
+    for field in ("business_objectives", "delivery_phases", "in_scope", "out_of_scope"):
+        assert f"{field}: The vendor shall" in content, field       # every field keeps a line
+    assert content.index("deployment_model") < content.index("business_objectives")
+    assert len(content) <= 4000

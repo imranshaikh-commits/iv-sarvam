@@ -794,17 +794,26 @@ async def run_rfp_extraction(display_name_: str) -> tuple[Optional[rfp_intake.Rf
     return ex, ""
 
 
+_SCALE_FIELDS = ("deployment_model", "envs", "user_count", "app_count", "duration",
+                 "is_migration", "versions", "existing_iam_platform",
+                 "in_scope", "out_of_scope", "delivery_phases", "business_objectives")
+_SCALE_FIELD_CHARS = 600    # 12 fields: under the 4,000-character listing cap
+
+
 async def judge_engagement_scale(answers: dict) -> tuple[str, str]:
     """('compact'|'full', reason). Returns ('', '') if it cannot be judged."""
-    relevant = {k: v for k, v in (answers or {}).items()
-                if k in ("in_scope", "out_of_scope", "envs", "app_count",
-                         "user_count", "duration", "is_migration", "versions",
-                         "business_objectives", "delivery_phases",
-                         "existing_iam_platform", "deployment_model")
-                and str(v or "").strip()}
+    # The short facts that decide scale first, then the prose, each prose field
+    # capped so every field keeps a line. The listing used to be cut at 4,000
+    # in stored order, and the two-pass reader's whole-sentence answers (up to
+    # 2,000 characters each) pushed deployment model and environments past it.
+    answers = answers or {}
+    relevant = {k: " ".join(str(answers[k]).split()) for k in _SCALE_FIELDS
+                if str(answers.get(k) or "").strip()}
     if not relevant:
         return "", ""
-    listing = "\n".join(f"{k}: {v}" for k, v in relevant.items())
+    listing = "\n".join(
+        f"{k}: {v if len(v) <= _SCALE_FIELD_CHARS else v[:_SCALE_FIELD_CHARS - 1].rstrip() + '…'}"
+        for k, v in relevant.items())
     try:
         res: _ScaleResult = await asyncio.wait_for(
             _structured_with_fallback(

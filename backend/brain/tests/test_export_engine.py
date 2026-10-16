@@ -1129,3 +1129,44 @@ def test_allocation_answers_map_to_outline_positions(monkeypatch):
     reqs = [{"id": "AM-04", "text": "a"}, {"id": "X-01", "text": "b"}, {"id": "AM-05", "text": "c"}]
     got = asyncio.run(app_module.allocate_requirements(None, reqs, outline))
     assert got == {"AM-04": 0, "X-01": None}
+
+
+def test_every_scope_answer_reaches_the_part_of_rfp_text_that_drafting_reads(monkeypatch):
+    """The chat path appends objectives, in scope, out of scope and current
+    state to rfp_text, and each section's prompt reads its first 4,000
+    characters. With the two-pass reader's answers (up to 2,000 each), out of
+    scope and current state fell past the cut for every section."""
+    _patch_common(monkeypatch, direct=False)
+    long = lambda word: (f"{word} " + "the vendor shall deliver this part of the programme. " * 40)[:2000]  # noqa: E731
+    answers = {app_module.PLAN_KEY: [["Solution Architecture", "architecture"]],
+               app_module.SKIP_KEY: [], "rfp_text": long("TENDER"),
+               "business_objectives": long("OBJECTIVES"), "in_scope": long("INSCOPE"),
+               "out_of_scope": long("OUTSCOPE"), "current_state": long("CURRENT")}
+    seen = {}
+
+    async def fake_session(client, sid):
+        return {"id": sid, "client_name": "Test Client", "proposal_type": "implementation",
+                "answers": answers}
+
+    async def fake_diagrams(client, sid):
+        return _ONE_APPROVED
+
+    async def fake_link(*a, **k):
+        return None
+
+    async def spying_generate(client, **kwargs):
+        seen["rfp_text"] = kwargs["rfp_text"]
+        return await _fake_generate_proposal(client, **kwargs)
+
+    monkeypatch.setattr(app_module.supabase_client, "get_intake_session", fake_session)
+    monkeypatch.setattr(app_module.supabase_client, "list_diagrams_for_session", fake_diagrams)
+    monkeypatch.setattr(app_module.supabase_client, "link_intake_to_proposal", fake_link)
+    monkeypatch.setattr(app_module, "generate_proposal", spying_generate)
+    body = {k: v for k, v in _base_body().items() if k != "rfp_text"}
+    with TestClient(app_module.app) as tc:
+        assert tc.post("/v1/generate-proposal", json={**body, "intake_session_id": "s1"}).status_code == 200
+    read = seen["rfp_text"][:4000]                      # what document_engine.draft_section reads
+    for marker in ("TENDER", "OBJECTIVES", "INSCOPE", "OUTSCOPE", "CURRENT"):
+        assert marker in read, marker
+    assert "Out of scope:" in read and "Current state:" in read
+    assert seen["rfp_text"].startswith("TENDER the vendor shall")   # retrieval queries unchanged

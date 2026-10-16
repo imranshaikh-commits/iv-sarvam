@@ -798,6 +798,15 @@ _SCALE_FIELDS = ("deployment_model", "envs", "user_count", "app_count", "duratio
                  "is_migration", "versions", "existing_iam_platform",
                  "in_scope", "out_of_scope", "delivery_phases", "business_objectives")
 _SCALE_FIELD_CHARS = 600    # 12 fields: under the 4,000-character listing cap
+# Four scope parts after a reader-length tender text (at most 2,000): all
+# inside the 4,000 characters draft_section reads.
+_RFP_EXTRA_CHARS = 450
+
+
+def _capped(value, limit: int) -> str:
+    """One line, at most `limit` characters, marked when cut."""
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
 async def judge_engagement_scale(answers: dict) -> tuple[str, str]:
@@ -3217,9 +3226,16 @@ async def _generate_proposal(request: Request, body: dict):
         rfp_text = rfp_text or (intake_answers.get("rfp_text") or "").strip()
         # Enrich retrieval text with scope/objectives when present (does not
         # change section depth or length — just gives retrieval more to match).
+        # Each part labelled and capped: drafting reads the first 4,000
+        # characters of rfp_text, and with the two-pass reader's answers (up to
+        # 2,000 each) out of scope and current state fell past that for every
+        # section. The tender text stays first, so retrieval queries, which
+        # read its first 400 characters, are unchanged.
         extra = "\n\n".join(
-            str(intake_answers[k]).strip()
-            for k in ("business_objectives", "in_scope", "out_of_scope", "current_state")
+            f"{label}: {_capped(intake_answers[k], _RFP_EXTRA_CHARS)}"
+            for k, label in (("business_objectives", "Business objectives"),
+                             ("in_scope", "In scope"), ("out_of_scope", "Out of scope"),
+                             ("current_state", "Current state"))
             if str(intake_answers.get(k) or "").strip()
         )
         if extra:

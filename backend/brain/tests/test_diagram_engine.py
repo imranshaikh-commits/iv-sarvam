@@ -1242,3 +1242,35 @@ def test_schema_sent_to_the_model_requires_nodes_and_edges():
     edges entirely (ESNAD 10-16, keys: diagram_type, nodes, title)."""
     import diagram_engine as de
     assert {"nodes", "edges"} <= set(de.DiagramSpec.model_json_schema()["required"])
+
+
+def test_a_cut_discovery_context_is_logged_with_sizes_and_dropped_fields(caplog):
+    """The 3,500-character spec budget stays; when it cuts, the log says how
+    much and which fields were lost, so the next run shows whether the end of
+    the architecture list (zones, regions, HA, topology) is reaching specs."""
+    import asyncio
+    import logging
+
+    async def fake_structured(model, messages=None, **kw):
+        return DiagramSpec.model_validate({
+            "diagram_type": "architecture", "title": "t",
+            "nodes": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"},
+                      {"id": "c", "label": "C"}],
+            "edges": [{"source": "a", "target": "b"}, {"source": "b", "target": "c"}]})
+
+    context = ("target_integrations: " + "LDAP, Nafath, Taadeen; " * 200 + "\n"
+               "envs: Dev, Test, Prod\nnetwork_zones: DMZ, application, data\n"
+               "regions: KSA central\ncluster_topology: active-active")
+    assert len(context) > de._SPEC_CONTEXT_BUDGET
+    with caplog.at_level(logging.WARNING, logger="shilpi-brain.diagram-engine"):
+        asyncio.run(de.generate_diagram_spec(fake_structured, title="T", context_text=context))
+    line = next(r.getMessage() for r in caplog.records if "cut" in r.getMessage())
+    assert f"{len(context.strip())} -> {de._SPEC_CONTEXT_BUDGET}" in line
+    assert "network_zones" in line and "regions" in line and "cluster_topology" in line
+    assert "target_integrations" in line                 # the one cut part-way
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="shilpi-brain.diagram-engine"):
+        asyncio.run(de.generate_diagram_spec(fake_structured, title="T",
+                                             context_text="envs: Dev, Test, Prod"))
+    assert not [r for r in caplog.records if "cut" in r.getMessage()]   # nothing cut, nothing said

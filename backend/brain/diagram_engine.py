@@ -1242,6 +1242,25 @@ def _correction_for(shortfall: str) -> str:
     return lead + _GRAPH_CORRECTION
 
 
+def _fit_context(text: str, budget: int, title: str) -> str:
+    """The first `budget` characters of the discovery answers. A cut is logged
+    with the sizes and the fields lost (dropped whole, or cut part-way), so a
+    run shows what specs did not see (ESNAD 10-16: 0-edge specs once long
+    answers filled the budget). Fields are the 'name: value' lines
+    app._answers_summary writes."""
+    text = text.strip()
+    if len(text) <= budget:
+        return text
+    starts = [(m.start(), m.group(1)) for m in re.finditer(r"(?m)^([A-Za-z_]\w*):", text)]
+    dropped = [name for pos, name in starts if pos >= budget]
+    cut_short = [name for (pos, name), nxt in zip(starts, starts[1:] + [(len(text), "")])
+                 if pos < budget < nxt[0]]
+    log.warning("diagram spec context for %r cut: %d -> %d characters; dropped: %s; "
+                "cut short: %s", title, len(text), budget,
+                ", ".join(dropped) or "none", ", ".join(cut_short) or "none")
+    return text[:budget]
+
+
 async def generate_diagram_spec(
     structured_fn: StructuredFn,
     *,
@@ -1298,7 +1317,7 @@ async def generate_diagram_spec(
                      f"{facts.strip()}")
     if context_text.strip():
         parts.append(f"\nDISCOVERY ANSWERS FOR THIS ENGAGEMENT:\n"
-                     f"{context_text.strip()[:_SPEC_CONTEXT_BUDGET]}")
+                     f"{_fit_context(context_text, _SPEC_CONTEXT_BUDGET, title)}")
     if evidence_text.strip():
         parts.append(f"\nIV PAST-PROPOSAL EVIDENCE (mirror this house style):\n"
                      f"{evidence_text.strip()[:_SPEC_EVIDENCE_BUDGET]}")

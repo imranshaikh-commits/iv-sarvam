@@ -157,14 +157,16 @@ class DiagramSpec(BaseModel):
         description="One of: " + ", ".join(DIAGRAM_TYPES),
     )
     title: str = Field(..., description="Diagram title.")
-    nodes: list[DiagramNode] = Field(default_factory=list)
-    edges: list[DiagramEdge] = Field(default_factory=list)
+    nodes: list[DiagramNode] = Field(...)
+    edges: list[DiagramEdge] = Field(...)
 
     @model_validator(mode="before")
     @classmethod
     def _edges_by_other_names(cls, v):
-        # ESNAD 10-16: 12 nodes and 0 edges on both tries. Unknown keys are
-        # ignored, so a list the model called "connections" became no edges.
+        # ESNAD 10-16: 12 nodes and 0 edges on both tries. Both lists are
+        # required (Gemini's structured output leaves out optional fields,
+        # and with a default the edges were optional); a list under another
+        # name is still read.
         if isinstance(v, dict) and not v.get("edges"):
             alt = next((k for k in ("connections", "links", "relationships", "flows", "arrows")
                         if v.get(k)), None)

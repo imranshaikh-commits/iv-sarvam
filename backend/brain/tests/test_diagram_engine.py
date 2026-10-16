@@ -1235,3 +1235,10 @@ def test_edges_under_another_key_or_with_from_to_are_read():
         "title": "t", "nodes": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
         "connections": [{"from": "a", "to": "b", "label": "OIDC"}]})
     assert [(e.source, e.target, e.label) for e in spec.edges] == [("a", "b", "OIDC")]
+
+
+def test_schema_sent_to_the_model_requires_nodes_and_edges():
+    """With defaults, only the title was required and Gemini left out the
+    edges entirely (ESNAD 10-16, keys: diagram_type, nodes, title)."""
+    import diagram_engine as de
+    assert {"nodes", "edges"} <= set(de.DiagramSpec.model_json_schema()["required"])

@@ -1655,12 +1655,39 @@ def _answers_summary(answers: dict, limit: int = 12000) -> str:
     infrastructure ones (network zones, regions, environments, monitoring). That
     is why the first generated deployment diagram had no DMZ and no zones.
     """
+    # What a diagram is drawn FROM comes first. Spec generation reads only the
+    # first _SPEC_CONTEXT_BUDGET characters, and since the two-pass reader
+    # writes whole sentences, ESNAD 10-16's training, objectives and phases
+    # filled that budget before any integration was listed: the model drew 12
+    # boxes and 0 connections, twice. The requirement register (thousands of
+    # characters) is the compliance matrix's, not a diagram's.
+    answers = answers or {}
+    first = [k for k in _ARCHITECTURE_FIELDS if k in answers]
     parts = []
-    for k, v in (answers or {}).items():
-        if k.startswith("_raw_") or k in rfp_intake.INTERNAL_KEYS or v in (None, "", []):
+    for k in first + [k for k in answers if k not in first]:
+        v = answers[k]
+        if (k.startswith("_") or k in rfp_intake.INTERNAL_KEYS or k == "extracted_requirements"
+                or v in (None, "", [])):
             continue
         parts.append(f"{k}: {v}")
     return "\n".join(parts)[:limit]
+
+
+_ARCHITECTURE_FIELDS = (
+    "iam_vendor", "vendor_scope_map", "deployment_model", "target_integrations",
+    "directories", "idp_sso", "current_idp", "current_hrms", "integration_hrms",
+    "source_of_truth", "existing_iam_platform", "envs", "population_by_domain",
+    "user_count", "network_zones", "regions", "ha_dr_requirements", "cluster_topology",
+    "in_scope", "out_of_scope",
+)
+
+
+def _spec_context(answers: dict, feedback: str | None) -> str:
+    """Context for diagram spec generation: the reviewer's correction FIRST, so
+    the budget cut can never drop it (it used to be appended after the answers
+    and was cut whenever they were long), then the answers, architecture first."""
+    head = f"REVIEWER FEEDBACK TO ADDRESS:\n{feedback[:1500]}\n\n" if feedback else ""
+    return head + _answers_summary(answers)
 
 
 def _diagram_facts(answers: dict) -> str:
@@ -1937,9 +1964,7 @@ async def propose_one_diagram(
                         None, total)
 
         evidence = await _architecture_evidence(client, answers)
-        context = _answers_summary(answers)
-        if feedback:
-            context += f"\n\nREVIEWER FEEDBACK TO ADDRESS:\n{feedback[:1500]}"
+        context = _spec_context(answers, feedback)
 
         title, dtype = plan[index]
         full_title = f"{client_name} — {title}"
@@ -2044,9 +2069,7 @@ async def propose_architecture(
                         "(the database didn't respond). Try again in a moment.", None)
 
         evidence = await _architecture_evidence(client, answers)
-        context = _answers_summary(answers)
-        if feedback:
-            context += f"\n\nREVIEWER FEEDBACK TO ADDRESS:\n{feedback[:1500]}"
+        context = _spec_context(answers, feedback)
 
         planned = chat_state.plan_diagrams(answers)
         skipped: list[str] = []

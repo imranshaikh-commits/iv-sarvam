@@ -2583,3 +2583,18 @@ def test_evidence_that_says_the_opposite_cannot_make_a_requirement_compliant(mon
     entry = asyncio.run(app.classify_coverage(req, chunks))
     md, confirm = de.render_client_matrix([entry], {"AM-09": "Solution > Authentication"})
     assert "| To be confirmed |" in md and confirm == ["AM-09"]
+
+
+def test_diagram_context_puts_architecture_and_feedback_inside_the_budget():
+    """ESNAD 10-16: long answers filled the 3,500-character spec budget before
+    any integration, and feedback appended after them was cut: 0 edges, twice."""
+    from diagram_engine import _SPEC_CONTEXT_BUDGET
+    answers = {f"filler_{i}": "x" * 400 for i in range(20)}          # long answers first
+    answers["extracted_requirements"] = "R" * 8000
+    answers["target_integrations"] = "Active Directory, Nafath, Taadeen, Bravo"
+    answers["deployment_model"] = "SaaS in KSA"
+    answers["_rfp_evidence"] = {"x": 1}
+    ctx = app._spec_context(answers, "connect Saviynt to PingOne by SCIM")[:_SPEC_CONTEXT_BUDGET]
+    assert ctx.startswith("REVIEWER FEEDBACK") and "SCIM" in ctx
+    assert "Nafath" in ctx and "SaaS in KSA" in ctx
+    assert "RRRR" not in ctx and "_rfp_evidence" not in ctx

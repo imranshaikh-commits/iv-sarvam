@@ -19,5 +19,5 @@ mkdir -p "$OUT"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 docker run --rm -v open-webui:/data:ro -v "$OUT":/out alpine \
   tar czf "/out/owui-$STAMP.tgz" -C /data .
-ls -1t "$OUT"/owui-*.tgz | tail -n +8 | xargs -r rm -f    # keep the last 7
+ls -1t "$OUT"/owui-*.tgz | tail -n +3 | xargs -r rm -f    # keep 2; S3 holds 30 days (sync has no --delete)
 echo "open-webui volume -> $OUT/owui-$STAMP.tgz ($(du -h "$OUT/owui-$STAMP.tgz" | cut -f1))"

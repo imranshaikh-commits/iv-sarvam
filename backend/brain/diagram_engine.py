@@ -27,7 +27,6 @@ import logging
 import shutil
 import os
 import re
-import itertools
 import subprocess
 import textwrap
 from typing import Awaitable, Callable, Literal, Optional
@@ -504,14 +503,19 @@ _STACK_FONT = int(os.environ.get("SHILPI_STACK_FONT", "26"))
 
 
 def build_stack_d2(spec: DiagramSpec) -> str:
-    """The solution stack as a fixed grid, in IV's layout: users, one column per
-    platform, the client's applications, and a band of identity sources below.
+    """The solution stack as a fixed grid, in IV's V3.0 layout: users, one
+    column per platform, privileged targets; the client's applications in a
+    band below and the identity sources in a band above.
 
     Graph layout (ELK) put the sources on the far side and looped arrows round
     the whole picture, at a width that printed near 5pt. A grid keeps columns in
     reading order and only draws arrows between neighbouring columns, so no
-    arrow crosses a column. Every arrow drawn is an edge of the spec, and the
-    columns are ordered (Users first) to draw as many of them as possible.
+    arrow crosses a column. The applications are linked from more than one
+    platform, which no single row can place beside them all, so they are a
+    band that every platform column reaches (review 2026-10-23). The sources
+    band sits above, not under it: both platforms link to both bands, and two
+    bands on one side put the source lines through the applications band (four
+    did on ESNAD) or across the SSO line. Every arrow drawn is an edge of the spec.
     """
     order: list[str] = []
     members: dict[str, list[DiagramNode]] = {}
@@ -523,7 +527,9 @@ def build_stack_d2(spec: DiagramSpec) -> str:
     sources = [g for g in order if g.lower().startswith("identity sources")]
     users = [g for g in order if g == "Users"]
     vendors = [g for g in order if _vendor_colour(g)]
-    apps = [g for g in order if g not in sources + users + vendors]
+    bands = [g for g in order if g.lower().endswith("applications")
+             and g not in users + vendors][:1]
+    apps = [g for g in order if g not in sources + users + vendors + bands]
 
     # The spec's links between groups, by group. Every arrow drawn is one of
     # these (audit F54): this used to draw one between EVERY pair of
@@ -540,23 +546,9 @@ def build_stack_d2(spec: DiagramSpec) -> str:
                 labels.append(e.label)
             links[frozenset((a, b))] = links.get(frozenset((a, b)), 0) + 1
 
-    # Column order. Arrows run only between neighbouring columns, so the order
-    # decides which links can be drawn at all: Users first, then whichever
-    # order of the other columns puts the most links between neighbours. ESNAD
-    # gets Users | Ping | applications | Saviynt and keeps Ping's SSO arrow,
-    # which Users | Ping | Saviynt | applications could not draw. On a tie,
-    # IV's order (platforms, then applications) wins: permutations() yields it
-    # first and max() keeps the first best.
-    # ponytail: tries every order, fine for the few columns a stack has (a
-    # 7-column one is 5,040 orders); beyond that it keeps IV's order.
-    def neighbour_links(cols) -> int:
-        return sum(links.get(frozenset(pair), 0) for pair in zip(cols, cols[1:]))
-
-    others = vendors + apps
-    if 1 < len(others) <= 7:
-        others = list(max(itertools.permutations(others),
-                          key=lambda perm: neighbour_links(users + list(perm))))
-    columns = users + others
+    # IV's order: Users | platforms | privileged targets. ESNAD's links in the
+    # row (sign-in, identity data, vaulted sessions) all fall between neighbours.
+    columns = users + vendors + apps
 
     def container(gid: str, group: str, cols: int, indent: str) -> list[str]:
         tint = _vendor_colour(group)
@@ -577,8 +569,10 @@ def build_stack_d2(spec: DiagramSpec) -> str:
         out.append(f"{indent}}}")
         return out
 
-    lines = ["grid-columns: 1", "grid-gap: 40", "style: {", f'  fill: "{IV_WHITE}"', "}",
-             "main: \"\" {", f"  grid-columns: {max(1, len(columns))}", "  grid-gap: 190",
+    lines = ["grid-columns: 1", "grid-gap: 40", "style: {", f'  fill: "{IV_WHITE}"', "}"]
+    for g in sources:
+        lines += container("sources", g, max(1, len(members[g])), "")
+    lines += ["main: \"\" {", f"  grid-columns: {max(1, len(columns))}", "  grid-gap: 190",
              "  style: {", "    stroke-width: 0", f'    fill: "{IV_WHITE}"', "  }"]
     ids = []
     for i, g in enumerate(columns):
@@ -587,8 +581,8 @@ def build_stack_d2(spec: DiagramSpec) -> str:
         # narrower page prints larger than a wide one (3140px printed ~5pt).
         lines += container(f"c{i}", g, 1, "  ")
     lines.append("}")
-    for g in sources:
-        lines += container("sources", g, max(1, len(members[g])), "")
+    for g in bands:
+        lines += container("apps", g, max(1, len(members[g])), "")
     # The grid stays: arrows run only between neighbouring columns, so none
     # crosses a column; a link between columns that are not neighbours, even
     # in the best order, is not drawn.
@@ -612,16 +606,19 @@ def build_stack_d2(spec: DiagramSpec) -> str:
                       f'    stroke: "{IV_SLATE}"', "    stroke-width: 2",
                       f'    font-color: "{IV_SLATE}"', f"    font-size: {_STACK_FONT - 4}",
                       "  }", "}"]
-    # Each platform to the sources band, dashed, as IV's "supporting
-    # integration" lines -- again only where the spec has that link.
-    for g in sources[:1]:
-        for cid, col in zip(ids, columns):
-            found = link(col, g) if col in vendors else None
-            if found:
-                lines += [f'main.{cid} {found[0]} sources: "{found[1]}" {{', "  style: {",
-                          f'    stroke: "{IV_ASH}"', "    stroke-width: 2", "    stroke-dash: 5",
-                          f'    font-color: "{IV_SLATE}"', f"    font-size: {_STACK_FONT - 6}",
-                          "  }", "}"]
+    # Each platform to the bands below, only where the spec has that link: the
+    # applications solid (SSO, provisioning), the sources dashed, as IV's
+    # "supporting integration" lines.
+    for band, groups, dash in (("apps", bands, ""), ("sources", sources[:1], "    stroke-dash: 5")):
+        for g in groups:
+            for cid, col in zip(ids, columns):
+                found = link(col, g) if col in vendors else None
+                if found:
+                    lines += [f'main.{cid} {found[0]} {band}: "{found[1]}" {{', "  style: {",
+                              f'    stroke: "{IV_SLATE if band == "apps" else IV_ASH}"',
+                              "    stroke-width: 2"] + ([dash] if dash else []) + [
+                              f'    font-color: "{IV_SLATE}"', f"    font-size: {_STACK_FONT - 6}",
+                              "  }", "}"]
     return "\n".join(lines) + "\n"
 
 

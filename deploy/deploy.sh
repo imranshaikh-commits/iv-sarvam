@@ -10,6 +10,19 @@
 # Undo a good-but-wrong deploy with deploy/rollback.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# A build, a test run and a new tag need room. 2026-10-23 the 29 GB disk filled
+# (Open WebUI archives, build cache, 1 GB per image tag) and a deploy failed
+# part-way. Stop before starting rather than in the middle.
+MIN_FREE_GB=${SHILPI_DEPLOY_MIN_FREE_GB:-3}
+DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+FREE_KB=$(df -Pk "${DOCKER_ROOT:-/}" | awk 'NR==2 {print $4}')
+if [ "$FREE_KB" -lt $((MIN_FREE_GB * 1024 * 1024)) ]; then
+  echo "not deploying: $(awk -v k="$FREE_KB" 'BEGIN {printf "%.1f", k/1048576}') GB free on ${DOCKER_ROOT:-/}, at least $MIN_FREE_GB GB needed."
+  echo "free space first: docker builder prune -af; docker images sarvam-brain (rmi old tags); ls -lh ~/sarvam-backups/owui"
+  exit 1
+fi
+
 git pull --ff-only
 TAG=$(git rev-parse --short HEAD)
 HIST=${SHILPI_DEPLOY_HISTORY:-deploy/.deploy_history}   # one tag per line, newest last (gitignored)
@@ -52,9 +65,14 @@ for _ in $(seq 1 45); do
     fi
     echo "$TAG" >> "$HIST"
     echo "deployed sarvam-brain:$TAG (previous: ${PREV:-none})"
-    # Keep the last five tagged images for rollback.
-    docker images sarvam-brain --format '{{.Tag}}' | grep -vE '^(latest|previous)$' | tail -n +6 \
-      | xargs -r -I{} docker rmi -f "sarvam-brain:{}" >/dev/null 2>&1 || true
+    # Room for the next deploy: keep the running image, previous and the two
+    # newest tags (rollback.sh's choices), drop the other tags and the build
+    # cache. Only after a deploy that is up and healthy.
+    KEEP=$(printf '%s\n' "$TAG" previous; docker images sarvam-brain --format '{{.Tag}}' \
+           | grep -vE '^(latest|previous|<none>)$' | head -2)
+    docker images sarvam-brain --format '{{.Tag}}' | grep -vxF "$KEEP" | grep -vx '<none>' \
+      | while read -r old; do docker rmi -f "sarvam-brain:$old" >/dev/null 2>&1 || true; done
+    docker builder prune -af >/dev/null 2>&1 || true
     exit 0
   fi
   sleep 2

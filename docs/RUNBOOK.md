@@ -135,7 +135,7 @@ brain only.
 ```
 ~/iv-sarvam/deploy/rollback.sh            # the previous deploy
 ~/iv-sarvam/deploy/rollback.sh 938fcbc    # a specific commit
-docker images sarvam-brain                # what is available (last 5 kept)
+docker images sarvam-brain                # what is available (running, previous, 2 newest)
 ```
 
 No rebuild, so it takes seconds. Roll back first, investigate second.
@@ -282,6 +282,7 @@ The backup job reads the same `sarvam.env`, so nothing else needs editing.
 | Site does not load | `docker ps`; `docker logs --tail 50 sarvam-caddy` (certificate) |
 | Chat answers but drafting fails | `docker logs --tail 200 sarvam-brain`; `/healthz` for the database |
 | Every call fails with 402 | OpenRouter credit or key limit |
+| Deploy says "not deploying: … GB free" | `df -h /`; `docker builder prune -af`; old tags in `docker images sarvam-brain`; `ls -lh ~/sarvam-backups/owui` |
 | Stuck after uploading an RFP | brain logs for `RFP page`; a page call is bounded at 150 s |
 | Images missing or blurry | brain logs for `image dropped`; kit uploaded? |
 | What did a proposal cost | `generated_proposals.llm_usage`, or `docker logs sarvam-brain 2>&1 \| grep "proposal cost"` |

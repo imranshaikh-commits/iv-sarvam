@@ -102,7 +102,11 @@ def measure(path: str) -> dict:
                     m["matrix_compliant"] += 1 if answer == "compliant" else 0
                     m["matrix_subject"] += 1 if answer.startswith("compliant,") else 0
                 continue
-            m["tbc"] += sum(1 for r in cells for c in r if _TBC_RE.search(c))
+            n = sum(1 for r in cells for c in r if _TBC_RE.search(c))
+            # Pricing figures are the commercial owner's, never Shilpi's: a
+            # placeholder there is correct, so it is counted outside the gate.
+            m["commercial_tbc" if any(k in head for k in ("payment %", "unit price", "amount"))
+              else "tbc"] += n
             continue
         if el.tag != qn("w:p"):
             continue
@@ -230,7 +234,8 @@ def main(argv=None) -> int:
         print(f"{Path(a.docx).name}")
         for k in ("prose_words", "table_words", "tables", "images", "blurry_images",
                   "exec_summary_words", "sme", "tbc", "degenerate", "gantt_charts",
-                  "matrix_rows", "matrix_compliant", "matrix_subject", "matrix_tbc"):
+                  "matrix_rows", "matrix_compliant", "matrix_subject", "matrix_tbc",
+                  "commercial_tbc"):
             print(f"  {k:20s} {public.get(k, 0):>7}" + (f"   IV {base.get(k, 0)}" if base else ""))
         print(f"  {'headings':20s} {public['headings']}" + (f"   IV {base['headings']}" if base else ""))
         for g, p, d in result:

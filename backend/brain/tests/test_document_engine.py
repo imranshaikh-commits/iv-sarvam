@@ -1946,6 +1946,11 @@ def test_appendix_reads_real_intake_ids():
         "Nafath (Citizen authentication, SSO); GIS (Esri Geoportal, Maps) (SSO, RBAC)")
     assert rows[0][:2] == ["Nafath", "Citizen authentication, SSO"]
     assert rows[1][:2] == ["GIS (Esri Geoportal, Maps)", "SSO, RBAC"]
+    # ESNAD 10-23: the reader's lead-in line was printed as a system.
+    rows = document_engine._integration_rows(
+        "The solution must connect and integrate with:\n- AD/LDAP\n- ERP")
+    assert [r[0] for r in rows] == ["AD/LDAP", "ERP"]
+    assert not any("confirm" in r[2].lower() for r in rows)
 
 
 def test_vendor_split_is_stated_even_without_a_vendor_scope_map():

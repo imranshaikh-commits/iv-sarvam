@@ -3289,7 +3289,7 @@ def _add_appendices(document: Document, metadata: dict,
     _int_rows = _integration_rows(_ans.get("target_integrations"))
     _table(
         document,
-        ["System / Application", "Integration Type", f"{vendor} Connector", "Notes"],
+        ["System / Application", "Integration Type", "Connector", "Notes"],
         _int_rows or [
             ["Directory / HR source", "Authoritative source", f"{_APPENDIX_ASSUMPTION} TBC", "System of record for identities"],
             ["Core business applications", "Provisioning target", f"{_APPENDIX_ASSUMPTION} TBC", "Confirm inventory in discovery"],
@@ -3345,15 +3345,20 @@ def _integration_rows(value) -> list[list[str]]:
     "Nafath (Citizen authentication, SSO); GIS (Esri Geoportal, Maps) (SSO)"
     -> one row per system, the trailing parenthetical as its integration type.
     ESNAD named nine systems and the appendix printed three TBC rows.
+
+    The two-pass reader answers in the tender's own words, so a lead-in line
+    ("The solution must connect and integrate with:") is skipped, not printed
+    as a system. The connector is chosen at design, which the column says,
+    rather than "To be confirmed" in every row (ESNAD 10-23: 30 such cells).
     """
     rows = []
     for item in re.split(r";|\n", str(value or "")):
-        item = item.strip(" .-")
-        if not item or item.lower() in ("skip", "none", "n/a"):
+        item = item.strip(" .-•*\t")
+        if not item or item.lower() in ("skip", "none", "n/a") or item.endswith(":"):
             continue
         m = re.match(r"^(.*?)\s*\(([^()]*)\)\s*$", item)
         name, kind = (m.group(1), m.group(2)) if m and m.group(1) else (item, "To be confirmed in discovery")
-        rows.append([name.strip(), kind.strip(), "To be confirmed in discovery",
+        rows.append([name.strip(), kind.strip(), "Selected at design",
                      "Client-supplied at discovery"])
     return rows
 

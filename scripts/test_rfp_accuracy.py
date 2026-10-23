@@ -130,3 +130,23 @@ def test_the_report_counts_critical_facts_that_differ_between_reads(tmp_path):
     (r,) = asyncio.run(A.run(str(tmp_path), wobbly, twice=True))
     assert r["critical_differ"] == ["envs"]
     assert "critical facts differing: 1/7 (envs)" in A.report([r])
+
+
+def test_both_reads_are_scored(tmp_path):
+    """Phase 4 item 5: the second read was compared, never scored."""
+    (tmp_path / "t.pdf").write_bytes(b"%PDF-1.7 synthetic")
+    (tmp_path / "001.json").write_text(json.dumps({
+        "tender": "T", "file": "t.pdf",
+        "expected": {"envs": {"contains": ["dev", "prod"]}, "app_count": {"contains": ["6"]}}}))
+    reads = []
+
+    async def second_worse(path):
+        reads.append(1)
+        return ({"envs": "Dev and Prod", "app_count": "6"} if len(reads) == 1
+                else {"envs": "Dev and Prod", "app_count": "7"}), []
+
+    (r,) = asyncio.run(A.run(str(tmp_path), second_worse, twice=True))
+    assert (r["right"], r["second_right"]) == (2, 1)
+    assert [w["field"] for w in r["second_wrong"]] == ["app_count"]
+    text = A.report([r])
+    assert "read 1: 2/2 right" in text and "read 2: 1/2 right" in text

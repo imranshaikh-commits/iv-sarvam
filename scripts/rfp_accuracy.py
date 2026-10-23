@@ -119,6 +119,8 @@ async def run(folder: str, read=read_with_the_brain, twice: bool = True) -> list
                   "not_read_pages": not_read}
         if twice:
             second, second_not_read = await read(path)
+            scored = score_tender(second, spec.get("expected") or {})
+            result["second_right"], result["second_wrong"] = scored["right"], scored["wrong"]
             result["second_read_differs"] = differences(first, second)
             critical = {fid for _, fid in __import__("rfp_intake").CRITICAL_FACTS}
             result["critical_differ"] = [f for f in result["second_read_differs"] if f in critical]
@@ -132,7 +134,10 @@ def report(results: list[dict]) -> str:
     for r in results:
         same = r.get("second_read_differs")
         gaps = sorted(set(r.get("not_read_pages") or []) | set(r.get("second_read_not_read") or []))
-        lines.append(f"{r['tender']}: {r['right']}/{r['scored']} right"
+        both = (f"read 1: {r['right']}/{r['scored']} right, "
+                f"read 2: {r['second_right']}/{r['scored']} right"
+                if "second_right" in r else f"{r['right']}/{r['scored']} right")
+        lines.append(f"{r['tender']}: {both}"
                      + ("" if same is None else
                         # Two reads with pages missing prove nothing about stability.
                         "; reads not comparable (pages not read)" if gaps else
@@ -145,12 +150,14 @@ def report(results: list[dict]) -> str:
         if gaps:
             lines.append(f"  NOT READ: {len(gaps)} page(s), p. {', '.join(str(p) for p in gaps)}"
                          " (failed calls or unreadable scans: score this tender again)")
-        for w in r["wrong"]:
+        wrong = ([("WRONG", w) for w in r["wrong"]]
+                 + [("WRONG (read 2)", w) for w in r.get("second_wrong") or []])
+        for label, w in wrong:
             # Only the expected pieces and pages: a fixture's notes quote the tender.
             exp = {k: v for k, v in w["expected"].items()
                    if k in ("contains", "not_contains", "missing", "not_saas")}
             pages = ", ".join(str(p) for p in w["expected"].get("pages") or [])
-            lines.append(f"  WRONG {w['field']}: got {w['got']!r}, expected {exp}"
+            lines.append(f"  {label} {w['field']}: got {w['got']!r}, expected {exp}"
                          + (f" (p.{pages})" if pages else ""))
         if r["no_expected_value"]:
             lines.append(f"  no expected value written for: {', '.join(r['no_expected_value'])}")

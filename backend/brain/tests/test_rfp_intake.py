@@ -958,7 +958,8 @@ def test_a_dense_page_with_one_failed_part_is_not_read(monkeypatch, tmp_path):
 
     monkeypatch.setattr(R, "read_text_layer", lambda path: [page])
     ex = asyncio.run(R.extract_rfp("x.pdf", "SOW.pdf", ["envs"], fake, str(tmp_path)))
-    assert ex.failed_pages == [1] and calls["n"] == len(R.page_parts(page))
+    # Every part read once, and the failing part tried once more (Phase 4 item 5).
+    assert ex.failed_pages == [1] and calls["n"] == len(R.page_parts(page)) + 1
 
 
 def test_scanned_and_failed_pages_make_one_not_read_list():
@@ -1059,3 +1060,35 @@ def test_integrations_pass_2_also_sees_directory_and_identity_source_quotes(monk
     assert "every system" in seen["target_integrations"][0]["content"]
     assert "APIGEE" not in seen["ad_exchange"][1]["content"]       # only one way
     assert {f.field_id for f in ex.fields} == {"target_integrations", "ad_exchange"}
+
+
+# --- Phase 4 item 5: a failed page call is retried once -----------------------
+
+def _flaky_run(monkeypatch, tmp_path, fail_times):
+    import asyncio
+    pages = [_FILLER * 5, _FILLER * 4 + "Environments: Dev, Test and Prod. "]
+    calls = {"page2": 0}
+
+    async def fake(model, messages):
+        if model is R._FieldReading:
+            return R._FieldReading(value="x", pages=[2])
+        if "Environments" in messages[1]["content"]:
+            calls["page2"] += 1
+            if calls["page2"] <= fail_times:
+                raise RuntimeError("transient: connection reset")
+        return R._PageExtraction()
+
+    monkeypatch.setattr(R, "read_text_layer", lambda path: pages)
+    ex = asyncio.run(R.extract_rfp("x.pdf", "SOW.pdf", ["envs"], fake, str(tmp_path)))
+    return ex, calls["page2"]
+
+
+def test_a_page_call_that_fails_once_is_read_on_the_retry(monkeypatch, tmp_path):
+    """ESNAD's second read 2026-10-15 lost page 7 to one failed call."""
+    ex, n = _flaky_run(monkeypatch, tmp_path, fail_times=1)
+    assert ex.failed_pages == [] and n == 2
+
+
+def test_a_page_that_fails_twice_is_not_read(monkeypatch, tmp_path):
+    ex, n = _flaky_run(monkeypatch, tmp_path, fail_times=5)
+    assert ex.failed_pages == [2] and n == 2                  # one retry, not more

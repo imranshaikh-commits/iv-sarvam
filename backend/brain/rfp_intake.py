@@ -863,6 +863,16 @@ async def _extract_page_text(text: str, field_ids: list[str],
         return None
 
 
+async def _with_one_retry(read, *args, page_no: int):
+    """A page (or part) call, tried once more if it failed: ESNAD's second read
+    2026-10-15 lost page 7 to one failed call. None after two failures."""
+    page_ex = await read(*args)
+    if page_ex is None:
+        log.warning("RFP page %d: reading failed; trying once more", page_no)
+        page_ex = await read(*args)
+    return page_ex
+
+
 def page_parts(text: str, limit: int = PAGE_PART_CHARS) -> list[str]:
     """The page in parts of at most `limit` characters, cut at line breaks (a
     single longer line is cut where it must). Every character is in a part."""
@@ -992,7 +1002,8 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
     for i in range(ex.pages_read):
         page_no = i + 1
         if use_vision or (i in thin and i < len(images)):
-            page_ex = await extract_page_vision(images[i], field_ids, structured_fn)
+            page_ex = await _with_one_retry(extract_page_vision, images[i], field_ids,
+                                            structured_fn, page_no=page_no)
             if not use_vision:
                 ex.vision_pages.append(page_no)
             if page_ex is None:
@@ -1006,7 +1017,8 @@ async def extract_rfp(pdf_path: str, source_name: str, field_ids: list[str],
             ex.unread_pages.append(page_no)
         else:
             for part in page_parts(text_pages[i]):
-                page_ex = await _extract_page_text(part, field_ids, structured_fn)
+                page_ex = await _with_one_retry(_extract_page_text, part, field_ids,
+                                                structured_fn, page_no=page_no)
                 if page_ex is None:
                     # One unread part leaves the page incomplete; the rest of
                     # it is still read and kept.

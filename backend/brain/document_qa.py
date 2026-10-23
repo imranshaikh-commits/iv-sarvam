@@ -315,9 +315,31 @@ def longest_unpunctuated_run(text: str) -> int:
     return max(best, current)
 
 
+# A list of named systems written inline ("ERP, HR, CRM/ESM, Taadeen Platform,
+# ... and PowerBI") is a list, not prose: no function words by construction,
+# like a table row. ESNAD 10-23 drafted one into a paragraph and it was flagged
+# on the floor, which re-drafts and then truncates good text. An item is short
+# and capitalised; the run-3 thesaurus walk was lower case and stays counted.
+_NAME_ITEM_RE = re.compile(r"^\s*(?:and\s+|or\s+)?[(\[]?[A-Z0-9]\S*(?:\s+\S+){0,3}\s*$")
+_MIN_NAME_ITEMS = 3
+
+
+def _without_name_lists(text: str) -> str:
+    """Drop the items of any sentence that lists three or more names."""
+    kept: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        parts = re.split(r"[,;]", sentence)
+        if sum(1 for p in parts if _NAME_ITEM_RE.match(p)) >= _MIN_NAME_ITEMS:
+            parts = [p for p in parts if not _NAME_ITEM_RE.match(p)]
+        kept.append(",".join(parts))
+    return " ".join(kept)
+
+
 def function_word_ratio(text: str) -> Optional[float]:
-    """Share of tokens that are function words, or None if the block is short."""
-    words = re.findall(r"[A-Za-z][A-Za-z'\-]*", _prose_only(text).lower())
+    """Share of tokens that are function words, or None if the block is short.
+    Inline name lists are left out, so what is judged is the prose around them."""
+    words = re.findall(r"[A-Za-z][A-Za-z'\-]*",
+                       _without_name_lists(_prose_only(text)).lower())
     if len(words) < DEGENERATE_MIN_WORDS_RATIO:
         return None
     return sum(1 for w in words if w in _FUNCTION_WORDS) / len(words)

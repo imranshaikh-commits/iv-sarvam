@@ -350,3 +350,38 @@ def test_a_stripped_review_aside_leaves_the_marker_in_its_place():
     # Two asides side by side leave one marker, not two.
     out = qa.strip_review_markers("Sizing is agreed (TBC) [to be confirmed] for production.")
     assert out.count("[SME REVIEW]") == 1 and "TBC" not in out, out
+
+
+# ESNAD 10-23 (draft of 2026-10-23 08:47), the paragraph the scorecard flagged:
+# a list of named systems written inline. Nearly every word is a name, so it has
+# almost no function words, the same as a table row.
+_ESNAD_SYSTEMS_PARAGRAPH = (
+    "Workforce Population & Target Applications: Covers internal, contractor, and "
+    "third-party personnel accessing ESNAD systems including ERP, HR, CRM/ESM, "
+    "ESM/ITSM Platform, Taadeen Platform, Bidding platform, Bravo/inspection platform, "
+    "Bytebase, Grafana & OutSystems, Complex Management, GIS (Esri Geoportal, Admin, "
+    "Maps), and PowerBI. PingGateway protects legacy applications lacking native "
+    "protocol support.")
+
+
+def test_an_inline_list_of_named_systems_is_not_degenerate():
+    """A false positive here re-drafts good text in document_engine, and a second
+    flag truncates it, so the draft gate and the scorecard are both checked."""
+    p = _ESNAD_SYSTEMS_PARAGRAPH
+    assert qa.is_degenerate(p) == (False, ""), qa.is_degenerate(p)
+    cleaned, issues = qa.qa_text(p)
+    assert not any(i.startswith("degenerate") for i in issues), issues
+    assert qa.truncate_at_degeneration(p) == p
+
+
+def test_a_comma_separated_synonym_chain_is_still_caught_on_the_floor():
+    """The run-3 thesaurus walk, broken into short comma lists with full stops,
+    so only the function-word floor can catch it. Its items are lower case, so
+    they are not names and stay in the count."""
+    words = _THESAURUS_WALK.split(". ", 1)[1].split()
+    chain = ". ".join(", ".join(words[i:i + 8]) for i in range(0, len(words), 8)) + "."
+    text = "The governance model is defined below. " + chain[0].upper() + chain[1:]
+    assert qa.longest_unpunctuated_run(text) <= qa.DEGENERATE_MAX_RUN      # precondition
+    assert qa.repetition_score(text)[0] < qa.DEGENERATE_REPEATS            # precondition
+    degenerate, reason = qa.is_degenerate(text)
+    assert degenerate and "function-word" in reason, reason

@@ -315,6 +315,9 @@ HIGH_VALUE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
+_SAAS_NOT_ASKED = frozenset({"hardware_sizing_inputs", "cluster_topology"})
+
+
 def missing_high_value(sections: list, answers: Optional[dict]) -> dict:
     """Per section, which quality-critical fields were left empty.
 
@@ -322,13 +325,18 @@ def missing_high_value(sections: list, answers: Optional[dict]) -> dict:
     scored against a document whose gaps were only visible after generation,
     when the cost of filling them is a whole rerun.
     """
+    import document_engine        # imported here: document_engine imports this module
     answers = answers or {}
+    # A vendor-hosted SaaS deployment has no servers for IV to size and no
+    # cluster to lay out (ESNAD 10-23 was asked for both).
+    skip = (_SAAS_NOT_ASKED if document_engine._looks_like_saas(answers.get("deployment_model"))
+            else frozenset())
     out: dict[str, list[str]] = {}
     for spec in sections:
         fields = HIGH_VALUE_FIELDS.get(spec.id)
         if not fields:
             continue
-        gaps = [f for f in fields if _is_empty(answers.get(f))]
+        gaps = [f for f in fields if f not in skip and _is_empty(answers.get(f))]
         if gaps:
             out[spec.id] = gaps
     return out

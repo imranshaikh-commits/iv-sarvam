@@ -410,3 +410,20 @@ def test_the_small_proposal_fallback_never_restores_what_the_client_excluded():
     assert [sid for sid, _ in dropped] == ["knowledge_transfer"]      # and it is reported
     # Sections dropped only for want of answers do come back.
     assert {"commercial", "project_timeline", "rollback_risk"} <= set(_ids(keep))
+
+
+def test_a_saas_deployment_is_not_asked_for_sizing_or_cluster_topology():
+    """ESNAD 10-23: the pre-draft 'still empty' list asked for hardware sizing
+    and cluster topology for a vendor-hosted SaaS deployment, where IV sizes
+    nothing. Both are skipped when the deployment model reads as SaaS."""
+    import proposal_templates
+    import scope_filter
+    template = proposal_templates.get_template("implementation")
+    asked = lambda answers: {f for fs in scope_filter.missing_high_value(template, answers).values()  # noqa: E731
+                             for f in fs}
+    saas = asked({"deployment_model": "SaaS hosted within the Kingdom of Saudi Arabia"})
+    assert "hardware_sizing_inputs" not in saas and "cluster_topology" not in saas
+    on_prem = asked({"deployment_model": "On-premises, two data centres"})
+    assert {"hardware_sizing_inputs", "cluster_topology"} <= on_prem
+    unknown = asked({})
+    assert {"hardware_sizing_inputs", "cluster_topology"} <= unknown     # not known to be SaaS: still asked

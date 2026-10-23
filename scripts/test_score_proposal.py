@@ -159,3 +159,22 @@ def test_the_images_gate_ignores_ivs_slide_screenshots():
     assert name == "images >= 10" and ok                  # no count: the floor, not 66 x 0.5 = 33
     assert not _gate(S.gates(run, base, {"iv_images": 30}), "images")[1]
 
+
+def test_the_forbid_check_skips_the_relevant_engagements_table():
+    """'Azure AD' in IV's own case studies is history, not an invented system."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = f"{tmp}/a.docx"
+        _doc(p)
+        d = Document(p)
+        t = d.add_table(rows=2, cols=7)
+        for i, h in enumerate(["Client", "Products", "Engagement", "Scale", "IV's role",
+                               "Outcomes", "Status"]):
+            t.rows[0].cells[i].text = h
+        for i, v in enumerate(["Leading bank", "ForgeRock", "CIAM", "10,000", "Azure AD integration",
+                               "SAMA aligned", "Delivered"]):
+            t.rows[1].cells[i].text = v
+        d.save(p)
+        m = S.measure(p)
+    assert _gate(S.gates(m, None, {"forbid": ["Azure AD"]}), "no forbidden")[1]
+    m2 = {**m, "_body": m["_body"] + "\nWe integrate Azure AD for workforce SSO."}
+    assert not _gate(S.gates(m2, None, {"forbid": ["Azure AD"]}), "no forbidden")[1]

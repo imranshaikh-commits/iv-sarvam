@@ -42,6 +42,10 @@ ESNAD are mostly slide screenshots, which Shilpi's kit dropped on purpose on
 2026-10-14, and a slide cannot be told from a diagram automatically. Without
 "iv_images" the floor is 10, lowered (never raised) by half IV's raw total
 when a baseline has fewer, so a scoped deal is not held to 10.
+
+FORBID skips the Relevant Engagements table: a system named in IV's own case
+studies ("Azure AD integration" for another client) is history, not a system
+this proposal invented.
 """
 from __future__ import annotations
 
@@ -84,6 +88,7 @@ def measure(path: str) -> dict:
     heads = collections.Counter()
     prose: list[str] = []
     table_text: list[str] = []
+    engagements: list[str] = []      # Relevant Engagements cells: outside the forbid check
     exec_words, in_exec = 0, False
     last_table_weeks = False
     for el in doc.element.body.iterchildren():
@@ -94,6 +99,8 @@ def measure(path: str) -> dict:
             m["table_words"] += sum(len(c.split()) for r in cells for c in r)
             table_text.extend(c for r in cells for c in r)
             head = " ".join(cells[0]).lower() if cells else ""
+            if "iv's role" in head and "status" in head:
+                engagements.extend(c for r in cells[1:] for c in r if c)
             last_table_weeks = "start week" in head and "end week" in head
             if "requirement" in head:
                 # The corpus grading must never reach the client (09-27: 30 "Partial").
@@ -165,7 +172,7 @@ def measure(path: str) -> dict:
             "headings": {f"H{k}": heads[k] for k in sorted(heads)},
             "top_repeated_figures": repeats,
             "max_figure_repeats": repeats[0][1] if repeats else 0,
-            "_body": body + "\n" + "\n".join(table_text)}
+            "_body": body + "\n" + "\n".join(table_text), "_engagements": engagements}
 
 
 def _mentions(body: str, term: str) -> bool:
@@ -216,7 +223,10 @@ def gates(run: dict, base: dict | None, cfg: dict) -> list[tuple[str, bool, str]
     out.append(("no other client named", not leaks, ", ".join(leaks) or "none"))
     missing = [t for t in cfg.get("must_mention", []) if not _mentions(body, t)]
     out.append(("named systems all mentioned", not missing, ", ".join(missing) or "all"))
-    bad = [t for t in cfg.get("forbid", []) if _mentions(body, t)]
+    forbid_body = body
+    for cell in run.get("_engagements") or []:
+        forbid_body = forbid_body.replace(cell, "")
+    bad = [t for t in cfg.get("forbid", []) if _mentions(forbid_body, t)]
     out.append(("no forbidden terms", not bad, ", ".join(bad) or "none"))
     if cfg.get("expect_gantt", True):
         out.append(("gantt chart present", run.get("gantt_charts", 0) >= 1,

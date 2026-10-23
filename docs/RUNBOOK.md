@@ -191,7 +191,7 @@ git checkout main
 Roll back to a named tag: the line above the last in `.deploy_history`:
 
 ```bash
-~/iv-sarvam/deploy/rollback.sh <OLDER_TAG>
+~/iv-sarvam/deploy/rollback.sh $(tail -2 ~/iv-sarvam/deploy/.deploy_history | head -1)
 ```
 
 `/health` must now report that tag:
@@ -203,7 +203,7 @@ curl -s http://127.0.0.1:8000/health | grep -o '"build": *"[^"]*"'
 Return to the current build (the last line of `.deploy_history`) and check it:
 
 ```bash
-~/iv-sarvam/deploy/rollback.sh <CURRENT_TAG>
+~/iv-sarvam/deploy/rollback.sh $(tail -1 ~/iv-sarvam/deploy/.deploy_history)
 ```
 
 ```bash

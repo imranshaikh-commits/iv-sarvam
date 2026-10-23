@@ -78,3 +78,21 @@ failing part is now tried twice (item 5).
 - `deploy.sh`'s disk check and pruning are tested with fake `docker` and
   `df`, not on the host.
 - The page retry and the both-reads scoring have not run against a model.
+
+## Rollback rehearsal result (2026-10-23, run by Imran on the host)
+
+Passed.
+
+- `deploy.sh` with `rehearsal/known-bad` (51c6ea0): built, 835 tests passed in
+  the image, "did not become healthy in 90 s", "rolling back to previous".
+  After it, `/health` showed build `previous` and `/v1/keepalive` answered
+  `{"status":"ok","database":"reachable"}`.
+- `rollback.sh 37a28f7`: "rolled back previous -> 37a28f7"; `/health` showed `37a28f7`.
+- `rollback.sh bdc0f02`: "rolled back 37a28f7 -> bdc0f02"; `/health` showed `bdc0f02`.
+- Known-bad image removed.
+
+Confirmed gap, accepted: after an automatic rollback `/health` reports
+`previous`, not the commit; rolling forward with `rollback.sh <tag>` restores
+a named build. The runbook's `<OLDER_TAG>`/`<CURRENT_TAG>` placeholders were
+typed literally on the first try; they are now commands that read the tags
+from `.deploy_history`.

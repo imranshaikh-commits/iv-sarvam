@@ -569,3 +569,48 @@ def test_the_interview_does_not_ask_for_derived_fields():
     asked = {q["id"] for q in T.iter_questions(None)}
     assert "required_diagram_types" not in asked and "diagram_count" not in asked
     assert "deployment_model" in asked
+
+
+# --- Phase 4 item 6: the diagram plan editor ----------------------------------
+
+_PLAN = [("Solution Architecture", "architecture"), ("Integration", "component"),
+         ("Authentication Journey", "sequence"), ("Customer Journey", "sequence")]
+
+
+def test_replace_x_with_y_is_a_drop_and_an_add():
+    out = cs.apply_plan_edit(_PLAN, "replace the integration diagram with a security diagram")
+    titles = [t for t, _ in out]
+    assert "Integration" not in titles and "Security" in titles
+    assert titles[:1] == ["Solution Architecture"] and len(out) == len(_PLAN)
+
+
+def test_a_replace_whose_new_diagram_is_unknown_changes_nothing():
+    """Half an edit (the drop without the add) would silently lose a diagram."""
+    assert cs.apply_plan_edit(_PLAN, "replace integration with a zorblax diagram") == _PLAN
+
+
+def test_replace_falls_back_to_the_model_for_an_unknown_new_diagram():
+    import asyncio
+
+    async def structured(model, messages=None, **kw):
+        return model(title="Federation Trust Map", engine_type="architecture")
+
+    out = asyncio.run(cs.apply_plan_edit_async(
+        _PLAN, "replace integration with a federation trust map", structured_fn=structured))
+    titles = [t for t, _ in out]
+    assert "Integration" not in titles and "Federation Trust Map" in titles
+
+
+def test_every_derived_diagram_has_its_own_description():
+    """Authentication Journey and Customer Journey were both described as 'the
+    interaction order between user, IdP, MFA and application'."""
+    plan = [("Solution Architecture", "architecture"), ("Integration", "component"),
+            ("Identity Lifecycle", "flow"), ("Privileged Access Management", "flow"),
+            ("Identity Governance", "flow"), ("Authentication Journey", "sequence"),
+            ("Customer Journey", "sequence")]
+    msg = cs.build_plan_message(plan, {})
+    lines = [ln for ln in msg.splitlines() if ln[:2].rstrip(".").isdigit()]
+    descriptions = [ln.rsplit(" — ", 1)[-1] for ln in lines]
+    assert len(descriptions) == len(plan) and len(set(descriptions)) == len(plan)
+    auth, customer = descriptions[5], descriptions[6]
+    assert "workforce" in auth.lower() and "customer" in customer.lower()

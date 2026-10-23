@@ -757,7 +757,8 @@ def build_plan_message(plan: list[tuple[str, str]], answers: dict) -> str:
         # conveys topology, so describe what it will actually show.
         key = "network" if ("deployment" in low or "security" in low
                             or "production" in low or "tenant" in low) else dtype
-        lines.append(f"{i}. **{title}** — _{dtype}_ — {_PLAN_RATIONALE.get(key, '')}")
+        why = _TITLE_RATIONALE.get(title) or _PLAN_RATIONALE.get(key, "")
+        lines.append(f"{i}. **{title}** — _{dtype}_ — {why}")
     requested = str(answers.get("required_diagram_types") or "").strip()
     if requested:
         lines += ["", f"_Based on what you asked for: {requested}._"]
@@ -772,6 +773,18 @@ def build_plan_message(plan: list[tuple[str, str]], answers: dict) -> str:
     ]
     return "\n".join(lines)
 
+
+# The derived plan's own diagrams, each said apart: two diagrams of one engine
+# type (both journeys are sequences, three flows) shared one description.
+_TITLE_RATIONALE = {
+    "Solution Architecture": "the proposed platforms, the client's systems and how identity flows between them",
+    "Integration": "each connected system and the connector or protocol that links it",
+    "Identity Lifecycle": "joiner, mover and leaver, from the HR source to the target accounts",
+    "Privileged Access Management": "how an administrator requests, uses and gives back privileged access",
+    "Identity Governance": "access requests, certification campaigns and segregation-of-duties checks",
+    "Authentication Journey": "how a workforce user signs in: single sign-on, MFA and step-up",
+    "Customer Journey": "how a customer registers, signs in and recovers an account",
+}
 
 _PLAN_RATIONALE = {
     "architecture": "logical components and how identity flows between them",
@@ -804,6 +817,22 @@ _DIAGRAM_ACRONYMS: dict[str, str] = {
 }
 
 
+# "replace the integration diagram with a security diagram": a drop and an add.
+_REPLACE_RE = re.compile(r"\breplace\s+(.+?)\s+with\s+(.+)$", re.I)
+
+
+def _replaced(plan, dropped, added):
+    """The plan with the one dropped diagram's place taken by the one added;
+    the plan unchanged unless exactly one went and one came (half an edit
+    would silently lose a diagram)."""
+    gone = [item for item in plan if item not in dropped]
+    new = [item for item in added if item not in dropped]
+    if len(gone) != 1 or len(new) != 1:
+        return plan
+    i = plan.index(gone[0])
+    return dropped[:i] + new + dropped[i:]
+
+
 def apply_plan_edit(plan: list[tuple[str, str]], text: str) -> list[tuple[str, str]]:
     """Apply a free-text edit to the diagram plan, deterministically.
 
@@ -822,6 +851,10 @@ def apply_plan_edit(plan: list[tuple[str, str]], text: str) -> list[tuple[str, s
     vocabulary gap is possible) keeps its instant, zero-cost, fully
     deterministic behaviour.
     """
+    m = _REPLACE_RE.search(text or "")
+    if m:
+        dropped = apply_plan_edit(plan, f"drop {m.group(1)}")
+        return _replaced(plan, dropped, apply_plan_edit(dropped, f"add {m.group(2)}"))
     norm = _normalise(text)
     padded = f" {norm} "
     out = list(plan)
@@ -905,6 +938,15 @@ async def apply_plan_edit_async(
     layer, never a requirement for the chat to keep working.
     """
     out = apply_plan_edit(plan, text)
+    m = _REPLACE_RE.search(text or "")
+    if m and out == plan and structured_fn:
+        # The new diagram is outside the fixed vocabulary: drop, then let the
+        # model name the addition, all or nothing.
+        dropped = apply_plan_edit(plan, f"drop {m.group(1)}")
+        if dropped == plan:
+            return plan
+        added = await apply_plan_edit_async(dropped, f"add {m.group(2)}", structured_fn)
+        return _replaced(plan, dropped, added)
     if out != plan or not structured_fn:
         return out
     if not any(h in f" {_normalise(text)} " for h in _ADD_HINTS):
@@ -932,8 +974,9 @@ async def apply_plan_edit_async(
 
 PLAN_REPROMPT = (
     "I didn't catch a change I could apply. Reply **approve** to go ahead with the "
-    "list above, or name a diagram to drop (e.g. _drop the security diagram_) or "
-    "add (e.g. _add a user journey diagram_)."
+    "list above, or name a diagram to drop (e.g. _drop the security diagram_), "
+    "add (e.g. _add a user journey diagram_) or replace (e.g. _replace integration "
+    "with a security diagram_)."
 )
 
 

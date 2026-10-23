@@ -139,3 +139,57 @@ def test_storage_mirror_walks_folders_and_fetches_only_what_changed():
         (Path(tmp) / "20260101T000000Z").mkdir()
         bt.prune(tmp, keep=0)
         assert root.exists()
+
+
+# --- F46: restore rehearsal into a scratch project ---------------------------
+
+def test_tables_all_restores_every_table_in_the_backup_parents_first(tmp_path):
+    for t in ("proposal_chunks", "architecture_diagrams", "intake_sessions"):
+        with gzip.open(tmp_path / f"{t}.jsonl.gz", "wt") as f:
+            f.write(json.dumps({"id": 1}) + "\n")
+    assert bt.tables_in_backup(tmp_path) == ["intake_sessions", "architecture_diagrams",
+                                             "proposal_chunks"]
+
+
+def test_storage_files_go_back_into_their_buckets(tmp_path):
+    (tmp_path / "diagram-renders" / "s1").mkdir(parents=True)
+    (tmp_path / "diagram-renders" / "s1" / "d.png").write_bytes(b"png")
+    (tmp_path / "generated-drafts").mkdir()
+    (tmp_path / "generated-drafts" / "p.docx").write_bytes(b"docx")
+    calls = []
+
+    def put(env, method, path, data=None, headers=None):
+        calls.append((method, path, data, headers or {}))
+        return b"{}"
+
+    counts = bt.restore_storage(ENV, tmp_path, ["diagram-renders", "generated-drafts"], call=put)
+    assert counts == {"diagram-renders": 1, "generated-drafts": 1}
+    buckets = [c for c in calls if c[1] == "bucket"]
+    assert [json.loads(c[2])["id"] for c in buckets] == ["diagram-renders", "generated-drafts"]
+    assert all(json.loads(c[2])["public"] is False for c in buckets)      # private, as in production
+    uploads = {c[1]: c for c in calls if c[1].startswith("object/")}
+    assert uploads["object/diagram-renders/s1/d.png"][2] == b"png"
+    assert uploads["object/diagram-renders/s1/d.png"][3]["x-upsert"] == "true"
+
+
+def test_the_comparison_puts_source_next_to_restored_for_every_table_and_bucket(tmp_path):
+    (tmp_path / "manifest.json").write_text(json.dumps(
+        {"rows": {"intake_sessions": 12, "proposals": 30}}))
+    storage = tmp_path / "storage"
+    (storage / "visual-assets").mkdir(parents=True)
+    for i in range(3):
+        (storage / "visual-assets" / f"{i}.png").write_bytes(b"x")
+    restored = {"intake_sessions": 12, "proposals": 29}
+
+    def count(env, table):
+        return restored[table]
+
+    def listing(env, bucket):
+        return [("0.png", 1), ("1.png", 1), ("2.png", 1)]
+
+    rows = bt.compare(ENV, tmp_path, storage, ["visual-assets"], count=count, listing=listing)
+    assert rows == [("table", "intake_sessions", 12, 12), ("table", "proposals", 30, 29),
+                    ("bucket", "visual-assets", 3, 3)]
+    text = bt.format_comparison(rows)
+    assert "proposals" in text and "30" in text and "29" in text and "MISMATCH" in text
+    assert text.count("MISMATCH") == 1

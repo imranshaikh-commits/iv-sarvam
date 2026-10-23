@@ -44,6 +44,7 @@ import os
 import re
 import shutil
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -195,6 +196,85 @@ def restore(env, backup_dir, tables, fetch=_request, batch=500):
         print(f"{t}: {len(rows)} rows upserted")
 
 
+# --- Restore rehearsal (F46): a scratch project, never production -------------
+# Driven by scripts/restore_rehearsal.sh, which refuses the production ref.
+
+def tables_in_backup(backup_dir) -> list[str]:
+    """Every table this backup holds, parents before children."""
+    present = {p.name.removesuffix(".jsonl.gz")
+               for p in Path(backup_dir).expanduser().glob("*.jsonl.gz")}
+    return [t for t in _RESTORE_ORDER if t in present] + sorted(present - set(_RESTORE_ORDER))
+
+
+def _storage_put(env, method, path, data=None, headers=None):
+    """Storage API call with a raw body (a file, or a JSON bucket definition)."""
+    req = urllib.request.Request(
+        env["SUPABASE_URL"].rstrip("/") + "/storage/v1/" + path, method=method, data=data,
+        headers={"apikey": env["SUPABASE_KEY"],
+                 "Authorization": f"Bearer {env['SUPABASE_KEY']}", **(headers or {})})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        if path == "bucket" and e.code in (400, 409):    # the bucket already exists
+            return b"{}"
+        raise
+
+
+def restore_storage(env, storage_root, buckets=BUCKETS, call=_storage_put) -> dict:
+    """Upload a storage mirror (<root>/<bucket>/<path>) back: each bucket is
+    created private if missing, each file written with upsert."""
+    import mimetypes
+    root = Path(storage_root).expanduser()
+    counts = {}
+    for bucket in buckets:
+        call(env, "POST", "bucket", json.dumps({"id": bucket, "name": bucket, "public": False}).encode(),
+             {"Content-Type": "application/json"})
+        n = 0
+        base = root / bucket
+        for f in sorted(p for p in base.rglob("*") if p.is_file()) if base.exists() else []:
+            rel = f.relative_to(base).as_posix()
+            call(env, "POST", f"object/{bucket}/{urllib.parse.quote(rel)}", f.read_bytes(),
+                 {"x-upsert": "true",
+                  "Content-Type": mimetypes.guess_type(rel)[0] or "application/octet-stream"})
+            n += 1
+        counts[bucket] = n
+        print(f"storage {bucket}: {n} files uploaded")
+    return counts
+
+
+def count_rows(env, table) -> int:
+    """Exact row count from PostgREST's Content-Range header."""
+    req = urllib.request.Request(
+        env["SUPABASE_URL"].rstrip("/") + f"/rest/v1/{table}?select=*&limit=1",
+        headers={"apikey": env["SUPABASE_KEY"], "Authorization": f"Bearer {env['SUPABASE_KEY']}",
+                 "Prefer": "count=exact"})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        return int(resp.headers.get("Content-Range", "*/0").rsplit("/", 1)[1])
+
+
+def compare(env, backup_dir, storage_root, buckets=BUCKETS, count=count_rows,
+            listing=lambda env, bucket: list_bucket(env, bucket)) -> list[tuple]:
+    """[(kind, name, source, restored)]: every table in the backup's manifest,
+    then every bucket (files in the local mirror against objects in the target)."""
+    manifest = json.loads((Path(backup_dir).expanduser() / "manifest.json").read_text())
+    rows = [("table", t, n, count(env, t)) for t, n in manifest["rows"].items()]
+    root = Path(storage_root).expanduser()
+    for bucket in buckets:
+        local = sum(1 for p in (root / bucket).rglob("*") if p.is_file()) if (root / bucket).exists() else 0
+        rows.append(("bucket", bucket, local, len(listing(env, bucket))))
+    return rows
+
+
+def format_comparison(rows) -> str:
+    lines = [f"{'':7}{'name':32}{'source':>10}{'restored':>10}"]
+    for kind, name, src, got in rows:
+        lines.append(f"{kind:7}{name:32}{src:>10}{got:>10}" + ("" if src == got else "  MISMATCH"))
+    bad = sum(1 for r in rows if r[2] != r[3])
+    lines.append(f"{len(rows)} compared, {bad} mismatched")
+    return "\n".join(lines)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--env-file")
@@ -204,13 +284,27 @@ def main():
     ap.add_argument("--with-storage", action="store_true",
                     help="also mirror the Storage buckets (weekly)")
     ap.add_argument("--restore", metavar="BACKUP_DIR")
+    ap.add_argument("--restore-storage", metavar="STORAGE_DIR",
+                    help="upload a storage mirror back into its buckets")
+    ap.add_argument("--compare", metavar="BACKUP_DIR",
+                    help="row and object counts, backup next to target")
+    ap.add_argument("--storage-dir", default="~/sarvam-backups/storage")
     a = ap.parse_args()
     env = load_env(a.env_file)
+    if a.restore_storage:
+        restore_storage(env, a.restore_storage)
+        return
+    if a.compare:
+        print(format_comparison(compare(env, a.compare, a.storage_dir)))
+        return
+    if a.restore and a.tables == "all":
+        restore(env, a.restore, tables_in_backup(a.restore))
+        return
     tables = a.tables.split(",") if a.tables else TABLES + (
         ["proposal_chunks"] if a.with_proposal_chunks else [])
     if a.restore:
         if not a.tables:
-            sys.exit("--restore needs an explicit --tables list")
+            sys.exit("--restore needs an explicit --tables list (or --tables all)")
         restore(env, a.restore, tables)
         return
     out, _ = backup(env, a.out, tables)

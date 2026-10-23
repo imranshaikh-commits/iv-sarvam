@@ -30,8 +30,77 @@ the Storage buckets, 03:15 sync of everything to S3.
 | `scripts/sarvam.env` | the keys | **nothing: keep a copy in the password manager** |
 | Code and migrations | this repo | GitHub |
 
-A restore into a brand-new Supabase project has not been rehearsed end to
-end. Do that drill before relying on these backups for a real outage.
+A restore into a brand-new Supabase project is rehearsed with
+`scripts/restore_rehearsal.sh` (next section). Run it before relying on these
+backups for a real outage, and again after any migration is added.
+
+## Restore rehearsal (scratch project, never production)
+
+The script applies every migration from `supabase/migrations` in file order,
+restores every table in the chosen backup (parents first), uploads the Storage
+mirror, restores the Open WebUI volume into a throwaway container on
+127.0.0.1:18080, then prints row and object counts, backup next to restored.
+It takes the scratch project from three environment variables, never from
+`sarvam.env`, and refuses any target that names `jthrjmiulefmyrqtwsnz`.
+
+Before: create a new, empty Supabase project in the dashboard (the scratch
+project). From its settings you need the Project URL, the `service_role` key,
+and the **Session pooler** connection string with the database password filled
+in (the direct connection string is IPv6 only and the host cannot reach it).
+
+On the host, in tmux (the Open WebUI step takes a few minutes):
+
+```bash
+tmux new -s restore
+```
+
+```bash
+cd ~/iv-sarvam && git pull --ff-only
+```
+
+At least the size of one Open WebUI archive must be free:
+
+```bash
+df -h / && ls -lh ~/sarvam-backups/owui/
+```
+
+Pick the newest table backup (a folder named like `20261022T021500Z`):
+
+```bash
+ls -1d ~/sarvam-backups/2* | tail -3
+```
+
+Enter the scratch project details (each prompt waits for a paste; the values
+do not appear on screen or in shell history):
+
+```bash
+read -r -p "scratch project URL: " SCRATCH_SUPABASE_URL && export SCRATCH_SUPABASE_URL
+```
+
+```bash
+read -rs -p "scratch service_role key: " SCRATCH_SUPABASE_KEY && export SCRATCH_SUPABASE_KEY && echo
+```
+
+```bash
+read -rs -p "scratch Session pooler string: " SCRATCH_DB_URL && export SCRATCH_DB_URL && echo
+```
+
+Run it, with the folder from the `ls` above:
+
+```bash
+scripts/restore_rehearsal.sh ~/sarvam-backups/<STAMP>
+```
+
+Read the result: every `table` and `bucket` line should show the same number
+in both columns, and the last line says how many mismatched. `open webui live`
+and `restored` should match too, and the restored Open WebUI should answer
+`/health: yes`. Paste the output (it holds counts, no content) into the phase
+report. Then clear the variables and delete the scratch project in the
+dashboard:
+
+```bash
+unset SCRATCH_SUPABASE_URL SCRATCH_SUPABASE_KEY SCRATCH_DB_URL
+```
 
 ## Health
 

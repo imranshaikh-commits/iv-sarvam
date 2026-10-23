@@ -2633,3 +2633,13 @@ def test_the_scale_judgement_always_sees_the_short_decisive_facts():
         assert f"{field}: The vendor shall" in content, field       # every field keeps a line
     assert content.index("deployment_model") < content.index("business_objectives")
     assert len(content) <= 4000
+
+
+def test_drop_removes_only_the_best_matching_title():
+    """ESNAD 10-23: "drop customer journey" also removed Authentication
+    Journey, on the shared word "journey"."""
+    from chat_state import apply_plan_edit
+    plan = [("Solution Architecture", "architecture"),
+            ("Authentication Journey", "sequence"), ("Customer Journey", "sequence")]
+    assert apply_plan_edit(plan, "drop customer journey") == plan[:2]
+    assert apply_plan_edit(plan, "drop the security one") == plan

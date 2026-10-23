@@ -827,12 +827,12 @@ def apply_plan_edit(plan: list[tuple[str, str]], text: str) -> list[tuple[str, s
     out = list(plan)
 
     if any(h in padded for h in _DROP_HINTS):
-        kept = []
-        for title, dtype in out:
-            words = [w for w in _normalise(title).split() if len(w) > 3]
-            mentioned = any(w in padded for w in words) if words else False
-            if not mentioned:
-                kept.append((title, dtype))
+        # Only the best-matching titles go: "drop customer journey" used to
+        # remove Authentication Journey too, on the shared word "journey".
+        hits = [sum(w in padded for w in _normalise(t).split() if len(w) > 3)
+                for t, _ in out]
+        best = max(hits, default=0)
+        kept = [item for item, n in zip(out, hits) if not best or n < best]
         if kept and len(kept) < len(out):
             out = kept
 

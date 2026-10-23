@@ -816,12 +816,12 @@ def test_stack_is_built_from_facts_with_the_right_products_and_systems():
     # SSO reaches the whole application group with one arrow, not nine.
     assert any(e.target == "group:ESNAD applications" for e in spec.edges)
     # Rendered as a fixed grid, arrows between neighbouring columns only. The
-    # columns are ordered to draw the most links (deep audit F54, review
-    # 2026-10-14): applications sit between the two platforms that feed them.
+    # columns follow IV's V3.0 stack: Users, the two platforms side by side,
+    # then the applications (Phase 4 follow-up, 2026-10-23).
     d2 = diagram_engine.build_d2(spec)
     assert "grid-columns: 4" in d2 and "main.c0 -> main.c1" in d2
-    assert d2.index("Users") < d2.index("Ping Identity") < d2.index("ESNAD applications") \
-        < d2.index("Saviynt") < d2.index("Identity sources")
+    assert d2.index("Users") < d2.index("Ping Identity") < d2.index("Saviynt") \
+        < d2.index("ESNAD applications") < d2.index("Identity sources")
 
 
 def test_vendor_colours_and_legend():
@@ -1152,9 +1152,10 @@ def test_the_stack_never_routes_an_arrow_across_a_column():
     columns are ordered (Users first) to make as many links neighbours as
     possible; what no order can place side by side is not drawn."""
     E = diagram_engine.DiagramEdge
-    # One link between Ping and the applications: they become neighbours.
+    # One link between Ping and the applications: the platforms stay side by
+    # side (IV's V3.0), and Ping takes the place next to the applications.
     spec = _two_vendor_stack([E(source="am", target="app", label="SSO (SAML / OIDC)")])
-    assert _stack_arrows(spec) == [("main.c1", "->", "main.c2", "SSO (SAML / OIDC)")]
+    assert _stack_arrows(spec) == [("main.c2", "->", "main.c3", "SSO (SAML / OIDC)")]
     # Three columns all linked to each other: in a row, two pairs can be
     # neighbours and one cannot. Every order draws two; on that tie IV's own
     # order (platforms, then applications) is kept, and the third link is left out.
@@ -1173,19 +1174,25 @@ def test_the_sources_band_is_linked_only_where_the_spec_links_it():
     assert _stack_arrows(spec) == [("main.c2", "<-", "sources", "joiner/mover/leaver feed")]
 
 
-def test_the_esnad_stack_keeps_its_true_links_and_loses_the_invented_one():
+def test_the_esnad_stack_is_laid_out_as_ivs_v3_with_the_platforms_side_by_side():
+    """IV's V3.0 stack: Users | PingOne AIC | Saviynt EIC | assets, with
+    'Identity Data & Governance' between the two platforms. The layout put the
+    applications between them, so that link (iga -> wiam) was never drawn."""
+    d2 = diagram_engine.build_d2(_esnad_stack())
+    titles = re.findall(r'(?m)^  (c\d): "([^"]+)"', d2)
+    order = [t.split("\\n")[0] for _, t in titles]
+    assert order[0] == "Users" and order[1].startswith("Ping Identity")
+    assert order[2].startswith("Saviynt") and order[3] == "ESNAD applications"
     arrows = _stack_arrows(_esnad_stack())
-    labels = " | ".join(a[3] for a in arrows)
-    assert "identity data" not in labels                       # nobody stated it
-    assert ("main.c0", "->", "main.c1", "sign-in") in arrows   # users to Ping: stated
-    # Users | Ping | applications | Saviynt: Ping's SSO reaches the applications,
-    # and Saviynt's provisioning arrives from the other side.
-    assert ("main.c1", "->", "main.c2", "SSO (SAML / OIDC)") in arrows
-    saviynt = next(a for a in arrows if (a[0], a[2]) == ("main.c2", "main.c3"))
-    assert saviynt[1] == "<-" and "provisioning" in saviynt[3]
-    assert "joiner/mover/leaver feed" in labels
+    assert ("main.c0", "->", "main.c1", "sign-in") in arrows             # users to Ping
+    between = next(a for a in arrows if (a[0], a[2]) == ("main.c1", "main.c2"))
+    assert "identity data" in between[3] and between[1] == "<-"        # Saviynt to Ping
+    provisioning = next(a for a in arrows if (a[0], a[2]) == ("main.c2", "main.c3"))
+    assert "provisioning" in provisioning[3]
+    assert all(int(a[2][-1]) - int(a[0][-1]) == 1 for a in arrows if a[2].startswith("main."))
+    assert "joiner/mover/leaver feed" in " | ".join(a[3] for a in arrows)
     if diagram_engine.d2_available():
-        assert diagram_engine._d2_run(diagram_engine.build_d2(_esnad_stack()), 25)
+        assert diagram_engine._d2_run(d2, 25)
 
 
 def test_two_zones_whose_names_differ_only_by_punctuation_stay_two_zones():

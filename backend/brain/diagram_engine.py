@@ -540,23 +540,23 @@ def build_stack_d2(spec: DiagramSpec) -> str:
                 labels.append(e.label)
             links[frozenset((a, b))] = links.get(frozenset((a, b)), 0) + 1
 
-    # Column order. Arrows run only between neighbouring columns, so the order
-    # decides which links can be drawn at all: Users first, then whichever
-    # order of the other columns puts the most links between neighbours. ESNAD
-    # gets Users | Ping | applications | Saviynt and keeps Ping's SSO arrow,
-    # which Users | Ping | Saviynt | applications could not draw. On a tie,
-    # IV's order (platforms, then applications) wins: permutations() yields it
-    # first and max() keeps the first best.
-    # ponytail: tries every order, fine for the few columns a stack has (a
-    # 7-column one is 5,040 orders); beyond that it keeps IV's order.
+    # Column order, as IV's own stack (ESNAD V3.0): Users, the platforms side
+    # by side, then applications and the other columns. Arrows run only
+    # between neighbouring columns, so within each part the order drawing the
+    # most links wins, and on a tie the spec's own order (max keeps the first).
+    # The old free order put the applications between Ping and Saviynt, so
+    # the platforms' own link ("identity data and governance") was never drawn.
+    # ponytail: tries every order of both parts together, fine for the few
+    # columns a stack has; a part over 7 columns keeps the spec's order.
     def neighbour_links(cols) -> int:
         return sum(links.get(frozenset(pair), 0) for pair in zip(cols, cols[1:]))
 
-    others = vendors + apps
-    if 1 < len(others) <= 7:
-        others = list(max(itertools.permutations(others),
-                          key=lambda perm: neighbour_links(users + list(perm))))
-    columns = users + others
+    def orders(part: list[str]):
+        return itertools.permutations(part) if 1 < len(part) <= 7 else [tuple(part)]
+
+    platforms, rest = max(((list(p), list(r)) for p in orders(vendors) for r in orders(apps)),
+                          key=lambda pr: neighbour_links(users + pr[0] + pr[1]))
+    columns = users + platforms + rest
 
     def container(gid: str, group: str, cols: int, indent: str) -> list[str]:
         tint = _vendor_colour(group)

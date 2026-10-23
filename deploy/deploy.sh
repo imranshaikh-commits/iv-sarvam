@@ -68,7 +68,10 @@ for _ in $(seq 1 45); do
     # Room for the next deploy: keep the running image, previous and the two
     # newest tags (rollback.sh's choices), drop the other tags and the build
     # cache. Only after a deploy that is up and healthy.
-    KEEP=$(printf '%s\n' "$TAG" previous; docker images sarvam-brain --format '{{.Tag}}' \
+    # :latest is what compose falls back to without BRAIN_TAG; it was 10 days
+    # old, so a plain `docker compose up -d` would have put old code back.
+    docker tag "sarvam-brain:$TAG" sarvam-brain:latest
+    KEEP=$(printf '%s\n' "$TAG" previous latest; docker images sarvam-brain --format '{{.Tag}}' \
            | grep -vE '^(latest|previous|<none>)$' | head -2)
     docker images sarvam-brain --format '{{.Tag}}' | grep -vxF "$KEEP" | grep -vx '<none>' \
       | while read -r old; do docker rmi -f "sarvam-brain:$old" >/dev/null 2>&1 || true; done

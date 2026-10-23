@@ -78,7 +78,9 @@ def test_a_successful_deploy_keeps_running_previous_and_two_newest_and_prunes_bu
     code, calls = _run(tests_pass=True)
     assert code == 0, calls
     removed = sorted(ln.split()[-1] for ln in calls.splitlines() if ln.startswith("rmi"))
-    assert removed == ["sarvam-brain:latest", "sarvam-brain:old2222", "sarvam-brain:old3333"]
+    assert removed == ["sarvam-brain:old2222", "sarvam-brain:old3333"]
+    # :latest is moved to this build, not pruned: compose falls back to it.
+    assert any(ln.startswith("tag ") and ln.endswith("sarvam-brain:latest") for ln in calls.splitlines()), calls
     assert "builder prune -af" in calls
     assert calls.index("deployed sarvam-brain") > 0
 

@@ -140,3 +140,22 @@ def test_the_sme_gate_allows_twenty_five_markers():
                                     "_body": ""}, None, {"expect_gantt": False})
                 if g[0].startswith("sme"))
     assert gate[0] == "sme <= 25" and gate[1] is True
+
+
+def _gate(gates, prefix):
+    return next(g for g in gates if g[0].startswith(prefix))
+
+
+def test_the_images_gate_ignores_ivs_slide_screenshots():
+    """IV's 66 images are mostly slide screenshots, removed from Shilpi's kit on
+    purpose on 10-14. The gate compares against IV's own figures, counted once
+    by hand into the deal config (iv_images), never IV's raw image total."""
+    run = {"images": 12, "exec_summary_words": 500, "max_figure_repeats": 1,
+           "top_repeated_figures": [], "_body": ""}
+    base = {"images": 66, "exec_summary_words": 500}
+    name, ok, detail = _gate(S.gates(run, base, {"iv_images": 20}), "images")
+    assert name == "images >= 10" and ok and "IV figures 20" in detail
+    name, ok, _ = _gate(S.gates(run, base, {}), "images")
+    assert name == "images >= 10" and ok                  # no count: the floor, not 66 x 0.5 = 33
+    assert not _gate(S.gates(run, base, {"iv_images": 30}), "images")[1]
+

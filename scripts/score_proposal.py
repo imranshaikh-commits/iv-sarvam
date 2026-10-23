@@ -34,7 +34,14 @@ Exit code 0 = every gate passes, 1 = at least one fails.
 Config (all keys optional):
     {"baseline": "path/to/iv.docx", "client": "ESNAD",
      "must_mention": ["Nafath", "Power BI"], "forbid": ["Azure AD"],
-     "other_clients": ["Amlak", "BTPN"]}
+     "other_clients": ["Amlak", "BTPN"], "iv_images": 20}
+
+IMAGES: the gate is half of IV's own figures (diagrams and vendor drawings),
+counted once by hand into "iv_images", never IV's raw image total. IV's 66 in
+ESNAD are mostly slide screenshots, which Shilpi's kit dropped on purpose on
+2026-10-14, and a slide cannot be told from a diagram automatically. Without
+"iv_images" the floor is 10, lowered (never raised) by half IV's raw total
+when a baseline has fewer, so a scoped deal is not held to 10.
 """
 from __future__ import annotations
 
@@ -182,7 +189,13 @@ def gates(run: dict, base: dict | None, cfg: dict) -> list[tuple[str, bool, str]
     rel("prose_words", 0.45, 3000)
     rel("table_words", 0.70, 1500)
     rel("tables", 0.70, 10)
-    rel("images", 0.50, 10)
+    iv_images = cfg.get("iv_images")          # IV's own figures, not slide screenshots
+    # Without that count, IV's raw total can only lower the floor of 10 (a
+    # scoped deal with one picture), never raise it: slides inflate it.
+    want = (int(iv_images * 0.5) if iv_images
+            else min(10, int(base.get("images", 0) * 0.5)) if base else 10)
+    out.append((f"images >= {want}", run.get("images", 0) >= want,
+                f"{run.get('images', 0)}" + (f" (IV figures {iv_images})" if iv_images else "")))
     ex = min(400, int(base.get("exec_summary_words", 0) * 0.8)) if base else 400
     out.append((f"exec_summary_words >= {ex}", run["exec_summary_words"] >= ex,
                 str(run["exec_summary_words"])))

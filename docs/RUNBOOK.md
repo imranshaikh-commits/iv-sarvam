@@ -140,6 +140,82 @@ docker images sarvam-brain                # what is available (last 5 kept)
 
 No rebuild, so it takes seconds. Roll back first, investigate second.
 
+## Rollback rehearsal
+
+Proves both ways back work: `deploy.sh` undoing a bad deploy by itself, and
+`rollback.sh` to a named tag. The known-bad build is branch
+`rehearsal/known-bad` (never merge it): it passes the in-image tests but the
+brain listens on the wrong port, so the health check can never succeed. Users
+see about 90 seconds of brain downtime; do it outside working hours.
+
+Note the build running now (the good one) and the recent deploys:
+
+```bash
+docker ps --filter name=sarvam-brain --format '{{.Image}}'
+```
+
+```bash
+tail -3 ~/iv-sarvam/deploy/.deploy_history
+```
+
+Switch to the known-bad branch:
+
+```bash
+cd ~/iv-sarvam && git fetch origin && git checkout rehearsal/known-bad
+```
+
+Deploy it. Expect, after about 90 seconds, `did not become healthy in 90 s`
+then `rolling back to previous`, and a non-zero exit:
+
+```bash
+~/iv-sarvam/deploy/deploy.sh
+```
+
+Check the brain is back and answering (the build shows as `previous`, the good
+image retagged before the attempt):
+
+```bash
+curl -s http://127.0.0.1:8000/health | grep -o '"build": *"[^"]*"'
+```
+
+```bash
+curl -s http://127.0.0.1:8000/v1/keepalive
+```
+
+Back to `main`:
+
+```bash
+git checkout main
+```
+
+Roll back to a named tag: the line above the last in `.deploy_history`:
+
+```bash
+~/iv-sarvam/deploy/rollback.sh <OLDER_TAG>
+```
+
+`/health` must now report that tag:
+
+```bash
+curl -s http://127.0.0.1:8000/health | grep -o '"build": *"[^"]*"'
+```
+
+Return to the current build (the last line of `.deploy_history`) and check it:
+
+```bash
+~/iv-sarvam/deploy/rollback.sh <CURRENT_TAG>
+```
+
+```bash
+curl -s http://127.0.0.1:8000/health | grep -o '"build": *"[^"]*"'
+```
+
+Remove the known-bad image (its tag is the short commit `deploy.sh` printed):
+
+```bash
+docker rmi sarvam-brain:51c6ea0
+```
+
 ## Restore data
 
 Backups are gzipped JSON lines per table, one folder per night.

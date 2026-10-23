@@ -120,7 +120,7 @@ STRUCTURED_MODEL = PRIMARY_LLM_MODEL
 # token; set the same value as SHILPI_API_KEY and every route except the two
 # liveness probes requires it.
 SERVICE_KEY = os.environ.get("SHILPI_API_KEY", "")
-_OPEN_PATHS = frozenset({"/health", "/v1/keepalive"})
+_OPEN_PATHS = frozenset({"/health", "/v1/keepalive", "/healthz"})
 # Generation without an intake session (no discovery, no reviewed architecture)
 # is for evaluation harnesses only and must be switched on deliberately.
 ALLOW_DIRECT_GENERATE = os.environ.get("SHILPI_ALLOW_DIRECT_GENERATE") == "1"
@@ -3760,6 +3760,16 @@ async def _log_model_chains() -> None:
              PRIMARY_LLM_MODEL, FALLBACK_LLM_MODEL,
              " -> ".join(DIAGRAM_LLM_MODELS) if DIAGRAM_LLM_MODELS
              else f"{PRIMARY_LLM_MODEL} -> {FALLBACK_LLM_MODEL} (no override set)")
+
+
+@app.get("/healthz")
+async def public_health_endpoint():
+    """For an external uptime monitor: 'ok', or a bare 503. Nothing internal,
+    not the database state, not the build: /health holds those, on the host."""
+    async with httpx.AsyncClient() as client:
+        ok = await supabase_client.ping(client)
+    return Response("ok" if ok else "unavailable", status_code=200 if ok else 503,
+                    media_type="text/plain")
 
 
 @app.get("/v1/keepalive")

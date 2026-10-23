@@ -2767,3 +2767,24 @@ def test_continue_is_held_while_pages_of_the_tender_were_not_read(monkeypatch):
     accepted = {**ready, rfp_intake.NOT_READ_ACCEPTED_KEY: [3, 7]}
     reply, _ = _rfp_continue(monkeypatch, "continue", accepted)
     assert cs.decode_marker(reply).mode == cs.MODE_DIAGRAM_PLAN
+
+
+def test_the_public_health_route_says_only_ok(monkeypatch):
+    """Phase 4 item 3: an uptime monitor needs a public route; nothing internal
+    may be public, not the database state, not the build tag. /healthz answers
+    'ok' or a bare 503, with or without the service key configured."""
+    async def ok(client_):
+        return True
+
+    async def down(client_):
+        return False
+
+    monkeypatch.setattr(app, "SERVICE_KEY", "a-key")
+    monkeypatch.setattr(app.supabase_client, "ping", ok)
+    r = client.get("/healthz")
+    assert r.status_code == 200 and r.text == "ok"
+    monkeypatch.setattr(app.supabase_client, "ping", down)
+    r = client.get("/healthz")
+    assert r.status_code == 503 and r.text == "unavailable"
+    for internal in ("build", "database", "model", "status"):
+        assert internal not in r.text

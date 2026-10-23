@@ -1452,7 +1452,9 @@ def _vendor_scopes(iam_vendor: str, vendor_scope_map: Optional[dict]) -> list[tu
 
 
 def _count(text: str, pattern: str) -> Optional[str]:
-    m = re.search(rf"(?:{pattern})[^:\n]*:\s*([\d,]+)", text or "", re.I)
+    # "PAM: 50" or "50 privileged accounts" (ESNAD's user_count).
+    m = (re.search(rf"(?:{pattern})[^:\n]*:\s*([\d,]+)", text or "", re.I)
+         or re.search(rf"\b([\d,]+)\s+(?:{pattern})", text or "", re.I))
     return f"{int(m.group(1).replace(',', '')):,}" if m else None
 
 
@@ -1465,7 +1467,10 @@ def _system_names(target_integrations: str) -> list[str]:
     sep = r";|\n" if described else r",(?![^()]*\))"
     names = []
     for item in re.split(sep, text):
-        item = item.strip(" .-")
+        # ESNAD 10-23: the reader's lead-in ("The solution must connect and
+        # integrate with: Active Directory ...") became an application box.
+        item = re.sub(r"^[^:()]{12,}:\s*", "", item.strip())
+        item = re.sub(r"^and\s+", "", item.strip(" .-"), flags=re.I)
         if not item or item.lower() in ("skip", "none", "n/a"):
             continue
         # Only the described format carries a trailing "(description)"; in a
@@ -1517,9 +1522,17 @@ def build_stack_spec(*, title: str, client_name: str, iam_vendor: str,
     sources = "Identity sources and operations"
     systems = _system_names(target_integrations)
     nafath = next((s for s in systems if "nafath" in s.lower()), None)
-    apps = [s for s in systems if s != nafath]
-    if len(apps) > 10:
-        apps = apps[:9] + [f"Other systems ({len(apps) - 9})"]
+    # Systems drawn in the sources band, or that are not systems at all, are
+    # not repeated as applications; generic categories go last. ESNAD 10-23
+    # showed AD, HR and SIEM twice and hid Bravo, GIS and Power BI inside
+    # "Other systems (8)" behind ERP, HR and "APIs".
+    elsewhere = re.compile(r"(?i)nafath|active directory|\bldap\b|\bsiem\b|^hr(ms)?$|federation|"
+                           r"\bidps?\b|custom|legacy")
+    generic = re.compile(r"(?i)^(erp|crm|apis?|crm\s*/\s*esm|esm\s*/\s*itsm platform)$")
+    apps = sorted((s for s in systems if not elsewhere.search(s)),
+                  key=lambda s: bool(generic.match(s)))
+    if len(apps) > 12:
+        apps = apps[:11] + [f"Other systems ({len(apps) - 11})"]
     for i, name in enumerate(apps):
         nodes.append(DiagramNode(id=f"app_{i}", label=name, group=apps_group))
 
@@ -1547,7 +1560,14 @@ def build_stack_spec(*, title: str, client_name: str, iam_vendor: str,
     for dom in ("wiam", "ciam"):
         edge(domain_node.get(dom), apps_ref, "SSO (SAML / OIDC)")
     edge(domain_node.get("iga"), apps_ref, "provisioning")
-    edge(domain_node.get("pam"), apps_ref, "vaulted privileged sessions")
+    if "pam" in domain_node:
+        # IV's stack puts PAM over infrastructure, not business applications.
+        nodes.append(DiagramNode(id="pam_targets", label="Servers, databases, network devices",
+                                 group="Privileged targets", shape="datastore"))
+        ids.add("pam_targets")
+    edge(domain_node.get("pam"), "pam_targets", "vaulted privileged sessions")
+    edge(domain_node.get("iga"), domain_node.get("wiam") or domain_node.get("ciam"),
+         "identity data and governance")
     edge("src_hr", domain_node.get("iga"), "joiner/mover/leaver feed")
     edge(domain_node.get("iga"), "src_ad", "accounts and groups")
     edge(domain_node.get("iga"), domain_node.get("pam"), "governed privileged access")

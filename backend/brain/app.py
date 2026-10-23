@@ -1746,7 +1746,7 @@ def _stack_spec(answers: dict, title: str) -> DiagramSpec:
         iam_vendor=str(answers.get("iam_vendor") or ""),
         vendor_scope_map=answers.get("vendor_scope_map") or None,
         is_saas=document_engine._looks_like_saas(answers.get("deployment_model")),
-        population=str(answers.get("population_by_domain") or ""),
+        population=str(answers.get("population_by_domain") or answers.get("user_count") or ""),
         target_integrations=str(answers.get("target_integrations") or ""),
         # A capability the client ruled out must not be printed in a domain box.
         out_of_scope=str(answers.get("out_of_scope") or ""),

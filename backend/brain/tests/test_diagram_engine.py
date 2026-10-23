@@ -1274,3 +1274,36 @@ def test_a_cut_discovery_context_is_logged_with_sizes_and_dropped_fields(caplog)
         asyncio.run(de.generate_diagram_spec(fake_structured, title="T",
                                              context_text="envs: Dev, Test, Prod"))
     assert not [r for r in caplog.records if "cut" in r.getMessage()]   # nothing cut, nothing said
+
+
+def test_stack_from_the_esnad_10_23_reading():
+    """The run drew the reader's lead-in sentence as an application, showed AD,
+    HR and SIEM twice, hid the client's named systems in "Other systems (8)",
+    had no PAM count, and lost the product names (SaaS was missed)."""
+    import document_engine
+    ti = ("The solution must connect and integrate with: Active Directory / LDAP (AD/LDAP); "
+          "ERP; HR; CRM/ESM; ESM / ITSM Platform; Taadeen Platform; SIEM (via syslog/API); "
+          "APIs; Bidding platform; Bravo / inspection platform; Bytebase, Grafana & OutSystem; "
+          "Complex Management; GIS (Esri Geoportal, Admin, Maps); PowerBi / reporting tools; "
+          "Nafath (for citizen identity verification); B2B federation with external government "
+          "entities and partners (external IdPs); and custom/legacy systems requiring custom "
+          "REST connectors.")
+    dm = ("Software-as-a-Service (SaaS) offering hosted within the Kingdom of Saudi Arabia "
+          "(SaaS platform operated from KSA-sovereign infrastructure; On-premises or "
+          "KSA-sovereign cloud, e.g., Hyperscaler KSA regions; IAM platform SaaS subscription license).")
+    assert document_engine._looks_like_saas(dm)
+    spec = diagram_engine.build_stack_spec(
+        title="t", client_name="Saudi Mining Services Company (ESNAD)", is_saas=True,
+        iam_vendor="Ping Identity for Access Management and CIAM, Saviynt for IGA and PAM",
+        population="Up to 20,000 identities; 10,000 users including 50 privileged accounts",
+        target_integrations=ti)
+    apps = [n.label for n in spec.nodes if n.group == "ESNAD applications"]
+    assert not any("solution must" in a or a in ("HR", "SIEM") or "LDAP" in a for a in apps), apps
+    for name in ("Bravo / inspection platform", "GIS", "PowerBi / reporting tools",
+                 "Complex Management", "Taadeen Platform"):
+        assert any(a.startswith(name) for a in apps), (name, apps)
+    labels = [n.label for n in spec.nodes]
+    assert "Privileged administrators (50 accounts)" in labels
+    assert any("PingOne Advanced Identity Cloud" in (n.group or "") for n in spec.nodes)
+    pairs = {(e.source.split("_")[0], e.target.split("_")[0]) for e in spec.edges}
+    assert ("iga", "wiam") in pairs and ("pam", "pam") in pairs

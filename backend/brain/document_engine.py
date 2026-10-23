@@ -668,7 +668,10 @@ def _looks_like_saas(deployment_model: Optional[str]) -> bool:
     for clause in re.split(r"[.;,\n]|\bbut\b", text):
         # A hybrid or on-prem answer that mentions SaaS in passing is not a
         # SaaS deployment -- unless that is the thing being ruled out.
-        if re.search(rf"\b{_SELF_HOSTED_RE}", clause) and not _negated(_SELF_HOSTED_RE, clause):
+        # "on-premises or KSA-sovereign cloud" names hosting options, not the
+        # choice: ESNAD's SaaS answer carried it and lost its product names.
+        if re.search(rf"\b{_SELF_HOSTED_RE}", clause) and not _negated(_SELF_HOSTED_RE, clause) \
+                and not re.search(r"\bor\b", clause):
             return False
         if re.search(rf"\b{_SAAS_RE}", clause):
             if _negated(_SAAS_RE, clause):
